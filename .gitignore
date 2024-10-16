@@ -1,0 +1,19 @@
+# Qdrant storage directory
+qdrant_storage/
+
+# Qdrant files
+*.qdrant
+*.qdrant.tmp
+qdrant.lock
+
+
+__pycache__/
+*.pyc
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Specific pycache files
+*.cpython-311.pyc
+

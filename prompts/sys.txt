@@ -1,0 +1,5 @@
+Think step by step to deliver best output
+
+
+Return thinking under <THINKING> thinking process </THINKING>    
+Return the article under <OUTPUT> output</OUTPUT>

@@ -1,0 +1,120 @@
+# SEO COPYWRITER CHECKLIST
+
+## 1. Keyword Placement
+
+If you write quality content that will be read by a person, the keyword and related LSI keywords will naturally occur in the text. However, there are some places where you need to deliberately place your target keyword so that the search engine can read the text better. These include:
+
+1. **Page title**: This is the title of your page as it appears on your webpage.
+2. **Meta title**: This title appears in Google's snippets.
+3. **Meta description**: This is the summary of your page that appears in the snippet.
+4. **First 100 words of your page**: Make sure this is included in a natural way.
+5. **Headings**: Ideally, included in at least two H2-titles on the page.
+6. **Image alt text**: In the text description of an Image.
+7. **Image filename**: Have the keyword in your image's filename "Keyword-1".
+
+## 2. Links
+
+There are two types of links involved in on-page SEO: internal links and external links (also called backlinks).
+
+### Internal Links
+
+These are the links on your page that take the reader to other pages on your site. Your page should not just contain internal links, but other pages on your site should link to pages in the same cluster, or silo. A cluster or silo is a group of pages with the same topic.
+
+- Always try to link to other pages on the site you are writing for with a link where the keyword is incorporated in the page (anchor link or anchor text).
+- Internal links should always be opened in the same window in your browser.
+- In your introduction, always link to the TOP OF SILO. This is the page that can be seen as the most important page of a cluster.
+
+### External Links
+
+These are the links on your page that lead users to other domains. On-page SEO best practice is to link to pages on the subject on high domain authority websites. This helps Google to trust your page more.
+
+- Never link to an external page with a keyword you want to score in yourself. For this, use internal links.
+- External links should always be opened in a new tab in your browser.
+- In his post about SEO techniques, Brian Dean recommends linking to at least 3 high-quality domains.
+
+In any case, the anchor text should be specific to the page you are linking to and contain the keyword the link is targeting. As well as providing a better user experience, the number of links to your page has a direct impact on your place in the ranking.
+
+## 3. Meta Title and H1-Title
+
+Your meta title and H1 title do not need to be different, but it's good to know that you have this option. Either way, a strong headline is a must for on-page SEO, as it influences whether or not to click through to your page. Click-Through-Rate (CTR) is a factor in Google rankings.
+
+There are two different titles for webpages:
+
+1. **Meta title or SEO title**: This is the title of the page as it appears in the search results. An optimal title tag is 60 characters or less (including spaces!) and contains the keyword you are targeting. To prevent your keyword from being cut off on smaller screens, place it at the front of the headline.
+
+2. **H1 title**: This is the title of your article that readers see when they are on the web page. Here you have more room to be creative and convey value. However, make sure that the H1 title still contains the keyword.
+
+A strong headline:
+- Conveys value. Is it valuable to the reader?
+- Does not promise too much. Don't call it an ultimate guide if it's not, or don't adapt it to other top pages if it doesn't contain that content.
+- Is descriptive. "Services" can work as a page title on your website, but in the Google Search Engine Results Page (SERP), this could mean anything. Instead, go for "Affordable Marketing Services".
+- Is stimulating. This doesn't mean using capital letters, hyperbolic words, or exclamation marks! Use powerful words, like "supercharge" instead of "improve".
+
+You can consult these 88 title examples for ideas and guidelines.
+
+## 4. Meta Description
+
+The meta description is the description of your page that appears under the meta title in the Google snippet. Consider it an advertisement for your page; a well-written meta description tells searchers that you answer their questions and makes them click on it.
+
+- Between 155-160 characters (including spaces!).
+- Mention the keyword you are focusing on and, if it makes sense, related keywords.
+- Depending on your marketing funnel; try to hook readers in and communicate the benefits.
+
+The funnel consists of bottom, mid, and top. Here they are described as awareness, consideration, and sale.
+
+Google doesn't always use the meta description you provided. Based on the search query, it is automatically created from your content. That's why it's important to include heading tags. Also, remember that the meta description also appears in preview snippets, like those on social media.
+
+## 5. H2-,H3-Titles
+
+There are six types of heading tags. If you use a CMS like WordPress, Wix, SquareSpace, etc., you'll see a dropdown menu of heading tags in your editor (so you can also adjust the size of these headings), but you can also apply them manually in the HTML code.
+
+Subheadings are used to organize the information on your page into clear sections and subsections. This makes the hierarchy of the page clear to both readers and Google. Based on this hierarchy, Google knows how to assess the relevance of the keyword. Google can't identify titles based on font size and font weight, as we can. Instead, Google reads texts based on the HTML code.
+
+- `<H1>` is the title of the page; there should only be one H1 per page!
+- `<H2>` labels the main parts of your content. A well-optimized page can have between two and twenty-two H2's (that's a lot of twos), depending on the amount of content. You should always have at least two that contain the keyword you are targeting. This can be easily achieved with one section in your content and the conclusion.
+- `<H3>` is used to further label the different points in each H2 section. Use these as needed, but don't force it. Here, you don't have to worry about the keywords.
+- `<H4>` to `<H6>` have no real SEO value. Moreover, fragmented content is not really readable. Sometimes H4's are used, but only occasionally.
+
+With heading tags, Google can also display your page in results for more specific searches related to the page. This increases your chance of appearing on the first page of Google.
+
+The most important thing about headings is that they are descriptive. A reader should be able to understand the essence of the page just by going through the headings.
+
+## The SEO Checklist
+
+1. Placement of your keywords
+   - The page title of your article (H1)
+   - Meta title + Meta description
+   - In the first 100 words of your article
+   - At least two H2 titles with the keyword
+   - A few times in the body text
+   - Use your keyword in H2 or H3 tags
+
+2. Links
+   - Internal links within the same cluster / silo
+   - Internal link to the Top of Silo (as high as possible) 
+   - Internal links contain the keyword of the page you are linking to
+   - 1-3 external links
+
+3. Meta Title
+   - Contains the keyword at the beginning
+   - 60 characters (including spaces) 
+   - Consider your funnels
+
+4. Meta Description
+   - Contains the keyword (placement doesn't matter)
+   - 155-160 characters (including spaces) 
+   - Consider your funnels
+   - Prompt action / hook in a user
+
+5. Content Quality
+   - Use no more than one H1-title
+   - Accurate and original
+   - Structured with headings
+   - Primarily written for a human
+   - Fluff-free: be concise, don't write just for the sake of writing but convey a real message
+   - Use bolded words (readability)
+   - Captivating title (6-10 words)
+   - Compress images in size
+   - Text has a logical structure and organization
+   - Prompt action (add Call-to-Actions throughout the text - not just at the end)
+   - Promote action / hook in a user
