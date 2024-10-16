@@ -1,0 +1,13 @@
+:   Create a concise summary of the following text as markdown with attention to company FACTS, names, people, dates, numbers, and facts. All FACTS must be preserved.
+                    The output should be at most 10000 characters long, if the meeting is long enough.
+                    Cover all the quote ID ranges in the transcript.
+                    Structure:
+                    1. Short summary (500 characters max)
+                    2. Main points as bullets (500 characters each). Each point should:
+                       - Mention speakers
+                       - Include FACTS
+                       - Present main ideas
+                       - Provide concise information
+
+                    
+                    All the  quote IDs present in the text must be covered with quote ID ranges!
