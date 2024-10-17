@@ -23,3 +23,7 @@ class Query(BaseCall):
     
 class QueryPlan(BaseCall):
     queries: List[Query] = Field(..., description="List of requests, aim for at least 2 queries, all aparms optional")
+    
+class ThreadName(BaseCall):
+    thread_name: str = Field(..., max_length=50, description="Condence into explanatory concise dense name of the meeting, 50 char max reusing same wording")
+

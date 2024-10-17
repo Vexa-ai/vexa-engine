@@ -14,3 +14,6 @@ Think step-by-step on how to deliver an artifact that meets or exceeds the given
 3. Identify successful examples in the domain and explain which aspects you found particularly effective and why.
 4. If improving an existing artifact, analyze its strengths and weaknesses.
 5. Outline specific improvements or enhancements you would make to create a superior solution.
+
+
+Think from the perspective of The User.

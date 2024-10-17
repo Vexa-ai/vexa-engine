@@ -34,9 +34,23 @@ class MeetingSearch:
                 vectors_config=models.VectorParams(size=768, distance=models.Distance.COSINE),
             )
             
-    def count_documents(self):
-        collection_info = self.qdrant_client.get_collection(self.collection_name)
-        return collection_info.points_count
+    def count_documents(self, user_id: Optional[str] = None):
+        if user_id is None:
+            collection_info = self.qdrant_client.get_collection(self.collection_name)
+            return collection_info.points_count
+        else:
+            search_result = self.qdrant_client.count(
+                collection_name=self.collection_name,
+                count_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="user_id",
+                            match=models.MatchValue(value=user_id)
+                        )
+                    ]
+                )
+            )
+            return search_result.count
     
     def delete_collection(self):
         self.qdrant_client.delete_collection(self.collection_name)
@@ -47,7 +61,7 @@ class MeetingSearch:
             embeddings = self.embeddings_model.encode(texts, device=self.device, show_progress_bar=False)
         return embeddings
 
-    async def update_vectorstore_with_qoutes(self, chunks: List[str], points: List[str], qoutes: List[str], start_datetime: pd.Timestamp, speakers: List[str], meeting_session_id: str) -> List[models.PointStruct]:
+    async def update_vectorstore_with_qoutes(self, chunks: List[str], points: List[str], qoutes: List[str], start_datetime: pd.Timestamp, speakers: List[str], meeting_session_id: str, user_id: str, user_name: str) -> List[models.PointStruct]:
         points = [
             models.PointStruct(
                 id=str(uuid.uuid4()),
@@ -59,6 +73,9 @@ class MeetingSearch:
                     "start_datetime": int(start_datetime.timestamp()),
                     "speakers": speakers,
                     "meeting_session_id": meeting_session_id,
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "source_type": "meeting",  # Add source_type field
                     "type": "point"
                 }
             )
@@ -71,7 +88,7 @@ class MeetingSearch:
         )
         return points
 
-    async def add_summary(self, meeting_name: str, summary: str, start_datetime: pd.Timestamp, speakers: List[str], meeting_session_id: str) -> models.PointStruct:
+    async def add_summary(self, meeting_name: str, summary: str, start_datetime: pd.Timestamp, speakers: List[str], meeting_session_id: str, user_id: str, user_name: str) -> models.PointStruct:
         summary_point = models.PointStruct(
             id=str(uuid.uuid4()),
             vector=self.embeddings_model.encode(summary, device=self.device).tolist(),
@@ -81,6 +98,9 @@ class MeetingSearch:
                 "start_datetime": int(start_datetime.timestamp()),
                 "speakers": speakers,
                 "meeting_session_id": meeting_session_id,
+                "user_id": user_id,
+                "user_name": user_name,
+                "source_type": "meeting",  # Add source_type field
                 "type": "summary"
             }
         )
@@ -91,7 +111,10 @@ class MeetingSearch:
         )
         return summary_point
 
-    async def search_documents(self, vector_search_query: Optional[str] = None, k: int = 10, include_summary: bool = False, start: Optional[Union[str, datetime]] = None, end: Optional[Union[str, datetime]] = None) -> List[Tuple[Dict[str, Any], float, str]]:
+    async def search_documents(self, vector_search_query: Optional[str] = None, k: int = 10, include_summary: bool = False, start: Optional[Union[str, datetime]] = None, end: Optional[Union[str, datetime]] = None, user_id: Optional[Union[str, List[str]]] = None, user_name: Optional[Union[str, List[str]]] = None, source_type: Optional[str] = None) -> List[Tuple[Dict[str, Any], float, str]]:
+        if not user_id and not user_name:
+            raise ValueError("Either user_id or user_name must be provided")
+
         filter_conditions = []
         
         if not include_summary:
@@ -107,6 +130,20 @@ class MeetingSearch:
                 key="start_datetime",
                 range=models.Range(lte=int(end.timestamp()))
             ))
+        
+        if user_id:
+            if isinstance(user_id, str):
+                filter_conditions.append(models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)))
+            else:
+                filter_conditions.append(models.FieldCondition(key="user_id", match=models.MatchAny(any=user_id)))
+        elif user_name:
+            if isinstance(user_name, str):
+                filter_conditions.append(models.FieldCondition(key="user_name", match=models.MatchValue(value=user_name)))
+            else:
+                filter_conditions.append(models.FieldCondition(key="user_name", match=models.MatchAny(any=user_name)))
+        
+        if source_type:
+            filter_conditions.append(models.FieldCondition(key="source_type", match=models.MatchValue(value=source_type)))
         
         search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
         
@@ -131,14 +168,20 @@ class MeetingSearch:
         
         return [(hit.payload, hit.score if hasattr(hit, 'score') else 1.0, hit.id) for hit in search_result]
 
-    async def multi_search_documents(self, queries: List[Dict[str, Any]], k: int = 10) -> List[Dict[str, Any]]:
+    async def multi_search_documents(self, queries: List[Dict[str, Any]], k: int = 10, user_id: Optional[Union[str, List[str]]] = None, user_name: Optional[Union[str, List[str]]] = None, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        if not user_id and not user_name:
+            raise ValueError("Either user_id or user_name must be provided")
+
         search_results = await asyncio.gather(*[
             self.search_documents(
                 vector_search_query=query.get('vector_search_query'),
                 k=k,
                 include_summary=False,
                 start=query.get('start'),
-                end=query.get('end')
+                end=query.get('end'),
+                user_id=user_id,
+                user_name=user_name,
+                source_type=source_type
             )
             for query in queries
         ])
@@ -157,17 +200,34 @@ class MeetingSearch:
 
         return sorted_results
 
-    def get_summaries(self):
+    def get_summaries(self, user_id: Optional[Union[str, List[str]]] = None, user_name: Optional[Union[str, List[str]]] = None, source_type: Optional[str] = None):
+        if not user_id and not user_name:
+            raise ValueError("Either user_id or user_name must be provided")
+
+        filter_conditions = [
+            models.FieldCondition(
+                key="type",
+                match=models.MatchValue(value="summary")
+            )
+        ]
+        
+        if user_id:
+            if isinstance(user_id, str):
+                filter_conditions.append(models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)))
+            else:
+                filter_conditions.append(models.FieldCondition(key="user_id", match=models.MatchAny(any=user_id)))
+        elif user_name:
+            if isinstance(user_name, str):
+                filter_conditions.append(models.FieldCondition(key="user_name", match=models.MatchValue(value=user_name)))
+            else:
+                filter_conditions.append(models.FieldCondition(key="user_name", match=models.MatchAny(any=user_name)))
+        
+        if source_type:
+            filter_conditions.append(models.FieldCondition(key="source_type", match=models.MatchValue(value=source_type)))
+        
         summaries = self.qdrant_client.scroll(
             collection_name=self.collection_name,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="type",
-                        match=models.MatchValue(value="summary")
-                    )
-                ]
-            ),
+            scroll_filter=models.Filter(must=filter_conditions),
             limit=10000,
             with_payload=True,
             with_vectors=False
@@ -178,8 +238,8 @@ class MeetingSearch:
         
         return summaries
 
-    async def build_context(self, queries, summaries, only_summaries=False, k=20, include_all_summaries=True):
-        points_with_scores = await self.multi_search_documents(queries=queries, k=k)
+    async def build_context(self, queries, summaries, only_summaries=False, k=20, include_all_summaries=True,user_id: Optional[Union[str, List[str]]] = None, user_name: Optional[Union[str, List[str]]] = None):
+        points_with_scores = await self.multi_search_documents(queries=queries, k=k,user_id=user_id,user_name=user_name)
         points_by_meeting = {}
         for point, score, id in points_with_scores:
             if score > 0.1:
@@ -212,8 +272,8 @@ class MeetingSearch:
             for point in search_result[0]
         )
 
-    async def generate_search_queries(self, query: str,last_n_meetings:int=100) -> List[Dict[str, Any]]:
-        summaries = self.get_summaries()[-last_n_meetings:]
+    async def generate_search_queries(self, query: str,last_n_meetings:int=100,user_id: Optional[Union[str, List[str]]] = None, user_name: Optional[Union[str, List[str]]] = None) -> List[Dict[str, Any]]:
+        summaries = self.get_summaries(user_id=user_id, user_name=user_name)[-last_n_meetings:]
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         planner_prompt = """think step by step of which of the following meetings are relevant to the user request. and create many (5+) requests to the search system which will be used to find similar meetings to the user request, 
                             requests should have at least 125 char each and at least 2 sentences."""
@@ -313,3 +373,7 @@ def build_context_string(summaries, points_by_meeting=None, only_summaries=False
     # Join context
     full_context = "\n".join(context)
     return full_context, meeting_ids
+
+
+
+

@@ -10,6 +10,10 @@ class VexaAPI:
     def __init__(self, token=os.getenv('VEXA_TOKEN')):
         self.token = token
         self.base_url = "http://localhost:8001/api/v1"
+        self.user_info = None
+        self.user_id = None
+        self.user_name = None
+        self.get_user_info()  # Call this method during initialization
 
     def get_meetings(self, offset=None, limit=None):
         """
@@ -120,6 +124,30 @@ class VexaAPI:
         df['chunk_number'] = assign_chunk_numbers(df)
         return df, formatted_output, start_datetime, speakers
     
+    def get_user_info(self):
+        """
+        Retrieve user information from the API and store it as attributes.
+
+        :return: Dictionary containing user information
+        """
+        url = f"{self.base_url}/users/me"
+        
+        params = {
+            "token": self.token
+        }
+        
+        response = requests.get(url, params=params)
+        
+        if response.status_code == 200:
+            self.user_info = response.json()
+            self.user_id = self.user_info.get('id')
+            self.user_name = self.user_info.get('username')
+            print("User information retrieved successfully.")
+            return self.user_info
+        else:
+            print(f"Failed to retrieve user information. Status code: {response.status_code}")
+            return None
+
 def assign_chunk_numbers(df, min_chars=300, max_chars=1000):
     cumsum = df['content'].apply(len).cumsum()
     chunk_num = 0
