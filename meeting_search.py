@@ -14,7 +14,7 @@ from pydantic_models import QueryPlan
 
 prompts = Prompts()
 
-class MeetingSearch:
+class VectorSearch:
     def __init__(self, gpu_device=None):
         self.gpu_device = gpu_device
         
@@ -283,7 +283,7 @@ class MeetingSearch:
                            Now is {now}.
                            Write queries based on user request and general context you have, don't use start and end if timing is not obvious from the user query.
                         """),
-            user_msg(f'general context: last {last_n_meetings} meeting summaries in ascending order: {build_context_string(summaries,only_summaries=True)}'),
+            user_msg(f'general context: last {last_n_meetings} meeting summaries in ascending order: {build_context_string(summaries,only_summaries=True)[0]}'),
             user_msg(f'user request: {query}.')
         ])
 

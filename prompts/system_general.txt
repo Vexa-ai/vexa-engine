@@ -27,12 +27,4 @@ Detailed explanation of your thought process
 The content of your solution or artifact
 </ARTIFACT>
 
-<METADATA>
-{
-  "key": "value",
-  "key2": "value2"
-  // Include any relevant metadata about the artifact
-}
-</METADATA>
-
 Your primary objective is to create the best possible solution or artifact for the given task or entity, balancing optimization for specific requirements with overall value and quality.

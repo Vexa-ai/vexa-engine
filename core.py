@@ -29,12 +29,6 @@ redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
 
 import re
 import os
-# Define Msg and generic_call as given previously
-
-# Define BaseCall, Node, Edge, and KnowledgeGraph as given previously
-
-
-
 
 
 from pydantic import Field
@@ -57,18 +51,22 @@ load_dotenv()
 
 ANTROPIC_API_KEY = os.getenv('ANTROPIC_API_KEY')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+TOGETHERAI_API_KEY = os.getenv('TOGETHERAI_API_KEY')
+import os
+os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+os.environ["ANTHROPIC_API_KEY"] = ANTROPIC_API_KEY
+os.environ["GROQ_API_KEY"] = GROQ_API_KEY
+os.environ["TOGETHERAI_API_KEY"] = TOGETHERAI_API_KEY
 
-if not all([ANTROPIC_API_KEY, OPENAI_API_KEY]):
+
+if not all([OPENAI_API_KEY]):
     raise ValueError("One or more required API keys are missing from the .env file")
 
 
 
 from litellm import acompletion
 
-
-import os
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-os.environ["ANTHROPIC_API_KEY"] = ANTROPIC_API_KEY
 
 
 #| export 

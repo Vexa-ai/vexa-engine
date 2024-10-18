@@ -27,3 +27,7 @@ class QueryPlan(BaseCall):
 class ThreadName(BaseCall):
     thread_name: str = Field(..., max_length=50, description="Condence into explanatory concise dense name of the meeting, 50 char max reusing same wording")
 
+
+class ContextQualityCheck(BaseCall):
+    is_sufficient: bool = Field(..., description="Whether the context is sufficient to answer the query")
+    rationale: str = Field(..., description="Explanation for why the context is or isn't sufficient")
