@@ -12,6 +12,7 @@ from core import system_msg, user_msg, assistant_msg, generic_call_stream, count
 from prompts import Prompts
 from pydantic_models import ThreadName, ContextQualityCheck
 from assistant_thread import ThreadManager
+from core import generic_call_
 
 class SearchResult(BaseModel):
     output: str
@@ -32,7 +33,7 @@ class SearchAssistant:
         self.prompts = Prompts()
         self.model = model
 
-    async def chat(self, query: str, thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None) -> SearchResult:
+    async def chat(self, query: str, thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None):
         user_id = self.vexa.user_id
         user_name = self.vexa.user_name
 
@@ -63,7 +64,11 @@ class SearchAssistant:
         # Use the provided model if given, otherwise use the default model
         model_to_use = model or self.model
 
-        output = await generic_call_stream(messages_context, model=model_to_use, temperature=temperature)
+        output = ""
+        async for chunk in generic_call_(messages_context, model=model_to_use, temperature=temperature, streaming=True):
+            output += chunk
+            yield chunk
+        
         messages.append(user_msg(query))
         messages.append(assistant_msg(output))
 
@@ -80,7 +85,7 @@ class SearchAssistant:
         else:
             self.thread_manager.update_thread(thread_id, messages)
 
-        return SearchResult(
+        yield SearchResult(
             output=output,
             messages=[m.__dict__ for m in messages],
             meeting_ids=meeting_ids,
