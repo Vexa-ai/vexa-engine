@@ -6,6 +6,7 @@ from typing import List, Optional
 from search import SearchAssistant
 import asyncio
 from datetime import datetime
+import json
 
 app = FastAPI()
 
@@ -46,21 +47,40 @@ async def get_thread(thread_id: str):
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    async def stream_response():
-        async for item in search_assistant.chat(
-            query=request.query,
-            thread_id=request.thread_id,
-            model=request.model,
-            temperature=request.temperature
-        ):
-            if isinstance(item, str):
-                yield f"data: {item}\n\n"
-            else:
-                yield f"data: {item.json()}\n\n"
-        yield "data: [DONE]\n\n"
+    try:
+        async def stream_response():
+            thread_id = None
+            linked_output = None
+            async for item in search_assistant.chat(
+                query=request.query,
+                thread_id=request.thread_id,
+                model=request.model,
+                temperature=request.temperature
+            ):
+                if isinstance(item, str):
+                    # Stream string responses
+                    yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
+                elif isinstance(item, dict):
+                    # Store thread_id and linked_output from the final response
+                    thread_id = item.get('thread_id')
+                    linked_output = item.get('linked_output')
+                    # Don't yield the dictionary immediately
+            
+            # Send final response with thread_id and linked_output
+            final_response = {
+                'type': 'final',
+                'thread_id': thread_id,
+                'linked_output': linked_output
+            }
+            yield f"data: {json.dumps(final_response)}\n\n"
+            yield "data: {\"type\": \"done\"}\n\n"
 
-    return StreamingResponse(stream_response(), media_type="text/event-stream")
+        return StreamingResponse(stream_response(), media_type="text/event-stream")
+    except ValueError as e:
+        if "Thread with id" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        raise
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+    uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)

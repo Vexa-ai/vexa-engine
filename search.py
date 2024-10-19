@@ -52,7 +52,7 @@ class SearchAssistant:
         
         
         summaries = self.analyzer.get_summaries(user_id=user_id, user_name=user_name)
-        full_context, meeting_ids = await self.analyzer.build_context(queries, summaries, include_all_summaries=False, user_id=user_id, user_name=user_name,k=40)
+        full_context, meeting_ids = await self.analyzer.build_context(queries, summaries, include_all_summaries=False, user_id=user_id, user_name=user_name,k=1)
 
         pref = "Based on the following context, answer the question:" if len(messages) == 0 else "Follow-up request:"
         user_info = f"The User is {user_name}"
@@ -85,16 +85,11 @@ class SearchAssistant:
         else:
             self.thread_manager.update_thread(thread_id, messages)
 
-        yield SearchResult(
-            output=output,
-            messages=[m.__dict__ for m in messages],
-            meeting_ids=meeting_ids,
-            full_context=full_context,
-            thread_id=thread_id,
-            thread_name=thread_name,
-            indexed_meetings=indexed_meetings,
-            linked_output=linked_output
-        )
+        # Instead of yielding the entire SearchResult, we only yield the thread_id and linked_output
+        yield {
+            "thread_id": thread_id,
+            "linked_output": linked_output
+        }
 
     def get_thread(self, thread_id: str):
         return self.thread_manager.get_thread(thread_id)
