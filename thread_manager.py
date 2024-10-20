@@ -27,7 +27,7 @@ class ThreadManager:
                 vectors_config=models.VectorParams(size=1, distance=models.Distance.DOT),
             )
 
-    def create_thread(self, user_id: str, thread_name: str, messages: List[Msg], thread_id: Optional[str] = None) -> str:
+    def upsert_thread(self, user_id: str,  messages: List[Msg],thread_name: Optional[str] = None, thread_id: Optional[str] = None) -> str:
         if thread_id:
             existing_thread = self.get_thread(thread_id)
             if existing_thread:
@@ -66,6 +66,7 @@ class ThreadManager:
                 )
             ]
         )
+        print(f"Thread upserted with id {thread.thread_id}")
         return thread.thread_id
 
     def get_thread(self, thread_id: str) -> Optional[SearchAssistantThread]:
@@ -84,32 +85,9 @@ class ThreadManager:
             )
         return None
 
-    def update_thread(self, thread_id: str, messages: List[Msg]) -> bool:
-        existing_thread = self.get_thread(thread_id)
-        if existing_thread:
-            existing_thread.messages = messages
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=[
-                    models.PointStruct(
-                        id=thread_id,
-                        vector=[1.0],  # Dummy vector
-                        payload={
-                            "user_id": existing_thread.user_id,
-                            "thread_name": existing_thread.thread_name,
-                            "messages": [msg.__dict__ for msg in messages],
-                            "timestamp": existing_thread.timestamp.isoformat(),
-                        }
-                    )
-                ]
-            )
-            return True
-        return False
-
-
-
     def get_user_threads(self, user_id: str) -> List[dict]:
         results = self.client.scroll(
+            limit=100000,
             collection_name=self.collection_name,
             scroll_filter=models.Filter(
                 must=[
@@ -120,7 +98,7 @@ class ThreadManager:
                 ]
             ),
         )[0]
-        return [
+        threads = [
             {
                 "thread_id": point.id,
                 "thread_name": point.payload["thread_name"],
@@ -128,6 +106,8 @@ class ThreadManager:
             }
             for point in results
         ]
+        # Sort threads by timestamp in descending order
+        return sorted(threads, key=lambda x: x["timestamp"], reverse=True)
 
     def get_messages_by_thread_id(self, thread_id: str) -> Optional[List[Msg]]:
         thread = self.get_thread(thread_id)

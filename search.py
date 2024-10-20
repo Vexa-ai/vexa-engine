@@ -7,11 +7,11 @@ from fastapi import Depends
 from pydantic import BaseModel, Field
 
 from vexa import VexaAPI
-from meeting_search import VectorSearch
+from vector_search import VectorSearch
 from core import system_msg, user_msg, assistant_msg, generic_call_stream, count_tokens, BaseCall
 from prompts import Prompts
 from pydantic_models import ThreadName, ContextQualityCheck
-from assistant_thread import ThreadManager
+from thread_manager import ThreadManager
 from core import generic_call_
 
 class SearchResult(BaseModel):
@@ -26,17 +26,13 @@ class SearchResult(BaseModel):
 
 
 class SearchAssistant:
-    def __init__(self, user_token: Optional[str] = None, model: str = "gpt-4o-mini"):
-        self.vexa = VexaAPI(user_token) if user_token else VexaAPI()
+    def __init__(self, model: str = "gpt-4o-mini"):
         self.analyzer = VectorSearch()
         self.thread_manager = ThreadManager()
         self.prompts = Prompts()
         self.model = model
 
-    async def chat(self, query: str, thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None):
-        user_id = self.vexa.user_id
-        user_name = self.vexa.user_name
-
+    async def chat(self, user_id: str, query: str, user_name: str='', thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None):
         if thread_id:
             thread = self.thread_manager.get_thread(thread_id)
             if not thread:
@@ -81,9 +77,9 @@ class SearchAssistant:
             messages_str = ';'.join([m.content for m in messages if m.role == 'user'])
             thread_name = await ThreadName.call([user_msg(messages_str)])
             thread_name = thread_name[0].thread_name
-            thread_id = self.thread_manager.create_thread(user_id=user_id, thread_name=thread_name, messages=messages)
+            thread_id = self.thread_manager.upsert_thread(user_id=user_id, thread_name=thread_name, messages=messages)
         else:
-            self.thread_manager.update_thread(thread_id, messages)
+            self.thread_manager.upsert_thread(user_id = user_id, messages = messages,thread_id=thread_id)
 
         # Instead of yielding the entire SearchResult, we only yield the thread_id and linked_output
         yield {
@@ -94,11 +90,11 @@ class SearchAssistant:
     def get_thread(self, thread_id: str):
         return self.thread_manager.get_thread(thread_id)
 
-    def get_user_threads(self):
-        return self.thread_manager.get_user_threads(self.vexa.user_id)
+    def get_user_threads(self, user_id: str):
+        return self.thread_manager.get_user_threads(user_id)
 
-    def count_documents(self):
-        return self.analyzer.count_documents(user_id=self.vexa.user_id)
+    def count_documents(self, user_id: str):
+        return self.analyzer.count_documents(user_id=user_id)
 
     def get_messages_by_thread_id(self, thread_id: str):
         return self.thread_manager.get_messages_by_thread_id(thread_id)
@@ -122,3 +118,4 @@ class SearchAssistant:
         
         pattern = r'\[(\d+(?:\]\[\d+)*)\]'
         return re.sub(pattern, replace_link, text)
+
