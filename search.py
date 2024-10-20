@@ -65,8 +65,13 @@ class SearchAssistant:
             output += chunk
             yield chunk
         
+        # Create linked_output before appending messages
+        indexed_meetings = self.get_indexed_meetings(meeting_ids, self.parse_refs(output))
+        url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
+        linked_output = self.embed_links(output, url_dict)
+
         messages.append(user_msg(query))
-        messages.append(assistant_msg(output))
+        messages.append(assistant_msg(linked_output))
 
         # New code for indexing meetings and embedding links
         indexed_meetings = self.get_indexed_meetings(meeting_ids, self.parse_refs(output))
