@@ -107,6 +107,21 @@ async def chat(request: ChatRequest, current_user: str = Depends(get_current_use
             raise HTTPException(status_code=404, detail=str(e))
         raise
 
+@app.delete("/thread/{thread_id}")
+async def delete_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
+    user_id, user_name = current_user
+    thread = search_assistant.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if thread.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    success = search_assistant.delete_thread(thread_id)
+    if success:
+        return {"message": "Thread deleted successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to delete thread")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)

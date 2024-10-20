@@ -124,3 +124,5 @@ class SearchAssistant:
         pattern = r'\[(\d+(?:\]\[\d+)*)\]'
         return re.sub(pattern, replace_link, text)
 
+    def delete_thread(self, thread_id: str) -> bool:
+        return self.thread_manager.delete_thread(thread_id)

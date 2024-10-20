@@ -119,3 +119,26 @@ class ThreadManager:
         if thread:
             return thread.messages
         return None
+
+    def delete_thread(self, thread_id: str) -> bool:
+        """
+        Delete a thread by its ID.
+        
+        Args:
+            thread_id (str): The ID of the thread to delete.
+        
+        Returns:
+            bool: True if the thread was successfully deleted, False otherwise.
+        """
+        try:
+            self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=models.PointIdsList(
+                    points=[thread_id]
+                )
+            )
+            print(f"Thread deleted with id {thread_id}")
+            return True
+        except Exception as e:
+            print(f"Error deleting thread {thread_id}: {str(e)}")
+            return False
