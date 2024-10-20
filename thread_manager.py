@@ -27,7 +27,7 @@ class ThreadManager:
                 vectors_config=models.VectorParams(size=1, distance=models.Distance.DOT),
             )
 
-    def upsert_thread(self, user_id: str,  messages: List[Msg],thread_name: Optional[str] = None, thread_id: Optional[str] = None) -> str:
+    def upsert_thread(self, user_id: str, messages: List[Msg], thread_name: Optional[str] = None, thread_id: Optional[str] = None) -> str:
         if thread_id:
             existing_thread = self.get_thread(thread_id)
             if existing_thread:
@@ -35,7 +35,7 @@ class ThreadManager:
                 thread = SearchAssistantThread(
                     thread_id=thread_id,
                     user_id=user_id,
-                    thread_name=thread_name,
+                    thread_name=existing_thread.thread_name,  # Keep the existing thread_name
                     messages=messages,
                     timestamp=existing_thread.timestamp
                 )
@@ -44,13 +44,18 @@ class ThreadManager:
                 thread = SearchAssistantThread(
                     thread_id=thread_id,
                     user_id=user_id,
-                    thread_name=thread_name,
+                    thread_name=thread_name or "",  # Use provided thread_name or empty string
                     messages=messages
                 )
         else:
             # Create new thread with auto-generated ID
-            thread = SearchAssistantThread(user_id=user_id, thread_name=thread_name, messages=messages)
+            thread = SearchAssistantThread(
+                user_id=user_id,
+                thread_name=thread_name or "",  # Use provided thread_name or empty string
+                messages=messages
+            )
 
+        # Upsert the thread
         self.client.upsert(
             collection_name=self.collection_name,
             points=[

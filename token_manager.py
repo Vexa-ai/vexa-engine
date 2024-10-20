@@ -1,5 +1,5 @@
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from pydantic import BaseModel, Field
@@ -23,12 +23,19 @@ class TokenManager:
                 vectors_config=models.VectorParams(size=1, distance=models.Distance.DOT),
             )
 
-    def submit_token(self, token: str) -> bool:
+    def submit_token(self, token: str) -> Tuple[str | None, str | None]:
         vexa = VexaAPI(token=token)
+        
+        if vexa.user_id is None or vexa.user_name is None:
+            print("Error: Token authentication failed")
+            return None, None
+        
         user_id = vexa.user_id
         user_name = vexa.user_name
+        
         if self.check_token(token):
             return user_id, user_name
+        
         user_token = UserToken(token=token, user_id=user_id, user_name=user_name)
         self._store_token(user_token)
         return user_id, user_name

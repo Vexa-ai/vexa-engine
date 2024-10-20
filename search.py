@@ -48,7 +48,7 @@ class SearchAssistant:
         
         
         summaries = self.analyzer.get_summaries(user_id=user_id, user_name=user_name)
-        full_context, meeting_ids = await self.analyzer.build_context(queries, summaries, include_all_summaries=False, user_id=user_id, user_name=user_name,k=1)
+        full_context, meeting_ids = await self.analyzer.build_context(queries, summaries, include_all_summaries=False, user_id=user_id, user_name=user_name,k=40)
 
         pref = "Based on the following context, answer the question:" if len(messages) == 0 else "Follow-up request:"
         user_info = f"The User is {user_name}"
