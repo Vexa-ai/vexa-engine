@@ -359,7 +359,7 @@ def build_context_string(summaries, points_by_meeting=None, only_summaries=False
         meeting_id = summary['meeting_session_id']
         if include_all_summaries or (points_by_meeting and meeting_id in points_by_meeting):
             start_datetime = pd.to_datetime(datetime.fromtimestamp(summary['start_datetime']))
-            context.append(f"# [{meeting_counter}] {summary['meeting_name']} ({start_datetime.strftime('%Y-%m-%d %H:%M')}):\n{summary['content']}")
+            context.append(f"# [{meeting_counter}] {summary['meeting_name']} ({start_datetime.strftime('%Y-%m-%d %H:%M')}) participants: {summary['speakers']}\n{summary['content']}")
             
             if not only_summaries and points_by_meeting and meeting_id in points_by_meeting:
                 context.append("## Related Quotes:")

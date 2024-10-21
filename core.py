@@ -84,9 +84,10 @@ class Msg:
     role: Literal['user','system','assistant']
     content:str
     stage:  Optional[str] = None
+    service_content: Optional[str] = None
 
-def assistant_msg(msg):
-    return Msg(role='assistant',content=msg)
+def assistant_msg(msg,service_content=None):
+    return Msg(role='assistant',content=msg, service_content=service_content)
 def user_msg(msg):
     return Msg(role='user',content=msg)
 def system_msg(msg):
@@ -98,16 +99,33 @@ async def generic_call_(messages: List[Msg], model='default', temperature=0, max
     if model == 'claude': model = 'claude-3-5-sonnet-20240620'
     
     messages = [msg.__dict__ for msg in messages]
+    for msg in messages:
+        if 'service_content' in msg and msg['service_content'] is not None:
+            msg['content'] = msg['service_content']
+            del msg['service_content']
     messages = [{k: v for k, v in d.items() if k != 'stage'} for d in messages]
     
-    results = await acompletion(
-        temperature=temperature,
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        stream=streaming
-    )
+    try:
+        results = await acompletion(
+            temperature=temperature,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            stream=streaming
+        )
+    except Exception as e:
+        print(f"Error with provided model {model}. Falling back to default model.")
+        model = "gpt-4o-mini"
+        results = await acompletion(
+            temperature=temperature,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            stream=streaming
+        )
+    
     if streaming:
         async for chunk in results:
             if chunk.choices[0].delta.content is not None:

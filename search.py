@@ -26,7 +26,7 @@ class SearchResult(BaseModel):
 
 
 class SearchAssistant:
-    def __init__(self, model: str = "gpt-4o-mini"):
+    def __init__(self, model: str = "gpt-4o-mini"): #"together_ai/meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo"
         self.analyzer = VectorSearch()
         self.thread_manager = ThreadManager()
         self.prompts = Prompts()
@@ -38,6 +38,7 @@ class SearchAssistant:
             if not thread:
                 raise ValueError(f"Thread with id {thread_id} not found")
             messages = thread.messages
+            
             thread_name = thread.thread_name
         else:
             messages = []
@@ -55,7 +56,7 @@ class SearchAssistant:
         messages_context = [
             system_msg(self.prompts.perplexity + f'. {user_info}'), 
             user_msg(f"Context:\n{full_context}"),
-        ] + messages + [user_msg(f"{pref} {query}. ALways suplay references to meetings as [1][2][3] etc.")]
+        ] + messages + [user_msg(f"{pref} {query}. Always suplay references to meetings as [1][2][3] etc.")]
 
         # Use the provided model if given, otherwise use the default model
         model_to_use = model or self.model
@@ -69,14 +70,13 @@ class SearchAssistant:
         indexed_meetings = self.get_indexed_meetings(meeting_ids, self.parse_refs(output))
         url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
         linked_output = self.embed_links(output, url_dict)
+        
+        
+        
 
         messages.append(user_msg(query))
-        messages.append(assistant_msg(linked_output))
+        messages.append(assistant_msg(msg=linked_output, service_content=output))
 
-        # New code for indexing meetings and embedding links
-        indexed_meetings = self.get_indexed_meetings(meeting_ids, self.parse_refs(output))
-        url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
-        linked_output = self.embed_links(output, url_dict)
 
         if not thread_id:
             messages_str = ';'.join([m.content for m in messages if m.role == 'user'])
