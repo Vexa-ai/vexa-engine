@@ -314,6 +314,20 @@ class VectorSearch:
             for point in search_result[0]
         )
 
+    async def get_first_meeting_timestamp(self, user_id: str) -> Optional[str]:
+        summaries = self.get_summaries(user_id=user_id)
+        if summaries:
+            first_meeting = min(summaries, key=lambda x: x['start_datetime'])
+            return datetime.fromtimestamp(first_meeting['start_datetime']).strftime('%Y-%m-%d %H:%M:%S')
+        return None
+
+    async def get_last_meeting_timestamp(self, user_id: str) -> Optional[str]:
+        summaries = self.get_summaries(user_id=user_id)
+        if summaries:
+            last_meeting = max(summaries, key=lambda x: x['start_datetime'])
+            return datetime.fromtimestamp(last_meeting['start_datetime']).strftime('%Y-%m-%d %H:%M:%S')
+        return None
+
 # Utility functions
 def extract_tag_content(text, tag='ARTICLE'):
     start_tag = f"<{tag}>"
@@ -373,6 +387,7 @@ def build_context_string(summaries, points_by_meeting=None, only_summaries=False
     # Join context
     full_context = "\n".join(context)
     return full_context, meeting_ids
+
 
 
 

@@ -20,7 +20,6 @@ import requests
 from typing import List, Optional, Tuple, Any
 from pydantic import BaseModel, Field
 from graphviz import Digraph
-from IPython.display import display
 import hashlib
 from pydantic import BaseModel, PrivateAttr
 
@@ -40,8 +39,7 @@ from enum import Enum
 from typing import Type, List, Dict, Any, Tuple 
 from datetime import date
 
-from graphviz import Digraph
-from IPython.display import display
+
 from typing import List, Tuple, Any, Dict, ClassVar
 
 from dotenv import load_dotenv
