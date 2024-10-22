@@ -63,6 +63,8 @@ async def get_current_user(authorization: str = Header(...)):
 @app.post("/submit_token")
 async def submit_token(request: TokenRequest):
     user_id, user_name = token_manager.submit_token(request.token)
+    if user_id is None or user_name is None:
+        raise HTTPException(status_code=401, detail="Invalid token")
     return {"user_id": user_id, "user_name": user_name}
 
 @app.get("/threads", response_model=List[Thread])
