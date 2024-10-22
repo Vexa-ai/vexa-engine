@@ -35,22 +35,27 @@ class VectorSearch:
             )
             
     def count_documents(self, user_id: Optional[str] = None):
-        if user_id is None:
-            collection_info = self.qdrant_client.get_collection(self.collection_name)
-            return collection_info.points_count
-        else:
-            search_result = self.qdrant_client.count(
-                collection_name=self.collection_name,
-                count_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="user_id",
-                            match=models.MatchValue(value=user_id)
-                        )
-                    ]
+        filter_conditions = [
+            models.FieldCondition(
+                key="type",
+                match=models.MatchValue(value="summary")
+            )
+        ]
+        
+        if user_id is not None:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="user_id",
+                    match=models.MatchValue(value=user_id)
                 )
             )
-            return search_result.count
+        
+        search_result = self.qdrant_client.count(
+            collection_name=self.collection_name,
+            count_filter=models.Filter(must=filter_conditions)
+        )
+        
+        return search_result.count
     
     def delete_collection(self):
         self.qdrant_client.delete_collection(self.collection_name)
@@ -387,6 +392,7 @@ def build_context_string(summaries, points_by_meeting=None, only_summaries=False
     # Join context
     full_context = "\n".join(context)
     return full_context, meeting_ids
+
 
 
 
