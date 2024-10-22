@@ -31,34 +31,34 @@ class Indexing:
         combined = group['speaker'].fillna('').astype(str) + ': ' + group['content'].fillna('')
         return ' '.join(combined)
 
-    async def index_meetings(self, num_meetings=200):
+    async def index_meetings(self, num_meetings=300):
         meetings = self.vexa.get_meetings()
         meetings = meetings[-num_meetings:]
 
         for meeting in reversed(meetings):
-            if meeting['finish_timestamp']:
-                meeting_id = meeting['id']
-                if not self.analyzer.check_meeting_session_id_exists(meeting_id):
-                    result = self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
-                    if result:
-                        df, formatted_input, start_datetime, speakers = result
-                        output = await Summary.call([
-                            system_msg(self.prompts.think + self.prompts.summarize_meeting + f'.The User: {self.vexa.user_name}'),
-                            user_msg(formatted_input)
-                        ], model=self.model)
-                        
-                        df_exploded = self.create_exploded_points_df(output)
-                        joined_df = df_exploded.join(df, on='range', rsuffix='_transcript')
+         #   if meeting['finish_timestamp']:
+            meeting_id = meeting['id']
+            if not self.analyzer.check_meeting_session_id_exists(meeting_id):
+                result = self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
+                if result:
+                    df, formatted_input, start_datetime, speakers = result
+                    output = await Summary.call([
+                        system_msg(self.prompts.think + self.prompts.summarize_meeting + f'.The User: {self.vexa.user_name}'),
+                        user_msg(formatted_input)
+                    ], model=self.model)
+                    
+                    df_exploded = self.create_exploded_points_df(output)
+                    joined_df = df_exploded.join(df, on='range', rsuffix='_transcript')
 
-                        points_with_qoutes = joined_df.groupby('point').apply(self.combine_initials_and_content)
-                        points_with_qoutes.name = 'qoutes'
-                        points_with_qoutes = points_with_qoutes.reset_index().to_dict(orient='records')
-                        summary = output[0].summary
-                        meeting_name = output[0].meeting_name
+                    points_with_qoutes = joined_df.groupby('point').apply(self.combine_initials_and_content)
+                    points_with_qoutes.name = 'qoutes'
+                    points_with_qoutes = points_with_qoutes.reset_index().to_dict(orient='records')
+                    summary = output[0].summary
+                    meeting_name = output[0].meeting_name
 
-                        if points_with_qoutes:
-                            chunks = [f"{summary}\n\n{p['point']}\n\n{p['qoutes']}" for p in points_with_qoutes]
-                            points = [p['point'] for p in points_with_qoutes]
-                            qoutes = [p['qoutes'] for p in points_with_qoutes]
-                            await self.analyzer.add_summary(meeting_name, summary, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
-                            await self.analyzer.update_vectorstore_with_qoutes(chunks, points, qoutes, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
+                    if points_with_qoutes:
+                        chunks = [f"{summary}\n\n{p['point']}\n\n{p['qoutes']}" for p in points_with_qoutes]
+                        points = [p['point'] for p in points_with_qoutes]
+                        qoutes = [p['qoutes'] for p in points_with_qoutes]
+                        await self.analyzer.add_summary(meeting_name, summary, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
+                        await self.analyzer.update_vectorstore_with_qoutes(chunks, points, qoutes, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
