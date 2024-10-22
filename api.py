@@ -160,12 +160,15 @@ async def start_indexing(
     background_tasks: BackgroundTasks,
     authorization: str = Header(...)
 ):
+    print(f"Received start_indexing request: {request}")
     token = authorization.split("Bearer ")[-1]
     user_id, user_name = token_manager.check_token(token)
     
     if not user_id:
+        print(f"Invalid token for start_indexing: {token}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
+    print(f"Starting indexing job for user: {user_name} (ID: {user_id})")
     # Start the indexing job in the background
     background_tasks.add_task(run_indexing_job, token, request.num_meetings)
 
@@ -177,6 +180,19 @@ async def get_meetings_processed(current_user: tuple = Depends(get_current_user)
     user_id, user_name = current_user
     meetings_processed = search_assistant.analyzer.count_documents(user_id=user_id)
     return MeetingsProcessedResponse(meetings_processed=meetings_processed)
+
+@app.get("/indexing_status")
+async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
+    user_id, user_name = current_user
+    is_indexing = search_assistant.is_indexing(user_id)
+    print(f"Indexing status for user {user_name} (ID: {user_id}): {is_indexing}")
+    return {"is_indexing": is_indexing}
+
+@app.delete("/user/data")
+async def remove_user_data(current_user: tuple = Depends(get_current_user)):
+    user_id, user_name = current_user
+    deleted_points = await search_assistant.remove_user_data(user_id)
+    return {"message": f"Successfully removed {deleted_points} data points for user {user_name}"}
 
 if __name__ == "__main__":
     import uvicorn

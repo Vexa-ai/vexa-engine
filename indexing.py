@@ -31,7 +31,7 @@ class Indexing:
         combined = group['speaker'].fillna('').astype(str) + ': ' + group['content'].fillna('')
         return ' '.join(combined)
 
-    async def index_meetings(self, num_meetings=300):
+    async def index_meetings(self, num_meetings=10):
         meetings = self.vexa.get_meetings()
         meetings = meetings[-num_meetings:]
 

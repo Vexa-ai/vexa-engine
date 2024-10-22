@@ -31,6 +31,7 @@ class SearchAssistant:
         self.thread_manager = ThreadManager()
         self.prompts = Prompts()
         self.model = model
+        self.indexing_jobs = {}
 
     async def chat(self, user_id: str, query: str, user_name: str='', thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None):
         if thread_id:
@@ -126,3 +127,18 @@ class SearchAssistant:
 
     def delete_thread(self, thread_id: str) -> bool:
         return self.thread_manager.delete_thread(thread_id)
+
+    async def run_indexing_job(self, token: str, num_meetings: int):
+        user_id, user_name = token_manager.check_token(token)
+        self.indexing_jobs[user_id] = True
+        try:
+            # Your existing indexing logic here
+            pass
+        finally:
+            self.indexing_jobs[user_id] = False
+
+    def is_indexing(self, user_id: str) -> bool:
+        return self.indexing_jobs.get(user_id, False)
+
+    async def remove_user_data(self, user_id: str) -> int:
+        return await self.analyzer.remove_user_data(user_id)

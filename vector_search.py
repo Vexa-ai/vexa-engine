@@ -333,6 +333,33 @@ class VectorSearch:
             return datetime.fromtimestamp(last_meeting['start_datetime']).strftime('%Y-%m-%d %H:%M:%S')
         return None
 
+    async def remove_user_data(self, user_id: str) -> int:
+        filter_condition = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="user_id",
+                    match=models.MatchValue(value=user_id)
+                )
+            ]
+        )
+
+        # First, count the number of points to be deleted
+        count_response = self.qdrant_client.count(
+            collection_name=self.collection_name,
+            count_filter=filter_condition
+        )
+        points_to_delete = count_response.count
+
+        # Delete the points
+        self.qdrant_client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=filter_condition
+            )
+        )
+
+        return points_to_delete
+
 # Utility functions
 def extract_tag_content(text, tag='ARTICLE'):
     start_tag = f"<{tag}>"
@@ -392,6 +419,7 @@ def build_context_string(summaries, points_by_meeting=None, only_summaries=False
     # Join context
     full_context = "\n".join(context)
     return full_context, meeting_ids
+
 
 
 
