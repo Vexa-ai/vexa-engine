@@ -13,7 +13,7 @@ class Indexing:
         self.prompts = Prompts()
         self.model = model
 
-    def create_exploded_points_df(self, output):
+    async def create_exploded_points_df(self, output):
         points_data = output[0].model_dump()['points']
         df_points = pd.DataFrame(points_data)
         df_points = df_points.rename(columns={'c': 'point'})
@@ -32,14 +32,14 @@ class Indexing:
         return ' '.join(combined)
 
     async def index_meetings(self, num_meetings=10):
-        meetings = self.vexa.get_meetings()
+        await self.vexa.get_user_info()
+        meetings = await self.vexa.get_meetings()
         meetings = meetings[-num_meetings:]
 
         for meeting in reversed(meetings):
-         #   if meeting['finish_timestamp']:
             meeting_id = meeting['id']
-            if not self.analyzer.check_meeting_session_id_exists(meeting_id):
-                result = self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
+            if not await self.analyzer.check_meeting_session_id_exists(meeting_id):
+                result = await self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
                 if result:
                     df, formatted_input, start_datetime, speakers = result
                     output = await Summary.call([
@@ -47,7 +47,7 @@ class Indexing:
                         user_msg(formatted_input)
                     ], model=self.model)
                     
-                    df_exploded = self.create_exploded_points_df(output)
+                    df_exploded = await self.create_exploded_points_df(output)
                     joined_df = df_exploded.join(df, on='range', rsuffix='_transcript')
 
                     points_with_qoutes = joined_df.groupby('point').apply(self.combine_initials_and_content)

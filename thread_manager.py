@@ -1,8 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
+from qdrant_client import AsyncQdrantClient, models
 from pydantic import BaseModel, Field
 from core import Msg
 
@@ -15,48 +14,49 @@ class SearchAssistantThread(BaseModel):
 
 class ThreadManager:
     def __init__(self, host: str = "127.0.0.1", port: int = 6333, collection_name: str = "search_assistant_threads"):
-        self.client = QdrantClient(host, port=port)
+        self.client = AsyncQdrantClient(host, port=port)
         self.collection_name = collection_name
-        self._ensure_collection_exists()
 
-    def _ensure_collection_exists(self):
-        collections = self.client.get_collections().collections
-        if not any(collection.name == self.collection_name for collection in collections):
-            self.client.create_collection(
+    @classmethod
+    async def create(cls, host: str = "127.0.0.1", port: int = 6333, collection_name: str = "search_assistant_threads"):
+        self = cls(host, port, collection_name)
+        await self._ensure_collection_exists()
+        return self
+
+    async def _ensure_collection_exists(self):
+        collections = await self.client.get_collections()
+        if not any(collection.name == self.collection_name for collection in collections.collections):
+            await self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=models.VectorParams(size=1, distance=models.Distance.DOT),
             )
 
-    def upsert_thread(self, user_id: str, messages: List[Msg], thread_name: Optional[str] = None, thread_id: Optional[str] = None) -> str:
+    async def upsert_thread(self, user_id: str, messages: List[Msg], thread_name: Optional[str] = None, thread_id: Optional[str] = None) -> str:
         if thread_id:
-            existing_thread = self.get_thread(thread_id)
+            existing_thread = await self.get_thread(thread_id)
             if existing_thread:
-                # Update existing thread
                 thread = SearchAssistantThread(
                     thread_id=thread_id,
                     user_id=user_id,
-                    thread_name=existing_thread.thread_name,  # Keep the existing thread_name
+                    thread_name=existing_thread.thread_name,
                     messages=messages,
                     timestamp=existing_thread.timestamp
                 )
             else:
-                # Create new thread with supplied ID
                 thread = SearchAssistantThread(
                     thread_id=thread_id,
                     user_id=user_id,
-                    thread_name=thread_name or "",  # Use provided thread_name or empty string
+                    thread_name=thread_name or "",
                     messages=messages
                 )
         else:
-            # Create new thread with auto-generated ID
             thread = SearchAssistantThread(
                 user_id=user_id,
-                thread_name=thread_name or "",  # Use provided thread_name or empty string
+                thread_name=thread_name or "",
                 messages=messages
             )
 
-        # Upsert the thread
-        self.client.upsert(
+        await self.client.upsert(
             collection_name=self.collection_name,
             points=[
                 models.PointStruct(
@@ -74,8 +74,8 @@ class ThreadManager:
         print(f"Thread upserted with id {thread.thread_id}")
         return thread.thread_id
 
-    def get_thread(self, thread_id: str) -> Optional[SearchAssistantThread]:
-        results = self.client.retrieve(
+    async def get_thread(self, thread_id: str) -> Optional[SearchAssistantThread]:
+        results = await self.client.retrieve(
             collection_name=self.collection_name,
             ids=[thread_id],
         )
@@ -90,8 +90,8 @@ class ThreadManager:
             )
         return None
 
-    def get_user_threads(self, user_id: str) -> List[dict]:
-        results = self.client.scroll(
+    async def get_user_threads(self, user_id: str) -> List[dict]:
+        results = await self.client.scroll(
             limit=100000,
             collection_name=self.collection_name,
             scroll_filter=models.Filter(
@@ -102,36 +102,26 @@ class ThreadManager:
                     )
                 ]
             ),
-        )[0]
+        )
         threads = [
             {
                 "thread_id": point.id,
                 "thread_name": point.payload["thread_name"],
                 "timestamp": datetime.fromisoformat(point.payload["timestamp"]),
             }
-            for point in results
+            for point in results[0]
         ]
-        # Sort threads by timestamp in descending order
         return sorted(threads, key=lambda x: x["timestamp"], reverse=True)
 
-    def get_messages_by_thread_id(self, thread_id: str) -> Optional[List[Msg]]:
-        thread = self.get_thread(thread_id)
+    async def get_messages_by_thread_id(self, thread_id: str) -> Optional[List[Msg]]:
+        thread = await self.get_thread(thread_id)
         if thread:
             return thread.messages
         return None
 
-    def delete_thread(self, thread_id: str) -> bool:
-        """
-        Delete a thread by its ID.
-        
-        Args:
-            thread_id (str): The ID of the thread to delete.
-        
-        Returns:
-            bool: True if the thread was successfully deleted, False otherwise.
-        """
+    async def delete_thread(self, thread_id: str) -> bool:
         try:
-            self.client.delete(
+            await self.client.delete(
                 collection_name=self.collection_name,
                 points_selector=models.PointIdsList(
                     points=[thread_id]
