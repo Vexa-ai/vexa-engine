@@ -265,6 +265,29 @@ class VectorSearch:
 
         return deleted_points.deleted
 
+    async def get_speakers_by_user_id(self, user_id: str) -> List[str]:
+        filter_conditions = [
+            models.FieldCondition(
+                key="user_id",
+                match=models.MatchValue(value=user_id)
+            )
+        ]
+
+        results = await self.qdrant_client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=models.Filter(must=filter_conditions),
+            limit=10000,
+            with_payload=["speakers"],
+            with_vectors=False
+        )
+
+        all_speakers = set()
+        for point in results[0]:
+            speakers = point.payload.get("speakers", [])
+            all_speakers.update(speakers)
+
+        return list(all_speakers)
+
 # Utility functions
 def extract_tag_content(text, tag='ARTICLE'):
     start_tag = f"<{tag}>"
@@ -324,6 +347,7 @@ def build_context_string(summaries, points_by_meeting=None, only_summaries=False
     # Join context
     full_context = "\n".join(context)
     return full_context, meeting_ids
+
 
 
 
