@@ -113,7 +113,7 @@ class VexaAPI:
             formatted_output += f"{row['initials']} ({time_or_index}): {row['content']}\n"
         
         df['chunk_number'] = assign_chunk_numbers(df)
-        return df, formatted_output, start_datetime, speakers
+        return df, formatted_output, start_datetime, speakers,transcript
     
     async def get_user_info(self):
         url = f"{self.base_url}/users/me"
