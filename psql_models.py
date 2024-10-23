@@ -9,6 +9,9 @@ import hashlib
 from uuid import UUID
 from sqlalchemy import Table
 from typing import List
+from datetime import timezone
+from sqlalchemy import or_
+from sqlalchemy import func
 
 engine = create_engine('postgresql://postgres:mysecretpassword@localhost:5432/postgres')
 Session = sessionmaker(bind=engine)
@@ -23,12 +26,19 @@ item_object_association = Table('item_object', Base.metadata,
     Column('object_id', Integer, ForeignKey('objects.id'))
 )
 
+# Association table for the many-to-many relationship between meetings and speakers
+meeting_speaker_association = Table('meeting_speaker', Base.metadata,
+    Column('meeting_id', Integer, ForeignKey('meetings.id')),
+    Column('speaker_id', Integer, ForeignKey('speakers.id'))
+)
+
 class Speaker(Base):
     __tablename__ = 'speakers'
 
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
-    meetings = relationship('Meeting', back_populates='speaker')
+    
+    meetings = relationship('Meeting', secondary=meeting_speaker_association, back_populates='speakers')
     items = relationship('Item', back_populates='speaker')
 
     def __repr__(self):
@@ -41,9 +51,8 @@ class Meeting(Base):
     meeting_id = Column(PostgresUUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
     transcript = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    speaker_id = Column(Integer, ForeignKey('speakers.id'))
 
-    speaker = relationship('Speaker', back_populates='meetings')
+    speakers = relationship('Speaker', secondary=meeting_speaker_association, back_populates='meetings')
     items = relationship('Item', back_populates='meeting')
 
     def __repr__(self):
@@ -65,7 +74,7 @@ class Item(Base):
     objects = relationship('Object', secondary=item_object_association, back_populates='items')
 
     def __repr__(self):
-        return f"<Item(id={self.id}, type='{self.type}')>"
+        return f"<Item(id={self.id})>"
 
 class Object(Base):
     __tablename__ = 'objects'
@@ -103,22 +112,43 @@ from sqlalchemy import and_, or_
 from uuid import UUID
 
 def fetch_context(session, speaker_names: List[str], reference_date: datetime):
+    print(f"Fetching context for speakers: {speaker_names}, reference_date: {reference_date}")
+
+    if reference_date.tzinfo is None:
+        reference_date = reference_date.replace(tzinfo=timezone.utc)
+
     existing_speakers = session.query(Speaker).filter(Speaker.name.in_(speaker_names)).all()
     if not existing_speakers:
+        print(f"No speakers found with names: {speaker_names}")
         return []
 
     existing_speaker_names = [speaker.name for speaker in existing_speakers]
+    print(f"Found existing speakers: {existing_speaker_names}")
 
-    items_query = session.query(Item).options(
-        joinedload(Item.objects),
-        joinedload(Item.meeting),
-        joinedload(Item.speaker)
-    ).join(Meeting).join(Speaker).filter(
-        Speaker.name.in_(existing_speaker_names),
-        Meeting.timestamp <= reference_date
-    ).order_by(Meeting.timestamp.desc())
+    # Debug: Check for meetings associated with these speakers
+    meetings_query = session.query(Meeting).join(meeting_speaker_association).join(Speaker).filter(
+        Speaker.name.in_(existing_speaker_names)
+    )
+    meetings = meetings_query.all()
+    print(f"Found {len(meetings)} meetings for these speakers")
+    for meeting in meetings:
+        print(f"Meeting ID: {meeting.id}, Timestamp: {meeting.timestamp}")
+
+    # Debug: Check for items associated with these speakers
+    items_query = session.query(Item).join(Meeting).join(meeting_speaker_association).join(Speaker).filter(
+        Speaker.name.in_(existing_speaker_names)
+    )
+    items = items_query.all()
+    print(f"Found {len(items)} items for these speakers (without date filter)")
+    for item in items:
+        print(f"Item ID: {item.id}, Meeting ID: {item.meeting_id}, Speaker: {item.speaker.name}")
+
+    # Main query with date filter
+    items_query = items_query.filter(Meeting.timestamp <= reference_date).order_by(Meeting.timestamp.desc())
+    print(f"Query: {items_query}")
 
     items = items_query.all()
+    print(f"Found {len(items)} items after applying date filter")
 
     context = []
     for item in items:
@@ -130,6 +160,14 @@ def fetch_context(session, speaker_names: List[str], reference_date: datetime):
             'timestamp': item.meeting.timestamp,
             'meeting_id': item.meeting.meeting_id
         })
+
+    print(f"Returning context with {len(context)} entries")
+
+    # Debug: Check database statistics
+    speakers_count = session.query(func.count(Speaker.id)).scalar()
+    meetings_count = session.query(func.count(Meeting.id)).scalar()
+    items_count = session.query(func.count(Item.id)).scalar()
+    print(f"Database statistics: Speakers: {speakers_count}, Meetings: {meetings_count}, Items: {items_count}")
 
     return context
 
