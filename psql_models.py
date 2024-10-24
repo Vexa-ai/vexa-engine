@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, Table
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker, joinedload
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
@@ -7,24 +7,28 @@ import uuid
 from datetime import datetime
 import hashlib
 from uuid import UUID
-from sqlalchemy import Table
 from typing import List
 from datetime import timezone
 from sqlalchemy import or_
 from sqlalchemy import func
-
-engine = create_engine('postgresql://postgres:mysecretpassword@localhost:5432/postgres')
-Session = sessionmaker(bind=engine)
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import select
+from contextlib import asynccontextmanager
 
 #docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
 
-Base = declarative_base()
 
-# Association table for the many-to-many relationship
-item_object_association = Table('item_object', Base.metadata,
-    Column('item_id', Integer, ForeignKey('items.id')),
-    Column('object_id', Integer, ForeignKey('objects.id'))
+DATABASE_URL = 'postgresql+asyncpg://postgres:mysecretpassword@localhost:5432/postgres'
+# Create async engine
+engine = create_async_engine(DATABASE_URL)
+
+# Create async session
+async_session = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
 )
+
+Base = declarative_base()
 
 # Association table for the many-to-many relationship between meetings and speakers
 meeting_speaker_association = Table('meeting_speaker', Base.metadata,
@@ -36,13 +40,9 @@ class Speaker(Base):
     __tablename__ = 'speakers'
 
     id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False)
+    name = Column(String(100), nullable=False, unique=True)
     
-    meetings = relationship('Meeting', secondary=meeting_speaker_association, back_populates='speakers')
-    items = relationship('Item', back_populates='speaker')
-
-    def __repr__(self):
-        return f"<Speaker(id={self.id}, name='{self.name}')>"
+    discussion_points = relationship('DiscussionPoint', back_populates='speaker')
 
 class Meeting(Base):
     __tablename__ = 'meetings'
@@ -52,14 +52,10 @@ class Meeting(Base):
     transcript = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
-    speakers = relationship('Speaker', secondary=meeting_speaker_association, back_populates='meetings')
-    items = relationship('Item', back_populates='meeting')
+    discussion_points = relationship('DiscussionPoint', back_populates='meeting')
 
-    def __repr__(self):
-        return f"<Meeting(id={self.id}, meeting_id='{self.meeting_id}')>"
-
-class Item(Base):
-    __tablename__ = 'items'
+class DiscussionPoint(Base):
+    __tablename__ = 'discussion_points'
 
     id = Column(Integer, primary_key=True)
     summary_index = Column(Integer)
@@ -68,25 +64,12 @@ class Item(Base):
     referenced_text = Column(Text)
     meeting_id = Column(PostgresUUID(as_uuid=True), ForeignKey('meetings.meeting_id'))
     speaker_id = Column(Integer, ForeignKey('speakers.id'))
+    topic_name = Column(String(255))
+    topic_type = Column(String(50))
+    model = Column(String(50))
 
-    meeting = relationship('Meeting', back_populates='items')
-    speaker = relationship('Speaker', back_populates='items')
-    objects = relationship('Object', secondary=item_object_association, back_populates='items')
-
-    def __repr__(self):
-        return f"<Item(id={self.id})>"
-
-class Object(Base):
-    __tablename__ = 'objects'
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String(255), unique=True)
-    type = Column(String(50))  # Moved 'type' from Item to Object
-
-    items = relationship('Item', secondary=item_object_association, back_populates='objects')
-
-    def __repr__(self):
-        return f"<Object(id={self.id}, name='{self.name}')>"
+    meeting = relationship('Meeting', back_populates='discussion_points')
+    speaker = relationship('Speaker', back_populates='discussion_points')
 
 class Output(Base):
     __tablename__ = 'outputs'
@@ -107,17 +90,17 @@ class Output(Base):
         key = f"{input_text}_{model}_{temperature}_{max_tokens}"
         return hashlib.md5(key.encode()).hexdigest()
 
-from datetime import timedelta, datetime
-from sqlalchemy import and_, or_
-from uuid import UUID
-
-def fetch_context(session, speaker_names: List[str], reference_date: datetime):
+# Async function to fetch context
+async def fetch_context(session: AsyncSession, speaker_names: List[str], reference_date: datetime):
     print(f"Fetching context for speakers: {speaker_names}, reference_date: {reference_date}")
 
     if reference_date.tzinfo is None:
         reference_date = reference_date.replace(tzinfo=timezone.utc)
 
-    existing_speakers = session.query(Speaker).filter(Speaker.name.in_(speaker_names)).all()
+    # Use execute() for raw SQL queries
+    result = await session.execute(select(Speaker).filter(Speaker.name.in_(speaker_names)))
+    existing_speakers = result.scalars().all()
+
     if not existing_speakers:
         print(f"No speakers found with names: {speaker_names}")
         return []
@@ -125,56 +108,87 @@ def fetch_context(session, speaker_names: List[str], reference_date: datetime):
     existing_speaker_names = [speaker.name for speaker in existing_speakers]
     print(f"Found existing speakers: {existing_speaker_names}")
 
-    # Debug: Check for meetings associated with these speakers
-    meetings_query = session.query(Meeting).join(meeting_speaker_association).join(Speaker).filter(
-        Speaker.name.in_(existing_speaker_names)
-    )
-    meetings = meetings_query.all()
-    print(f"Found {len(meetings)} meetings for these speakers")
-    for meeting in meetings:
-        print(f"Meeting ID: {meeting.id}, Timestamp: {meeting.timestamp}")
-
-    # Debug: Check for items associated with these speakers
-    items_query = session.query(Item).join(Meeting).join(meeting_speaker_association).join(Speaker).filter(
-        Speaker.name.in_(existing_speaker_names)
-    )
-    items = items_query.all()
-    print(f"Found {len(items)} items for these speakers (without date filter)")
-    for item in items:
-        print(f"Item ID: {item.id}, Meeting ID: {item.meeting_id}, Speaker: {item.speaker.name}")
-
     # Main query with date filter
-    items_query = items_query.filter(Meeting.timestamp <= reference_date).order_by(Meeting.timestamp.desc())
-    print(f"Query: {items_query}")
+    items_query = select(DiscussionPoint).join(Meeting).join(Speaker).filter(
+        Speaker.name.in_(existing_speaker_names),
+        Meeting.timestamp <= reference_date
+    ).order_by(Meeting.timestamp.desc())
 
-    items = items_query.all()
-    print(f"Found {len(items)} items after applying date filter")
+    result = await session.execute(items_query)
+    discussion_points = result.scalars().all()
+    print(f"Found {len(discussion_points)} discussion points after applying date filter")
 
     context = []
-    for item in items:
+    for dp in discussion_points:
         context.append({
-            'objects': [{'name': obj.name, 'type': obj.type} for obj in item.objects],
-            'summary': item.summary,
-            'details': item.details,
-            'speaker': item.speaker.name,
-            'timestamp': item.meeting.timestamp,
-            'meeting_id': item.meeting.meeting_id
+            'topic_name': dp.topic_name,
+            'topic_type': dp.topic_type,
+            'summary': dp.summary,
+            'details': dp.details,
+            'speaker': dp.speaker.name,
+            'timestamp': dp.meeting.timestamp,
+            'meeting_id': dp.meeting.meeting_id,
+            'model': dp.model
         })
 
     print(f"Returning context with {len(context)} entries")
 
     # Debug: Check database statistics
-    speakers_count = session.query(func.count(Speaker.id)).scalar()
-    meetings_count = session.query(func.count(Meeting.id)).scalar()
-    items_count = session.query(func.count(Item.id)).scalar()
-    print(f"Database statistics: Speakers: {speakers_count}, Meetings: {meetings_count}, Items: {items_count}")
+    speakers_count = await session.scalar(select(func.count(Speaker.id)))
+    meetings_count = await session.scalar(select(func.count(Meeting.id)))
+    discussion_points_count = await session.scalar(select(func.count(DiscussionPoint.id)))
+    print(f"Database statistics: Speakers: {speakers_count}, Meetings: {meetings_count}, Discussion Points: {discussion_points_count}")
 
     return context
 
-def execute_query(query):
-    with engine.connect() as connection:
-        connection.execute(text(query))
+async def execute_query(query):
+    async with engine.connect() as conn:
+        await conn.execute(text(query))
 
-def init_db():
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
+from sqlalchemy.schema import DropTable
+from sqlalchemy.ext.compiler import compiles
+
+@compiles(DropTable, "postgresql")
+def _compile_drop_table(element, compiler, **kwargs):
+    return compiler.visit_drop_table(element) + " CASCADE"
+
+async def init_db():
+    engine = create_async_engine(DATABASE_URL)
+    
+    async with engine.begin() as conn:
+        # Drop all tables with CASCADE
+        await conn.run_sync(Base.metadata.drop_all)
+        
+        # Create all tables
+        await conn.run_sync(Base.metadata.create_all)
+    
+    print("Database initialized successfully.")
+    
+@asynccontextmanager
+async def get_session():
+    async with async_session() as session:
+        try:
+            yield session
+            await session.commit()
+        except:
+            await session.rollback()
+            raise
+
+
+import pandas as pd
+from sqlalchemy.future import select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
+
+async def read_table_async(table_name):
+    async with AsyncSession(engine) as session:
+        result = await session.execute(select(table_name))
+        rows = result.fetchall()
+        
+        # Extract attributes from the objects
+        data = []
+        for row in rows:
+            obj = row[0]  # Assuming the object is the first (and only) item in each row
+            data.append({column.name: getattr(obj, column.name) for column in table_name.__table__.columns})
+        
+        return pd.DataFrame(data)
