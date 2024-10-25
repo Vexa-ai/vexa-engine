@@ -115,13 +115,14 @@ class MeetingSummary(BaseCall):
             system_msg("""Create a concise, direct summary incorporating all provided items from the data. 
                           Begin immediately with key points and content. Do not use any introductory phrases.
                           Absolutely avoid starting with phrases like "The meeting involved," "During the discussion," or any similar openings.
-                          Reference each item exactly as (reference item here as appropriate to the context)[item index] in the summary. 
+                          Reference each item exactly as (reference item name here as appropriate to the context)[item index] in the summary. 
                           Ensure all items are included and the summary flows naturally while capturing key points.
                           Use the full transcript for additional context if needed.
-                          Avoid any temporal references or statements about the meeting itself."""),
+                          Avoid any temporal references or statements about the meeting itself.
+                          """),
             user_msg(f"""Here are the items and their details:
 
-{final_df.reset_index()[['index','item', 'type', 'summary', 'details']].to_markdown()}
+{final_df.reset_index(drop=True)[['meeting_time','speaker_name','topic_name','summary','details','summary_index']].sort_values('summary_index').to_csv()}
 
 Full transcript:
 
