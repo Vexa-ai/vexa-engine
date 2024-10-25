@@ -55,60 +55,94 @@ class WeightedSampler:
     def __init__(self, 
                  df: pd.DataFrame,
                  text_columns: Optional[List[str]] = None,
-                 date_column: str = 'meeting_time',
+                 date_column: str = 'meeting_timestamp',
                  model_name: str = 'all-MiniLM-L6-v2',
                  decay_factor: float = 0.1):
         """Initialize sampler with DataFrame and parameters"""
-        # Reset index to ensure alignment
         self.df = df.reset_index(drop=True)
-        self.text_columns = text_columns
+        self.text_columns = text_columns or ['summary', 'details']
         self.date_column = date_column
         
         # Initialize components
         self.recency_calc = RecencyCalculator(decay_factor)
+        self.vector_store = VectorStore(model_name)
         
-        # Only initialize vector store if text columns are provided
-        self.vector_store = None
-        if text_columns is not None:
-            self.vector_store = VectorStore(model_name)
-            print("Building vector index...")
-            texts = self.df[text_columns].fillna('').agg(' '.join, axis=1).tolist()
-            self.vector_store.build_index(texts)
-            print("Index built successfully!")
+        print("Building vector index...")
+        texts = self.df[self.text_columns].fillna('').agg(' '.join, axis=1).tolist()
+        self.vector_store.build_index(texts)
+
+    def calculate_weights(self,
+                        exclude_speakers: Optional[List[str]] = None,
+                        include_speakers: Optional[List[str]] = None,
+                        topic_type: Optional[List[str]] = None,
+                        topic_name: Optional[List[str]] = None) -> np.ndarray:
+        """Calculate soft weights based on filtering criteria"""
+        weights = np.ones(len(self.df))
+        
+        if exclude_speakers:
+            speaker_penalty = -2.0
+            for speaker in exclude_speakers:
+                mask = self.df['speaker_name'].str.contains(speaker, case=False, na=False)
+                weights[mask] *= speaker_penalty
+            
+        if include_speakers:
+            speaker_boost = 2.0
+            for speaker in include_speakers:
+                mask = self.df['speaker_name'].str.contains(speaker, case=False, na=False)
+                weights[mask] *= speaker_boost
+            
+        if topic_type:
+            topic_boost = 1.5
+            for topic in topic_type:
+                mask = self.df['topic_type'].str.contains(topic, case=False, na=False)
+                weights[mask] *= topic_boost
+            
+        if topic_name:
+            name_boost = 1.5
+            for name in topic_name:
+                mask = self.df['topic_name'].str.contains(name, case=False, na=False)
+                weights[mask] *= name_boost
+        
+        return weights  # Return weights in all cases
 
     def sample(self,
-              query: str = '',
+              query: Optional[List[str]] = None,
               n_samples: int = 10,
-              mode: str = 'recency',
-              recency_weight: float = 0.5,
-              similarity_weight: float = 0.5) -> pd.DataFrame:
-        """Sample rows using recency, similarity, or combined weights"""
+              exclude_speakers: Optional[List[str]] = None,
+              include_speakers: Optional[List[str]] = None,
+              topic_type: Optional[List[str]] = None,
+              topic_name: Optional[List[str]] = None,
+              mode: str = 'combined',
+              recency_weight: float = 0.3,
+              similarity_weight: float = 0.4,
+              filter_weight: float = 0.3) -> pd.DataFrame:
+        """Sample rows using weighted scoring"""
+        # Calculate filter weights
+        filter_scores = self.calculate_weights(
+            exclude_speakers,
+            include_speakers,
+            topic_type,
+            topic_name
+        )
+        
         # Calculate recency scores
         recency_scores = self.recency_calc.calculate_recency_scores(self.df[self.date_column])
         
-        # Initialize similarity scores
+        # Calculate similarity scores
         similarity_scores = np.zeros(len(self.df))
+        if query:
+            for q in query:
+                similarity_scores += self.vector_store.get_similarities(q)
+            similarity_scores /= len(query)
         
-        # Calculate weights based on mode
-        if mode == 'recency':
-            combined_weights = recency_scores
-        elif mode == 'similarity':
-            if self.vector_store is None:
-                raise ValueError("Text columns required for similarity mode")
-            similarity_scores = self.vector_store.get_similarities(query)
-            combined_weights = similarity_scores
-        elif mode == 'combined':
-            if self.vector_store is None:
-                raise ValueError("Text columns required for combined mode")
-            similarity_scores = self.vector_store.get_similarities(query)
-            combined_weights = (
-                recency_weight * recency_scores +
-                similarity_weight * similarity_scores
-            )
-        else:
-            raise ValueError("Mode must be 'recency', 'similarity', or 'combined'")
-            
-        # Ensure valid weights
+        # Combine scores
+        combined_weights = (
+            recency_weight * recency_scores +
+            similarity_weight * similarity_scores +
+            filter_weight * filter_scores
+        )
+        
+        # Normalize weights
         combined_weights = np.nan_to_num(combined_weights, 0)
         if combined_weights.sum() == 0:
             combined_weights = np.ones(len(combined_weights)) / len(combined_weights)
@@ -118,19 +152,20 @@ class WeightedSampler:
         # Sample using combined weights
         n_samples = min(n_samples, len(self.df))
         sampled_indices = np.random.choice(
-            len(self.df),  # Use length instead of index
+            len(self.df),
             size=n_samples,
             replace=False,
             p=combined_weights
         )
         
         # Get results with scores
-        result_df = self.df.iloc[sampled_indices].copy()  # Use iloc instead of loc
+        result_df = self.df.iloc[sampled_indices].copy()
+        result_df['filter_score'] = filter_scores[sampled_indices]
         result_df['recency_score'] = recency_scores[sampled_indices]
         result_df['similarity_score'] = similarity_scores[sampled_indices]
         result_df['combined_score'] = combined_weights[sampled_indices]
         
-        return result_df.sort_values('combined_score', ascending=False)  # Sort descending
+        return result_df.sort_values('combined_score', ascending=False)
 
 def sample_by_recency_and_similarity(df: pd.DataFrame,
                                    query: str = '',
