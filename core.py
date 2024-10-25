@@ -160,7 +160,8 @@ async def generic_call_stream(messages: List[Msg], model='default', temperature=
 
 class BaseCall(BaseModel):
     @classmethod
-    async def call(cls, messages: List[Msg], model='default', temperature=0., return_raw=True, force=False, use_cache=False, force_store=False) -> Tuple[Any, Any]:
+    async def call(cls, messages: List[Msg], model='default', temperature=0., return_raw=True, force=False, use_cache=False, force_store=False, stream=False) -> AsyncGenerator[Any, None]:
+        """Call the model with streaming support"""
         if model == 'default':
             model = "gpt-4o-mini"
         if model == 'turbo':
@@ -169,30 +170,52 @@ class BaseCall(BaseModel):
         messages_dict = [msg.__dict__ for msg in messages]
         cache_key = generate_cache_key(messages_dict, model, temperature)
 
-        if use_cache:
+        if use_cache and not stream:
             cached_output = get_cached_output(cache_key)
             if cached_output:
-                return cls.parse_raw(cached_output), None
-            
+                yield cls.model_validate_json(cached_output)
+                return
+
         try:
-            completion, raw_response = await client.chat.completions.create_with_completion(
-                temperature=temperature,
+            # Create patched client for streaming support
+            client = instructor.patch(AsyncOpenAI())
+            
+            # Create completion with streaming
+            response = await client.chat.completions.create(
                 model=model,
-                response_model=cls,
-                max_retries=3,
                 messages=messages_dict,
+                temperature=temperature,
+                response_model=instructor.Partial[cls] if stream else cls,
+                stream=stream
             )
-            if use_cache or force_store:
-                store_output_in_cache(messages_dict, completion.json(), model, temperature, 4000, cache_key, force_store)
-            return (completion, raw_response) if return_raw else completion
+
+            if stream:
+                async for partial_response in response:
+                    yield partial_response
+            else:
+                yield response
+                
+                if use_cache or force_store:
+                    store_output_in_cache(
+                        messages_dict, 
+                        response.model_dump_json(), 
+                        model, 
+                        temperature, 
+                        4000, 
+                        cache_key, 
+                        force_store
+                    )
+
         except Exception as e:
-            print('errored')
-            return e.response
+            print(f'Error in BaseCall.call: {str(e)}')
+            yield None
 
     def get(self):
+        """Get model as JSON string"""
         return self.model_dump_json(indent=2)
     
     def print(self):
+        """Print model as formatted JSON"""
         print(self.get())
 
 class MostRelevantToChosen(BaseCall):
