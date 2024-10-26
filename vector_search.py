@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Tuple
 import torch
 from datetime import datetime, timedelta
 from typing import Union, Optional
-from pydantic_models import QueryPlan
+#from pydantic_models import QueryPlan
 
 prompts = Prompts()
 

@@ -149,6 +149,11 @@ async def generic_call_(messages: List[Msg], model='default', temperature=0, max
                 yield chunk.choices[0].delta.content
     else:
         yield results.choices[0].message.content
+        
+async def generic_call(messages: List[Msg], model='default', temperature=0, max_tokens=4000, timeout=60):
+    result = [token async for token in generic_call_(messages, model=model, temperature=temperature, max_tokens=max_tokens, timeout=timeout, streaming=False)]
+    print(''.join(result))
+
 
 async def generic_call_stream(messages: List[Msg], model='default', temperature=0, max_tokens=4000, timeout=60, use_cache=False):
     output = ""
@@ -160,8 +165,8 @@ async def generic_call_stream(messages: List[Msg], model='default', temperature=
 
 class BaseCall(BaseModel):
     @classmethod
-    async def call(cls, messages: List[Msg], model='default', temperature=0., return_raw=True, force=False, use_cache=False, force_store=False, stream=False) -> AsyncGenerator[Any, None]:
-        """Call the model with streaming support"""
+    async def call(cls, messages: List[Msg], model='default', temperature=0., use_cache=False, force_store=False) -> Any:
+        """Call the model without streaming support"""
         if model == 'default':
             model = "gpt-4o-mini"
         if model == 'turbo':
@@ -170,46 +175,40 @@ class BaseCall(BaseModel):
         messages_dict = [msg.__dict__ for msg in messages]
         cache_key = generate_cache_key(messages_dict, model, temperature)
 
-        if use_cache and not stream:
+        if use_cache:
             cached_output = get_cached_output(cache_key)
             if cached_output:
-                yield cls.model_validate_json(cached_output)
-                return
+                return cls.model_validate_json(cached_output)
 
         try:
-            # Create patched client for streaming support
             client = instructor.patch(AsyncOpenAI())
             
-            # Create completion with streaming
+            # Regular non-streaming response
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages_dict,
                 temperature=temperature,
-                response_model=instructor.Partial[cls] if stream else cls,
-                stream=stream
+                response_model=cls,
+                stream=False
             )
+            
+            if use_cache or force_store:
+                store_output_in_cache(
+                    messages_dict, 
+                    response.model_dump_json(), 
+                    model, 
+                    temperature, 
+                    4000, 
+                    cache_key, 
+                    force_store
+                )
 
-            if stream:
-                async for partial_response in response:
-                    yield partial_response
-            else:
-                yield response
-                
-                if use_cache or force_store:
-                    store_output_in_cache(
-                        messages_dict, 
-                        response.model_dump_json(), 
-                        model, 
-                        temperature, 
-                        4000, 
-                        cache_key, 
-                        force_store
-                    )
+            return response
 
         except Exception as e:
-            print(f'Error in BaseCall.call: {str(e)}')
-            yield None
-
+            print(f'Error in BaseCall.call_sync: {str(e)}')
+            return None
+    
     def get(self):
         """Get model as JSON string"""
         return self.model_dump_json(indent=2)
@@ -217,6 +216,32 @@ class BaseCall(BaseModel):
     def print(self):
         """Print model as formatted JSON"""
         print(self.get())
+
+    @classmethod
+    async def call_stream(cls, messages: List[Msg], model='default', temperature=0.) -> AsyncGenerator[Any, None]:
+        """Stream the model response with partial results"""
+        if model == 'default':
+            model = "gpt-4o-mini"
+        if model == 'turbo':
+            model = "gpt-4o"
+
+        messages_dict = [msg.__dict__ for msg in messages]
+        
+
+        client = instructor.patch(AsyncOpenAI())
+        
+        # Create streaming response using Partial type
+        stream = await client.chat.completions.create(
+            model=model,
+            messages=messages_dict,
+            temperature=temperature,
+            response_model=instructor.Partial[cls],
+            stream=True
+        )
+        
+        async for partial_response in stream:
+            yield partial_response
+
 
 class MostRelevantToChosen(BaseCall):
     title: Optional[str] = None

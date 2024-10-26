@@ -80,10 +80,11 @@ class WeightedSampler:
         weights = np.ones(len(self.df))
         
         if exclude_speakers:
-            speaker_penalty = -2.0
+            # Change from penalty multiplier to small positive weight
+            exclude_weight = 0.1  # Small positive weight instead of negative
             for speaker in exclude_speakers:
                 mask = self.df['speaker_name'].str.contains(speaker, case=False, na=False)
-                weights[mask] *= speaker_penalty
+                weights[mask] *= exclude_weight
             
         if include_speakers:
             speaker_boost = 2.0
@@ -92,19 +93,22 @@ class WeightedSampler:
                 weights[mask] *= speaker_boost
             
         if topic_type:
-            topic_boost = 1.5
+            topic_boost = 1.
             for topic in topic_type:
                 mask = self.df['topic_type'].str.contains(topic, case=False, na=False)
                 weights[mask] *= topic_boost
             
         if topic_name:
-            name_boost = 1.5
+            name_boost = 1.
             for name in topic_name:
                 mask = self.df['topic_name'].str.contains(name, case=False, na=False)
                 weights[mask] *= name_boost
         
-        return weights  # Return weights in all cases
-
+        # Ensure all weights are positive
+        weights = np.maximum(weights, 1e-10)
+        
+        return weights
+    
     def sample(self,
               query: Optional[List[str]] = None,
               n_samples: int = 10,

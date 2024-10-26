@@ -1,8 +1,8 @@
 import asyncio
 import pandas as pd
-from vector_search import VectorSearch, build_context_string
+from vector_search import VectorSearch
 from vexa import VexaAPI
-from core import generic_call, system_msg, user_msg
+from core import  system_msg, user_msg
 from pydantic_models import Summary
 from prompts import Prompts
 
@@ -31,17 +31,19 @@ class Indexing:
         combined = group['speaker'].fillna('').astype(str) + ': ' + group['content'].fillna('')
         return ' '.join(combined)
 
-    async def index_meetings(self, num_meetings=10):
+    async def index_meetings(self, num_meetings=400):
         await self.vexa.get_user_info()
         meetings = await self.vexa.get_meetings()
         meetings = meetings[-num_meetings:]
+        print(f"Indexing {len(meetings)} meetings")
 
         for meeting in reversed(meetings):
             meeting_id = meeting['id']
+            print(f"Indexing meeting {meeting_id}")
             if not await self.analyzer.check_meeting_session_id_exists(meeting_id):
                 result = await self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
                 if result:
-                    df, formatted_input, start_datetime, speakers = result
+                    df, formatted_output, start_datetime, speakers,transcript = result
                     output = await Summary.call([
                         system_msg(self.prompts.think + self.prompts.summarize_meeting + f'.The User: {self.vexa.user_name}'),
                         user_msg(formatted_input)
@@ -62,3 +64,10 @@ class Indexing:
                         qoutes = [p['qoutes'] for p in points_with_qoutes]
                         await self.analyzer.add_summary(meeting_name, summary, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
                         await self.analyzer.update_vectorstore_with_qoutes(chunks, points, qoutes, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
+                        
+                        
+if __name__ == "__main__":
+    import os
+    token = os.getenv('VEXA_TOKEN')
+    indexing = Indexing(token=token)
+    asyncio.run(indexing.index_meetings())
