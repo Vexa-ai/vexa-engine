@@ -51,8 +51,11 @@ class Meeting(Base):
     meeting_id = Column(PostgresUUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
     transcript = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    owner_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)  # Changed to nullable=False
 
     discussion_points = relationship('DiscussionPoint', back_populates='meeting')
+    shares = relationship('MeetingShare', back_populates='meeting')
+    owner = relationship('User')
 
 class DiscussionPoint(Base):
     __tablename__ = 'discussion_points'
@@ -91,7 +94,7 @@ class Output(Base):
         return hashlib.md5(key.encode()).hexdigest()
 
 # Async function to fetch context
-async def fetch_context(session: AsyncSession, speaker_names: List[str], reference_date: datetime):
+async def fetch_context(session: AsyncSession, speaker_names: List[str], reference_date: datetime, user_id: UUID):
     print(f"Fetching context for speakers: {speaker_names}, reference_date: {reference_date}")
 
     if reference_date.tzinfo is None:
@@ -111,7 +114,12 @@ async def fetch_context(session: AsyncSession, speaker_names: List[str], referen
     # Main query with date filter
     items_query = select(DiscussionPoint).join(Meeting).join(Speaker).filter(
         Speaker.name.in_(existing_speaker_names),
-        Meeting.timestamp <= reference_date
+        Meeting.timestamp <= reference_date,
+        or_(
+            Meeting.owner_id == user_id,
+            MeetingShare.user_id == user_id,
+            MeetingShare.access_level.in_([AccessLevel.SEARCH.value, AccessLevel.TRANSCRIPT.value])
+        )
     ).order_by(Meeting.timestamp.desc())
 
     result = await session.execute(items_query)
@@ -176,7 +184,7 @@ async def get_session():
 
 
 import pandas as pd
-from sqlalchemy.future import select
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -236,3 +244,101 @@ async def fetch_joined_data():
 
         df = pd.DataFrame(data)
         return df
+
+# Add these new imports
+from enum import Enum
+from sqlalchemy import Index, UniqueConstraint, CheckConstraint
+
+class AccessLevel(str, Enum):
+    REMOVED = 'removed'
+    SEARCH = 'search'
+    TRANSCRIPT = 'transcript'
+
+class User(Base):
+    __tablename__ = 'users'
+
+    id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), nullable=False)
+    email = Column(String(255), unique=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+class UserToken(Base):
+    __tablename__ = 'user_tokens'
+
+    token = Column(String, primary_key=True)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    user_name = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    last_used_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    user = relationship('User', backref='tokens')
+    
+    __table_args__ = (
+        Index('idx_user_tokens_user_id', 'user_id'),
+    )
+
+class MeetingShare(Base):
+    __tablename__ = 'meeting_shares'
+
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(PostgresUUID(as_uuid=True), ForeignKey('meetings.meeting_id'))
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'))
+    access_level = Column(
+        String(20),
+        nullable=False,
+        default=AccessLevel.SEARCH.value,
+        server_default=AccessLevel.SEARCH.value
+    )
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'))
+
+    meeting = relationship('Meeting', back_populates='shares')
+    user = relationship('User', foreign_keys=[user_id])
+    creator = relationship('User', foreign_keys=[created_by])
+
+    __table_args__ = (
+        UniqueConstraint('meeting_id', 'user_id', name='uq_meeting_user_share'),
+        CheckConstraint(
+            access_level.in_([e.value for e in AccessLevel]),
+            name='valid_access_level'
+        )
+    )
+
+# Helper functions for access control
+async def get_user_meeting_access(session: AsyncSession, user_id: UUID, meeting_id: UUID) -> AccessLevel:
+    """Get user's access level for a meeting"""
+    # First check if user is the owner
+    meeting = await session.execute(
+        select(Meeting).filter_by(meeting_id=meeting_id, owner_id=user_id)
+    )
+    if meeting.scalar_one_or_none():
+        return AccessLevel.TRANSCRIPT
+
+    # Then check shared access
+    result = await session.execute(
+        select(MeetingShare.access_level)
+        .filter_by(meeting_id=meeting_id, user_id=user_id)
+    )
+    access = result.scalar_one_or_none()
+    return AccessLevel(access) if access else AccessLevel.REMOVED
+
+async def can_access_transcript(session: AsyncSession, user_id: UUID, meeting_id: UUID) -> bool:
+    """Check if user has transcript-level access"""
+    access = await get_user_meeting_access(session, user_id, meeting_id)
+    return access == AccessLevel.TRANSCRIPT
+
+async def can_access_search(session: AsyncSession, user_id: UUID, meeting_id: UUID) -> bool:
+    """Check if user has search-level access"""
+    access = await get_user_meeting_access(session, user_id, meeting_id)
+    return access in [AccessLevel.SEARCH, AccessLevel.TRANSCRIPT]
+
+class Thread(Base):
+    __tablename__ = 'threads'
+
+    thread_id = Column(String, primary_key=True)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    thread_name = Column(String(255))
+    messages = Column(Text)  # We'll store JSON serialized messages
+    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    user = relationship('User')

@@ -132,3 +132,7 @@ Create a direct, to-the-point summary incorporating all these items. Start immed
         ], model=model, use_cache=use_cache, force_store=force_store)
 
         return output.output
+
+
+class ThreadName(BaseCall):
+    thread_name: str = Field(..., max_length=50, description="Condence into explanatory concise dense name of the meeting, 50 char max reusing same wording")
