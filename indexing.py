@@ -1,73 +1,172 @@
-import asyncio
 import pandas as pd
-from vector_search import VectorSearch
+import datetime
+import nest_asyncio
+import asyncio
+from sqlalchemy import func, exists, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+
 from vexa import VexaAPI
-from core import  system_msg, user_msg
-from pydantic_models import Summary
+from core import system_msg, user_msg
 from prompts import Prompts
+from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
+from psql_models import Speaker, Meeting, DiscussionPoint, get_session, engine, read_table_async
 
-class Indexing:
-    def __init__(self, token: str, gpu_device=3, model="gpt-4o-mini"):
-        self.analyzer = VectorSearch(gpu_device=gpu_device)
-        self.vexa = VexaAPI(token=token)
-        self.prompts = Prompts()
-        self.model = model
+# Configure pandas display options
+pd.options.display.max_colwidth = 100
 
-    async def create_exploded_points_df(self, output):
-        points_data = output[0].model_dump()['points']
-        df_points = pd.DataFrame(points_data)
-        df_points = df_points.rename(columns={'c': 'point'})
-        
-        def create_range(start, end):
-            return list(range(int(start), int(end) + 1))
-        
-        df_points['range'] = df_points.apply(lambda row: create_range(row['s'], row['e']), axis=1)
-        df_exploded = df_points.explode('range')
-        df_exploded = df_exploded.drop(columns=['s', 'e'])
-        df_exploded = df_exploded.reset_index(drop=True)
-        return df_exploded
+# Apply nest_asyncio for async operations in Jupyter-like environments
+nest_asyncio.apply()
 
-    def combine_initials_and_content(self, group):
-        combined = group['speaker'].fillna('').astype(str) + ': ' + group['content'].fillna('')
-        return ' '.join(combined)
+async def check_item_exists(meeting_id):
+    async with get_session() as session:
+        meeting_id_str = str(meeting_id)
+        query = select(exists().where(DiscussionPoint.meeting_id == meeting_id_str))
+        result = await session.execute(query)
+        return result.scalar()
 
-    async def index_meetings(self, num_meetings=400):
-        await self.vexa.get_user_info()
-        meetings = await self.vexa.get_meetings()
-        meetings = meetings[-num_meetings:]
-        print(f"Indexing {len(meetings)} meetings")
+def flatten_context(context):
+    flattened = []
+    for item in context:
+        base = {k: v for k, v in item.items() if k != 'objects'}
+        if 'objects' in item:
+            for obj in item['objects']:
+                flattened.append({**base, **obj})
+        else:
+            flattened.append(base)
+    return flattened
 
-        for meeting in reversed(meetings):
-            meeting_id = meeting['id']
-            print(f"Indexing meeting {meeting_id}")
-            if not await self.analyzer.check_meeting_session_id_exists(meeting_id):
-                result = await self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
-                if result:
-                    df, formatted_output, start_datetime, speakers,transcript = result
-                    output = await Summary.call([
-                        system_msg(self.prompts.think + self.prompts.summarize_meeting + f'.The User: {self.vexa.user_name}'),
-                        user_msg(formatted_input)
-                    ], model=self.model)
-                    
-                    df_exploded = await self.create_exploded_points_df(output)
-                    joined_df = df_exploded.join(df, on='range', rsuffix='_transcript')
+async def process_meeting_data(formatted_input, df):
+    extraction_tasks = [
+        MeetingExtraction.extract(formatted_input),
+        EntityExtraction.extract(formatted_input)
+    ]
+    discussion_points_df, topics_df = await asyncio.gather(*extraction_tasks)
+    
+    discussion_points_df['model'] = 'MeetingExtraction'
+    topics_df['model'] = 'EntityExtraction'
+    
+    # Rename columns to match the new schema
+    discussion_points_df = discussion_points_df.rename(columns={'item': 'topic_name', 'type': 'topic_type'})
+    topics_df = topics_df.rename(columns={'entity': 'topic_name', 'type': 'topic_type'})
+    
+    # Combine the dataframes
+    summary_df = pd.concat([discussion_points_df, topics_df]).reset_index(drop=True)
+    
+    summary_refs = await SummaryIndexesRefs.extract(summary_df, formatted_input)
 
-                    points_with_qoutes = joined_df.groupby('point').apply(self.combine_initials_and_content)
-                    points_with_qoutes.name = 'qoutes'
-                    points_with_qoutes = points_with_qoutes.reset_index().to_dict(orient='records')
-                    summary = output[0].summary
-                    meeting_name = output[0].meeting_name
+    # Create a new dataframe for the references
+    ref_df = pd.DataFrame([(ref['summary_index'], r['s'], r['e']) 
+                           for ref in summary_refs 
+                           for r in ref['references']],
+                          columns=['summary_index', 'start', 'end'])
 
-                    if points_with_qoutes:
-                        chunks = [f"{summary}\n\n{p['point']}\n\n{p['qoutes']}" for p in points_with_qoutes]
-                        points = [p['point'] for p in points_with_qoutes]
-                        qoutes = [p['qoutes'] for p in points_with_qoutes]
-                        await self.analyzer.add_summary(meeting_name, summary, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
-                        await self.analyzer.update_vectorstore_with_qoutes(chunks, points, qoutes, start_datetime, speakers, meeting_id, self.vexa.user_id, self.vexa.user_name)
-                        
-                        
+    # Merge the ref_df with summary_df
+    entities_with_refs = summary_df.reset_index().rename(columns={'index': 'summary_index'})
+    entities_with_refs = entities_with_refs.merge(ref_df, on='summary_index', how='left')
+
+    # Function to extract text from df based on start and end indices, including speaker
+    def get_text_range_with_speaker(row):
+        text_range = df.loc[row['start']:row['end']]
+        return ' | '.join(f"{speaker}: {content}" for speaker, content in zip(text_range['speaker'], text_range['content']))
+
+    # Apply the function to get the referenced text with speakers
+    entities_with_refs['referenced_text'] = entities_with_refs.apply(get_text_range_with_speaker, axis=1)
+
+    # Group by summary_index to combine multiple references
+    try:
+        final_df = entities_with_refs.groupby('summary_index').agg({
+            'topic_name': 'first',
+            'topic_type': 'first',
+            'summary': 'first',
+            'details': 'first',
+            'speaker': 'first',
+            'referenced_text': ' | '.join,
+            'model': 'first'
+        }).reset_index()
+
+        return final_df
+    except Exception as e:
+        print(f"Error processing meeting data: {e}")
+        return pd.DataFrame()
+
+async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime):
+    async with AsyncSession(engine) as session:
+        try:
+            existing_meeting = await session.execute(
+                select(Meeting).where(Meeting.meeting_id == meeting_id)
+            )
+            existing_meeting = existing_meeting.scalar_one_or_none()
+
+            if not existing_meeting:
+                naive_datetime = meeting_datetime.replace(tzinfo=None) - meeting_datetime.utcoffset()
+                new_meeting = Meeting(
+                    meeting_id=meeting_id, 
+                    transcript=str(transcript),
+                    timestamp=naive_datetime
+                )
+                session.add(new_meeting)
+                await session.flush()
+            else:
+                new_meeting = existing_meeting
+
+            for _, row in final_df.iterrows():
+                speaker_query = await session.execute(
+                    select(Speaker).where(Speaker.name == row['speaker'])
+                )
+                speaker = speaker_query.scalar_one_or_none()
+                
+                if not speaker:
+                    speaker = Speaker(name=row['speaker'])
+                    session.add(speaker)
+                    await session.flush()
+
+                new_discussion_point = DiscussionPoint(
+                    summary_index=row['summary_index'],
+                    summary=row['summary'],
+                    details=row['details'],
+                    referenced_text=row['referenced_text'],
+                    meeting_id=new_meeting.meeting_id,
+                    speaker_id=speaker.id,
+                    topic_name=row['topic_name'],
+                    topic_type=row['topic_type'],
+                    model=row['model']
+                )
+                session.add(new_discussion_point)
+                await session.flush()
+
+            await session.commit()
+            print("Meeting data and discussion points saved successfully to the database.")
+        except Exception as e:
+            await session.rollback()
+            print(f"Error saving to database: {e}")
+            raise
+
+async def main():
+    vexa = VexaAPI()
+    await vexa.get_user_info()
+    meetings = await vexa.get_meetings()
+    meetings = meetings[-250:]  # Process last 250 meetings
+
+    for meeting in meetings:
+        meeting_id = meeting['id']
+        try:
+            if not await check_item_exists(meeting_id):
+                transcription = await vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
+                if transcription:   
+                    df, formatted_input, start_datetime, speakers, transcript = transcription
+                    final_df = await asyncio.wait_for(
+                        process_meeting_data(formatted_input, df),
+                        timeout=60
+                    )
+                    await save_meeting_data_to_db(final_df, meeting_id, transcript, start_datetime)
+        except asyncio.TimeoutError:
+            print(f"Timeout occurred while processing meeting {meeting_id}")
+            continue
+        except Exception as e:
+            print(f"Error processing meeting {meeting_id}: {e}")
+            continue
+
 if __name__ == "__main__":
-    import os
-    token = os.getenv('VEXA_TOKEN')
-    indexing = Indexing(token=token)
-    asyncio.run(indexing.index_meetings())
+    asyncio.run(main())

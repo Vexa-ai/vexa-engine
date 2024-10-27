@@ -211,45 +211,4 @@ def sample_by_recency_and_similarity(df: pd.DataFrame,
 from sqlalchemy import select
 from psql_models import async_session, DiscussionPoint, Meeting, Speaker
 
-async def fetch_joined_data():
-    async with async_session() as session:
-        # Original query remains the same
-        query = select(DiscussionPoint, Meeting, Speaker).join(
-            Meeting, DiscussionPoint.meeting_id == Meeting.meeting_id
-        ).join(
-            Speaker, DiscussionPoint.speaker_id == Speaker.id
-        )
-        
-        result = await session.execute(query)
-        rows = result.fetchall()
-        
-        # Create a dictionary to store all speakers per meeting
-        meeting_speakers = {}
-        for dp, meeting, speaker in rows:
-            if meeting.meeting_id not in meeting_speakers:
-                meeting_speakers[meeting.meeting_id] = set()
-            meeting_speakers[meeting.meeting_id].add(speaker.name)
-        
-        # Convert the result to a list of dictionaries with other speakers
-        data = []
-        for dp, meeting, speaker in rows:
-            # Get all speakers except the current one
-            other_speakers = list(meeting_speakers[meeting.meeting_id] - {speaker.name})
-            
-            data.append({
-                # Original fields remain the same
-                'summary_index': dp.summary_index,
-                'summary': dp.summary,
-                'details': dp.details,
-                'referenced_text': dp.referenced_text,
-                'topic_name': dp.topic_name,
-                'topic_type': dp.topic_type,
-                'meeting_id': meeting.meeting_id,
-                'meeting_timestamp': meeting.timestamp,
-                'speaker_name': speaker.name,
-                # Add new field
-                'other_speakers': other_speakers
-            })
 
-        df = pd.DataFrame(data)
-        return df
