@@ -27,7 +27,7 @@ class EntityExtraction(BaseCall):
         ], model=model, use_cache=use_cache, force_store=force_store)
 
         # Process the output and create a DataFrame
-        items_df = pd.DataFrame(output[0].model_dump()['entities'])
+        items_df = pd.DataFrame(output.model_dump()['entities'])
         return items_df
 
 class MeetingItem(BaseModel):
@@ -49,7 +49,7 @@ class MeetingExtraction(BaseCall):
         ], model=model, use_cache=use_cache, force_store=force_store)
 
         # Process the output and create a DataFrame
-        items_df = pd.DataFrame(output[0].model_dump()['items'])
+        items_df = pd.DataFrame(output.model_dump()['items'])
         return items_df
 
 from pydantic import BaseModel, Field
@@ -97,7 +97,7 @@ class SummaryIndexesRefs(BaseCall):
         ], model=model, use_cache=use_cache, force_store=force_store)
 
         # Extract the summary_indexes_refs from the output
-        summary_refs = output[0].model_dump()['summary_indexes_refs']
+        summary_refs = output.model_dump()['summary_indexes_refs']
 
         return summary_refs
     
@@ -131,4 +131,4 @@ Full transcript:
 Create a direct, to-the-point summary incorporating all these items. Start immediately with the content, referencing items exactly as (reference item here as appropriate to the context)[item index]. Do not use any introductory phrases or mention that this is a summary of a meeting.""")
         ], model=model, use_cache=use_cache, force_store=force_store)
 
-        return output[0].output
+        return output.output
