@@ -12,10 +12,12 @@ class VectorSearchEngine:
              device: Optional[int] = None):
         """Initialize the search engine with a sentence transformer model"""
         self.model = SentenceTransformer(model_name)
-        # Default to CPU if device is None
-        self.device = f'cuda:{device}' if device is not None else 'cpu'
+        if device is None or not torch.cuda.is_available():
+            self.device = 'cpu'
+        else:
+            self.device = f'cuda:{device}'
         print(f"Using device: {self.device}")
-        self.model.to(self.device)
+        self.model = self.model.to(self.device)  # Store the moved model
         self.df: Optional[pd.DataFrame] = None
         self.field_indices: Dict[str, faiss.IndexFlatL2] = {}  # Store separate indices for each field
         self.field_weights = {
@@ -186,19 +188,17 @@ class VectorSearchEngine:
         for i in tqdm(range(0, len(texts), batch_size)):
             batch = texts[i:i + batch_size]
             
-            # Move model to specified device
-            self.model.to(self.device)
             with torch.no_grad():
                 embeddings = self.model.encode(
                     batch,
                     show_progress_bar=False,
                     convert_to_numpy=True,
-                    device=self.device  # Explicitly specify device for encoding
+                    device=self.device
                 )
             
             all_embeddings.append(embeddings)
-            if 'cuda' in self.device:
-                torch.cuda.empty_cache()  # Clear GPU memory after each batch
+            if self.device.startswith('cuda'):
+                torch.cuda.empty_cache()
                     
         return np.vstack(all_embeddings)
     
@@ -385,5 +385,6 @@ class VectorSearchEngine:
             return results[['speaker_name', 'topic_name', 'summary', 'details', 
                            'meeting_timestamp']]
     
+
 
 
