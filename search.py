@@ -66,6 +66,7 @@ class SearchAssistant:
             limit=200,
             min_score=0.4,
         )
+        
 
         speaker_results = await self.search_engine.search_by_speaker(
             speaker_query=query,
@@ -76,6 +77,7 @@ class SearchAssistant:
         # Process results into DataFrames
         main_df = pd.DataFrame(main_results) if main_results else pd.DataFrame()
         speaker_df = pd.DataFrame(speaker_results) if speaker_results else pd.DataFrame()
+    
 
         # Select relevant columns and combine results
         columns = ['topic_name', 'speaker_name', 'summary', 'details', 'meeting_id', 'timestamp']
@@ -107,11 +109,11 @@ class SearchAssistant:
 
         meetinds_df = search_results[['meeting_id']].drop_duplicates().reset_index(drop=True)
         meetinds_df['meeting_index'] = meetinds_df.index + 1
-        prepared_df = search_results.drop(columns=['timestamp', 'vector_scores', 'exact_matches', 'source', 'score']).merge(meetinds_df, on='meeting_id').drop(columns=['meeting_id'])
+        prepared_df = search_results.merge(meetinds_df, on='meeting_id')
         
         meetings = meetinds_df.to_dict(orient='records')
         
-        return prepared_df.to_markdown(index=False) if not prepared_df.empty else "No relevant context found.", {meeting['meeting_index']: meeting['meeting_id'] for meeting in meetings}
+        return prepared_df,{meeting['meeting_index']: meeting['meeting_id'] for meeting in meetings}
 
     async def embed_links(self, text: str, url_dict: dict) -> str:
         # First, add a space between consecutive reference numbers
@@ -134,11 +136,28 @@ class SearchAssistant:
             messages = []
             thread_name = None
 
-        # Get search results
+        # Get search results and yield them immediately
         search_results = await self.search(query)
         
         # Prepare context
-        context, indexed_meetings = self.prep_context(search_results)
+        
+        prepared_df, indexed_meetings = self.prep_context(search_results)
+        
+        meeting_groups = search_results.sort_values('relevance_score', ascending=False).groupby('meeting_id').agg({
+         'relevance_score': 'sum',
+            'topic_name': 'first',
+            'speaker_name': set,
+            'timestamp': 'first'  # Assuming you want the first datetime for each meeting
+        }).sort_values('relevance_score', ascending=False).drop(columns=['relevance_score']).reset_index().head(20)
+        meeting_groups['url'] = meeting_groups['meeting_id'].apply(lambda meeting_id: f'https://dashboard.vexa.ai/#{meeting_id}')
+        meeting_groups = meeting_groups.drop(columns=['meeting_id'])
+        meeting_groups['speaker_name'] = meeting_groups['speaker_name'].apply(list)
+        meeting_groups = meeting_groups.to_dict(orient='records')
+        
+        yield {"search_results": meeting_groups}
+        
+        context_prepared = prepared_df.drop(columns=['timestamp', 'vector_scores', 'exact_matches', 'source', 'score','meeting_id'])
+        context = context_prepared.to_markdown(index=False) if not prepared_df.empty else "No relevant context found."
         url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
 
         # Build messages
