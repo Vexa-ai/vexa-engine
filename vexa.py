@@ -16,7 +16,7 @@ class VexaAPI:
         self.user_name = None
 
 
-    async def get_meetings(self, offset=None, limit=None):
+    async def get_meetings(self, offset=None, limit=None, include_total=False):
         url = f"{self.base_url}/calls/all"
         params = {
             "token": self.token
@@ -35,7 +35,8 @@ class VexaAPI:
             response = await client.get(url, params=params)
         
         if response.status_code == 200:
-            return response.json()['calls']
+            data = response.json()
+            return (data['calls'], data.get('total')) if include_total else data['calls']
         else:
             error_message = f"Failed to retrieve data. Status code: {response.status_code}"
             if response.content:

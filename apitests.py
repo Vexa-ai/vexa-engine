@@ -5,7 +5,7 @@ import json
 BASE_URL = "http://127.0.0.1:8765"
 
 # Store the token after authentication
-TOKEN = "3ae04e20124d40babc5107e658c666b6"
+TOKEN = "5faa86ba0dc74b14a78c60c8aa20a014"
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
     "Content-Type": "application/json"

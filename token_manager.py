@@ -7,6 +7,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from datetime import datetime
+from sqlalchemy.exc import SQLAlchemyError
 
 class TokenData(BaseModel):
     token: str = Field(default_factory=lambda: str(uuid.uuid4()))

@@ -1,17 +1,19 @@
 import pandas as pd
 import datetime
-
+import os
 import asyncio
 from sqlalchemy import func, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from redis import Redis
 
 from vexa import VexaAPI
 from core import system_msg, user_msg
 from prompts import Prompts
 from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
 from psql_models import Speaker, Meeting, DiscussionPoint, get_session, engine, read_table_async
+
 
 async def check_item_exists(meeting_id):
     async with get_session() as session:
@@ -85,7 +87,7 @@ async def process_meeting_data(formatted_input, df):
         print(f"Error processing meeting data: {e}")
         return pd.DataFrame()
 
-async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime):
+async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime, user_id):  # Added user_id parameter
     async with AsyncSession(engine) as session:
         try:
             existing_meeting = await session.execute(
@@ -98,7 +100,8 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                 new_meeting = Meeting(
                     meeting_id=meeting_id, 
                     transcript=str(transcript),
-                    timestamp=naive_datetime
+                    timestamp=naive_datetime,
+                    owner_id=user_id  # Added owner_id
                 )
                 session.add(new_meeting)
                 await session.flush()
@@ -140,27 +143,91 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
 class Indexing:
     def __init__(self, token: str):
         self.vexa = VexaAPI(token=token)
+        
+        # Use connection pooling for Redis
+        self.redis = Redis(
+            host=os.getenv('REDIS_HOST', '127.0.0.1'),
+            port=int(os.getenv('REDIS_PORT', 6379)),
+            db=0,
+            decode_responses=True,
+            max_connections=10,  # Add connection pooling
+            socket_timeout=5
+        )
+        
+        # Add semaphore for concurrent processing
+        self._semaphore = asyncio.Semaphore(3)  # Limit concurrent processing
+        
+        # Redis keys
+        self.processing_key = 'meetings:processing'
+        self.indexing_key = 'indexing:status'
+        self.current_meeting_key = 'indexing:current_meeting'
 
-    async def index_meetings(self, user_id: str, num_meetings: int = 300):
-        await self.vexa.get_user_info()
-        meetings = await self.vexa.get_meetings()
-        meetings = meetings[-num_meetings:]  # Process last N meetings
+    @property
+    def status(self):
+        return {
+            "is_indexing": bool(self.redis.get(self.indexing_key)),
+            "current_meeting": self.redis.get(self.current_meeting_key),
+            "processing_meetings": list(self.redis.smembers(self.processing_key))
+        }
 
-        for meeting in meetings:
-            meeting_id = meeting['id']
+    async def index_meetings(self, user_id: str, num_meetings: int = 400):
+        async with self._semaphore:  # Limit concurrent indexing jobs
+            if not self.redis.set(self.indexing_key, 'true', nx=True):
+                print("Indexing already in progress, skipping...")
+                return
+
             try:
-                if not await check_item_exists(meeting_id):
-                    transcription = await self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
-                    if transcription:   
-                        df, formatted_input, start_datetime, speakers, transcript = transcription
-                        final_df = await asyncio.wait_for(
-                            process_meeting_data(formatted_input, df),
-                            timeout=60
-                        )
-                        await save_meeting_data_to_db(final_df, meeting_id, transcript, start_datetime)
-            except asyncio.TimeoutError:
-                print(f"Timeout occurred while processing meeting {meeting_id}")
-                continue
+                await self.vexa.get_user_info()
+                meetings = await self.vexa.get_meetings()
+                meetings = meetings[-num_meetings:]
+
+                for meeting in reversed(meetings):
+                    # Add delay between processing meetings
+                    await asyncio.sleep(0.1)  
+                    
+                    meeting_id = meeting['id']
+                    
+                    # Skip if already being processed
+                    if self.redis.sismember(self.processing_key, meeting_id):
+                        print(f"Meeting {meeting_id} already being processed, skipping...")
+                        continue
+                    
+                    try:
+                        if not await check_item_exists(meeting_id):
+                            # Add to processing set and set current meeting
+                            self.redis.sadd(self.processing_key, meeting_id)
+                            self.redis.set(self.current_meeting_key, meeting_id)
+                            print(f"Processing meeting {meeting_id}")
+                            
+                            transcription = await self.vexa.get_transcription(
+                                meeting_session_id=meeting_id, 
+                                use_index=True
+                            )
+                            
+                            if transcription:   
+                                df, formatted_input, start_datetime, speakers, transcript = transcription
+                                final_df = await asyncio.wait_for(
+                                    process_meeting_data(formatted_input, df),
+                                    timeout=60
+                                )
+                                await save_meeting_data_to_db(
+                                    final_df, 
+                                    meeting_id, 
+                                    transcript, 
+                                    start_datetime, 
+                                    user_id
+                                )
+                                print(f"Successfully processed meeting {meeting_id}")
+                    except Exception as e:
+                        print(f"Error processing meeting {meeting_id}: {e}")
+                    finally:
+                        # Clean up meeting state
+                        self.redis.srem(self.processing_key, meeting_id)
+                        self.redis.delete(self.current_meeting_key)
             except Exception as e:
-                print(f"Error processing meeting {meeting_id}: {e}")
-                continue
+                print(f"Error in index_meetings: {e}")
+                raise
+            finally:
+                # Clean up indexing state
+                self.redis.delete(self.indexing_key)
+                self.redis.delete(self.current_meeting_key)

@@ -17,6 +17,7 @@ from psql_models import (
     Meeting
 )
 from sqlalchemy import func, select
+from vexa import VexaAPI
 
 app = FastAPI()
 
@@ -57,6 +58,7 @@ class IndexingRequest(BaseModel):
 
 class MeetingsProcessedResponse(BaseModel):
     meetings_processed: int
+    total_meetings: int
 
 @app.on_event("startup")
 async def startup_event():
@@ -171,15 +173,25 @@ async def start_indexing(
     return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
 
 @app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
-async def get_meetings_processed(current_user: tuple = Depends(get_current_user)):
+async def get_meetings_processed(current_user: tuple = Depends(get_current_user), authorization: str = Header(...)):
     user_id, _ = current_user
+    token = authorization.split("Bearer ")[-1]
+    
+    # Get total meetings from Vexa
+    vexa_api = VexaAPI(token=token)
+    total_meetings = await vexa_api.get_meetings(include_total=True,limit=1)
+    total_meetings_count = total_meetings[1] if isinstance(total_meetings, tuple) else 0
+    
+    # Get processed meetings count from database
     async with async_session() as session:
-        # Count meetings for this user
-        query = select(func.count()).select_from(Meeting)
+        query = select(func.count()).select_from(Meeting).where(Meeting.owner_id == user_id)
         result = await session.execute(query)
         meetings_processed = result.scalar() or 0
         
-    return MeetingsProcessedResponse(meetings_processed=meetings_processed)
+    return MeetingsProcessedResponse(
+        meetings_processed=meetings_processed,
+        total_meetings=total_meetings_count
+    )
 
 @app.get("/indexing_status")
 async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
