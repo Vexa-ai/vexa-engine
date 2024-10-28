@@ -347,20 +347,28 @@ class Thread(Base):
 
 async def get_first_meeting_timestamp(session: AsyncSession, user_id: UUID) -> Optional[str]:
     """Get the timestamp of the user's earliest meeting"""
-    query = select(Meeting.timestamp).where(
-        or_(
-            Meeting.owner_id == user_id,
-            Meeting.id.in_(
-                select(MeetingShare.meeting_id)
-                .where(
-                    and_(
-                        MeetingShare.user_id == user_id,
-                        MeetingShare.access_level != AccessLevel.REMOVED.value
-                    )
-                )
+    subquery = (
+        select(MeetingShare.meeting_id)
+        .where(
+            and_(
+                MeetingShare.user_id == user_id,
+                MeetingShare.access_level != 'removed'
             )
         )
-    ).order_by(Meeting.timestamp.asc()).limit(1)
+        .scalar_subquery()
+    )
+
+    query = (
+        select(Meeting.timestamp)
+        .where(
+            or_(
+                Meeting.owner_id == user_id,
+                Meeting.meeting_id.in_(subquery)  # Changed from Meeting.id to Meeting.meeting_id
+            )
+        )
+        .order_by(Meeting.timestamp.asc())
+        .limit(1)
+    )
     
     result = await session.execute(query)
     timestamp = result.scalar_one_or_none()
@@ -368,20 +376,28 @@ async def get_first_meeting_timestamp(session: AsyncSession, user_id: UUID) -> O
 
 async def get_last_meeting_timestamp(session: AsyncSession, user_id: UUID) -> Optional[str]:
     """Get the timestamp of the user's most recent meeting"""
-    query = select(Meeting.timestamp).where(
-        or_(
-            Meeting.owner_id == user_id,
-            Meeting.id.in_(
-                select(MeetingShare.meeting_id)
-                .where(
-                    and_(
-                        MeetingShare.user_id == user_id,
-                        MeetingShare.access_level != AccessLevel.REMOVED.value
-                    )
-                )
+    subquery = (
+        select(MeetingShare.meeting_id)
+        .where(
+            and_(
+                MeetingShare.user_id == user_id,
+                MeetingShare.access_level != 'removed'
             )
         )
-    ).order_by(Meeting.timestamp.desc()).limit(1)
+        .scalar_subquery()
+    )
+
+    query = (
+        select(Meeting.timestamp)
+        .where(
+            or_(
+                Meeting.owner_id == user_id,
+                Meeting.meeting_id.in_(subquery)  # Changed from Meeting.id to Meeting.meeting_id
+            )
+        )
+        .order_by(Meeting.timestamp.desc())
+        .limit(1)
+    )
     
     result = await session.execute(query)
     timestamp = result.scalar_one_or_none()
