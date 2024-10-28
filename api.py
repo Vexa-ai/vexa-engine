@@ -164,13 +164,27 @@ async def start_indexing(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    background_tasks.add_task(
-        run_indexing_job, 
-        token=token, 
-        user_id=user_id, 
-        num_meetings=request.num_meetings or 200
-    )
-    return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
+    try:
+        # Create indexer instance
+        indexer = Indexing(token=token)
+        
+        # Check if indexing is already in progress
+        status = indexer.status
+        if status["is_indexing"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Indexing already in progress for this user"
+            )
+
+        background_tasks.add_task(
+            run_indexing_job, 
+            token=token, 
+            user_id=user_id, 
+            num_meetings=request.num_meetings or 200
+        )
+        return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 @app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
 async def get_meetings_processed(current_user: tuple = Depends(get_current_user), authorization: str = Header(...)):
@@ -196,8 +210,19 @@ async def get_meetings_processed(current_user: tuple = Depends(get_current_user)
 @app.get("/indexing_status")
 async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
-    is_indexing = await search_assistant.is_indexing(user_id)
-    return {"is_indexing": is_indexing}
+    indexer = Indexing(token=None)  # Token not needed for checking status
+    status = indexer.status
+    
+    # Check if any indexing is happening for this specific user
+    is_indexing = status["is_indexing"]
+    current_meeting = status["current_meeting"]
+    processing_meetings = status["processing_meetings"]
+    
+    return {
+        "is_indexing": is_indexing,
+        "current_meeting": current_meeting,
+        "processing_meetings": processing_meetings
+    }
 
 @app.delete("/user/data")
 async def remove_user_data(current_user: tuple = Depends(get_current_user)):
