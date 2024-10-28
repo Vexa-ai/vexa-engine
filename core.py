@@ -89,7 +89,7 @@ class Msg:
     role: Literal['user','system','assistant']
     content: str
     stage: Optional[str] = None
-    service_content: Optional[str] = None
+    service_content: Optional[dict] = None
 
 def assistant_msg(msg, service_content=None):
     return Msg(role='assistant', content=msg, service_content=service_content)
@@ -106,7 +106,9 @@ async def generic_call_(messages: List[Msg], model='default', temperature=0, max
     messages_dict = [msg.__dict__ for msg in messages]
     for msg in messages_dict:
         if 'service_content' in msg and msg['service_content'] is not None:
-            msg['content'] = msg['service_content']
+            # If service_content is a dict with 'output', use that
+            if isinstance(msg['service_content'], dict) and 'output' in msg['service_content']:
+                msg['content'] = msg['service_content']['output']
             del msg['service_content']
     messages_dict = [{k: v for k, v in d.items() if k != 'stage'} for d in messages_dict]
 

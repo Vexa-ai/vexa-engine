@@ -177,7 +177,11 @@ class SearchAssistant:
             
         linked_output = await self.embed_links(output, url_dict)
         messages.append(user_msg(query))
-        messages.append(assistant_msg(msg=linked_output, service_content=output))
+        service_content = {
+            'output': output,
+            'search_results': meeting_groups
+        }
+        messages.append(assistant_msg(msg=linked_output, service_content=service_content))
 
         # Handle thread creation/update
         if not thread_id:
