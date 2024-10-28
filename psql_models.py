@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 import hashlib
 from uuid import UUID
-from typing import List
+from typing import List, Optional
 from datetime import timezone
 from sqlalchemy import or_
 from sqlalchemy import func
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import select
 from contextlib import asynccontextmanager
-
+from sqlalchemy import and_
 #docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
 
 
@@ -342,3 +342,47 @@ class Thread(Base):
     timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     user = relationship('User')
+
+# Add these new methods to the file
+
+async def get_first_meeting_timestamp(session: AsyncSession, user_id: UUID) -> Optional[str]:
+    """Get the timestamp of the user's earliest meeting"""
+    query = select(Meeting.timestamp).where(
+        or_(
+            Meeting.owner_id == user_id,
+            Meeting.id.in_(
+                select(MeetingShare.meeting_id)
+                .where(
+                    and_(
+                        MeetingShare.user_id == user_id,
+                        MeetingShare.access_level != AccessLevel.REMOVED.value
+                    )
+                )
+            )
+        )
+    ).order_by(Meeting.timestamp.asc()).limit(1)
+    
+    result = await session.execute(query)
+    timestamp = result.scalar_one_or_none()
+    return timestamp.isoformat() if timestamp else None
+
+async def get_last_meeting_timestamp(session: AsyncSession, user_id: UUID) -> Optional[str]:
+    """Get the timestamp of the user's most recent meeting"""
+    query = select(Meeting.timestamp).where(
+        or_(
+            Meeting.owner_id == user_id,
+            Meeting.id.in_(
+                select(MeetingShare.meeting_id)
+                .where(
+                    and_(
+                        MeetingShare.user_id == user_id,
+                        MeetingShare.access_level != AccessLevel.REMOVED.value
+                    )
+                )
+            )
+        )
+    ).order_by(Meeting.timestamp.desc()).limit(1)
+    
+    result = await session.execute(query)
+    timestamp = result.scalar_one_or_none()
+    return timestamp.isoformat() if timestamp else None

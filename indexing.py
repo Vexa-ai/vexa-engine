@@ -1,6 +1,6 @@
 import pandas as pd
 import datetime
-import nest_asyncio
+
 import asyncio
 from sqlalchemy import func, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,12 +12,6 @@ from core import system_msg, user_msg
 from prompts import Prompts
 from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
 from psql_models import Speaker, Meeting, DiscussionPoint, get_session, engine, read_table_async
-
-# Configure pandas display options
-pd.options.display.max_colwidth = 100
-
-# Apply nest_asyncio for async operations in Jupyter-like environments
-nest_asyncio.apply()
 
 async def check_item_exists(meeting_id):
     async with get_session() as session:

@@ -3,16 +3,16 @@ import re
 from typing import List, Optional
 from datetime import datetime
 
-from fastapi import Depends
+import pandas as pd
+import numpy as np
 from pydantic import BaseModel, Field
 
-from vexa import VexaAPI
-from vector_search import VectorSearch
-from core import system_msg, user_msg, assistant_msg, generic_call_stream, count_tokens, BaseCall
+from qdrant_search import QdrantSearchEngine
+from core import system_msg, user_msg, assistant_msg, generic_call_stream, count_tokens, BaseCall, generic_call_
 from prompts import Prompts
-from pydantic_models import ThreadName, ContextQualityCheck
+from pydantic_models import ThreadName
 from thread_manager import ThreadManager
-from core import generic_call_
+
 
 class SearchResult(BaseModel):
     output: str
@@ -27,16 +27,103 @@ class SearchResult(BaseModel):
 
 class SearchAssistant:
     def __init__(self):
-        self.analyzer = VectorSearch()
-        self.thread_manager = None  # Initialize to None
+        self.search_engine = QdrantSearchEngine()
+        self.thread_manager = None
         self.prompts = Prompts()
         self.model = "gpt-4o-mini"
         self.indexing_jobs = {}
-
+        
     async def initialize(self):
-        self.thread_manager = await ThreadManager.create()  # Use the async create method
+        self.thread_manager = await ThreadManager.create()
 
-    async def chat(self, user_id: str, query: str, user_name: str='', thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None, debug: bool = False):
+    # Thread management methods
+    async def get_thread(self, thread_id: str):
+        return await self.thread_manager.get_thread(thread_id)
+
+    async def get_user_threads(self, user_id: str):
+        return await self.thread_manager.get_user_threads(user_id)
+
+    async def get_messages_by_thread_id(self, thread_id: str):
+        return await self.thread_manager.get_messages_by_thread_id(thread_id)
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        return await self.thread_manager.delete_thread(thread_id)
+
+    # Job management method
+    async def is_indexing(self, user_id: str) -> bool:
+        return self.indexing_jobs.get(user_id, False)
+
+    def normalize_series(self, series: pd.Series) -> pd.Series:
+        min_value = series.min()
+        max_value = series.max()
+        normalized = (series - min_value) / (max_value - min_value)
+        return normalized * 0.5 + 0.5  # Scale to range [0.5, 1]
+
+    async def search(self, query: str) -> pd.DataFrame:
+        # Get search results
+        main_results = await self.search_engine.search(
+            query_text=query,
+            limit=200,
+            min_score=0.4,
+        )
+
+        speaker_results = await self.search_engine.search_by_speaker(
+            speaker_query=query,
+            limit=200,
+            min_score=0.49
+        )
+
+        # Process results into DataFrames
+        main_df = pd.DataFrame(main_results) if main_results else pd.DataFrame()
+        speaker_df = pd.DataFrame(speaker_results) if speaker_results else pd.DataFrame()
+
+        # Select relevant columns and combine results
+        columns = ['topic_name', 'speaker_name', 'summary', 'details', 'meeting_id', 'timestamp']
+        score_columns = ['score', 'vector_scores', 'exact_matches']
+
+        if len(main_df) > 0:
+            main_df = main_df[columns + score_columns]
+            main_df['source'] = 'main'
+        else:
+            main_df = pd.DataFrame(columns=columns + score_columns + ['source'])
+
+        if len(speaker_df) > 0:
+            speaker_df = speaker_df[columns + ['score']]  # Speaker search has simpler scoring
+            speaker_df['source'] = 'speaker'
+        else:
+            speaker_df = pd.DataFrame(columns=columns + ['score', 'source'])
+
+        # Combine, deduplicate and sort results
+        results = pd.concat([main_df, speaker_df]).drop_duplicates(subset=columns).reset_index(drop=True)
+        if not results.empty:
+            results = results.sort_values('score', ascending=False)
+            
+        return results
+
+    def prep_context(self, search_results: pd.DataFrame) -> tuple[str, dict]:
+        search_results['relevance_score'] = self.normalize_series(search_results['score']).round(2)
+        search_results = search_results.sort_values('timestamp').reset_index(drop=True)
+        search_results['datetime'] = pd.to_datetime(search_results['timestamp'], format='mixed').dt.strftime('%A %Y-%m-%d %H:%M')
+
+        meetinds_df = search_results[['meeting_id']].drop_duplicates().reset_index(drop=True)
+        meetinds_df['meeting_index'] = meetinds_df.index + 1
+        prepared_df = search_results.drop(columns=['timestamp', 'vector_scores', 'exact_matches', 'source', 'score']).merge(meetinds_df, on='meeting_id').drop(columns=['meeting_id'])
+        
+        meetings = meetinds_df.to_dict(orient='records')
+        
+        return prepared_df.to_markdown(index=False) if not prepared_df.empty else "No relevant context found.", {meeting['meeting_index']: meeting['meeting_id'] for meeting in meetings}
+
+    async def embed_links(self, text: str, url_dict: dict) -> str:
+        # First, add a space between consecutive reference numbers
+        text = re.sub(r'\]\[', '] [', text)
+        
+        # Then replace each reference with its link
+        for key, url in url_dict.items():
+            text = text.replace(f'[{key}]', f'[{key}]({url})')
+        return text
+
+    async def chat(self, user_id: str, query: str, user_name: str='', thread_id: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None):
+        # Get thread info
         if thread_id:
             thread = await self.thread_manager.get_thread(thread_id)
             if not thread:
@@ -47,37 +134,35 @@ class SearchAssistant:
             messages = []
             thread_name = None
 
-        query_ = ' '.join([m.content for m in messages]) + ' ' + query
-        queries = await self.analyzer.generate_search_queries(query_, user_id=user_id, user_name=user_name)
+        # Get search results
+        search_results = await self.search(query)
         
-        summaries = await self.analyzer.get_summaries(user_id=user_id, user_name=user_name)
-        full_context, meeting_ids = await self.analyzer.build_context(queries, summaries, include_all_summaries=False, user_id=user_id, user_name=user_name, k=20)
+        # Prepare context
+        context, indexed_meetings = self.prep_context(search_results)
+        url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
 
-        pref = "Based on the following context, answer the question:" if len(messages) == 0 else "Follow-up request:"
-        user_info = f"The User is {user_name}"
+        # Build messages
+        context_msg = system_msg(f"Context: {context}")
         messages_context = [
-            system_msg(self.prompts.perplexity + f'. {user_info}'), 
-            user_msg(f"Context:\n{full_context}"),
-        ] + messages + [user_msg(f"{pref} {query}. Always supply references to meetings as [1][2][3] etc.")]
+            system_msg(self.prompts.perplexity),
+            *messages,
+            context_msg,
+            user_msg(query)
+        ]
 
-        model_to_use = model or self.model
-
+        # Generate response
         output = ""
-        async for chunk in generic_call_(messages_context, model=model_to_use, temperature=temperature, streaming=True):
+        async for chunk in generic_call_(messages_context, streaming=True):
             output += chunk
             yield chunk
-        
-        indexed_meetings = await self.get_indexed_meetings(meeting_ids, await self.parse_refs(output))
-        url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
+            
         linked_output = await self.embed_links(output, url_dict)
-        
         messages.append(user_msg(query))
         messages.append(assistant_msg(msg=linked_output, service_content=output))
 
+        # Handle thread creation/update
         if not thread_id:
-            messages_str = ';'.join([m.content for m in messages if m.role == 'user'])
-            thread_name = await ThreadName.call([user_msg(messages_str)])
-            thread_name = thread_name[0].thread_name
+            thread_name = query
             thread_id = await self.thread_manager.upsert_thread(user_id=user_id, thread_name=thread_name, messages=messages)
         else:
             await self.thread_manager.upsert_thread(user_id=user_id, messages=messages, thread_id=thread_id)
@@ -85,53 +170,5 @@ class SearchAssistant:
         result = {
             "thread_id": thread_id,
             "linked_output": linked_output
-        }
-
-        if debug:
-            result.update({
-                "output": output,
-                "summaries": summaries,
-                "full_context": full_context,
-                "meeting_ids": meeting_ids,
-                "queries": queries,
-            })
-
+        }   
         yield result
-
-    async def get_thread(self, thread_id: str):
-        return await self.thread_manager.get_thread(thread_id)
-
-    async def get_user_threads(self, user_id: str):
-        return await self.thread_manager.get_user_threads(user_id)
-
-    async def count_documents(self, user_id: str):
-        return await self.analyzer.count_documents(user_id=user_id)
-
-    async def get_messages_by_thread_id(self, thread_id: str):
-        return await self.thread_manager.get_messages_by_thread_id(thread_id)
-
-    async def delete_thread(self, thread_id: str) -> bool:
-        return await self.thread_manager.delete_thread(thread_id)
-
-    async def is_indexing(self, user_id: str) -> bool:
-        return self.indexing_jobs.get(user_id, False)
-
-    async def remove_user_data(self, user_id: str) -> int:
-        return await self.analyzer.remove_user_data(user_id)
-
-    # The following methods should be updated to be async if they involve I/O operations
-    async def parse_refs(self, text):
-        pattern = r'\[(\d+)\]'
-        return list(set(re.findall(pattern, text)))
-
-    async def get_indexed_meetings(self, meeting_ids, refs):
-        indexed_meetings = {}
-        for i, meeting_id in enumerate(meeting_ids):
-            if str(i + 1) in refs:
-                indexed_meetings[str(i + 1)] = meeting_id
-        return indexed_meetings
-
-    async def embed_links(self, text, url_dict):
-        for key, url in url_dict.items():
-            text = text.replace(f'[{key}]', f'[{key}]({url})')
-        return text
