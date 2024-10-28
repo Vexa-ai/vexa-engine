@@ -157,39 +157,39 @@ async def run_indexing_job(token: str, user_id: str, num_meetings: int):
     indexer = Indexing(token=token)
     await indexer.index_meetings(user_id=user_id, num_meetings=num_meetings)
 
-# @app.post("/start_indexing")
-# async def start_indexing(
-#     request: IndexingRequest,
-#     background_tasks: BackgroundTasks,
-#     authorization: str = Header(...)
-# ):
-#     token = authorization.split("Bearer ")[-1]
-#     user_id, user_name = await token_manager.check_token(token)
+@app.post("/start_indexing")
+async def start_indexing(
+    request: IndexingRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(...)
+):
+    token = authorization.split("Bearer ")[-1]
+    user_id, user_name = await token_manager.check_token(token)
     
-#     if not user_id:
-#         raise HTTPException(status_code=401, detail="Invalid token")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-#     try:
-#         # Create indexer instance
-#         indexer = Indexing(token=token)
+    try:
+        # Create indexer instance
+        indexer = Indexing(token=token)
         
-#         # Check if indexing is already in progress
-#         status = indexer.status
-#         if status["is_indexing"]:
-#             raise HTTPException(
-#                 status_code=409,
-#                 detail="Indexing already in progress for this user"
-#             )
+        # Check if indexing is already in progress
+        status = indexer.status
+        if status["is_indexing"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Indexing already in progress for this user"
+            )
 
-#         background_tasks.add_task(
-#             run_indexing_job, 
-#             token=token, 
-#             user_id=user_id, 
-#             num_meetings=request.num_meetings or 200
-#         )
-#         return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
-#     except ValueError as e:
-#         raise HTTPException(status_code=409, detail=str(e))
+        background_tasks.add_task(
+            run_indexing_job, 
+            token=token, 
+            user_id=user_id, 
+            num_meetings=request.num_meetings or 200
+        )
+        return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 @app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
 async def get_meetings_processed(current_user: tuple = Depends(get_current_user), authorization: str = Header(...)):

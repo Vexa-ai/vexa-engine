@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from qdrant_search import QdrantSearchEngine
 from core import system_msg, user_msg, assistant_msg, generic_call_stream, count_tokens, BaseCall, generic_call_
 from prompts import Prompts
-from pydantic_models import ThreadName
+from pydantic_models import ThreadName,ParsedSearchRequest
 from thread_manager import ThreadManager
 
 
@@ -136,8 +136,13 @@ class SearchAssistant:
             messages = []
             thread_name = None
 
-        # Get search results and yield them immediately
-        search_results = await self.search(query)
+        r = await ParsedSearchRequest.parse_request(query+str(messages))
+        queries = [q.query for q in r.search_queries]
+        
+        search_results = [await self.search(q) for q in queries]
+        search_results = pd.concat(search_results)
+        search_results = search_results.drop(columns=['vector_scores','exact_matches']).drop_duplicates(subset = ['topic_name','speaker_name','summary','details','meeting_id'])
+        
         
         # Prepare context
         
@@ -160,7 +165,11 @@ class SearchAssistant:
         
         yield {"search_results": meeting_groups}
         
-        context_prepared = prepared_df.drop(columns=['timestamp', 'vector_scores', 'exact_matches', 'source', 'score','meeting_id'])
+        # Modify this section to only drop columns that exist
+        columns_to_drop = ['timestamp', 'vector_scores', 'exact_matches', 'source', 'score', 'meeting_id']
+        existing_columns = [col for col in columns_to_drop if col in prepared_df.columns]
+        context_prepared = prepared_df.drop(columns=existing_columns)
+        
         context = context_prepared.to_markdown(index=False) if not prepared_df.empty else "No relevant context found."
         url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
 

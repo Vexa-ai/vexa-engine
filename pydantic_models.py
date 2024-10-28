@@ -136,3 +136,35 @@ Create a direct, to-the-point summary incorporating all these items. Start immed
 
 class ThreadName(BaseCall):
     thread_name: str = Field(..., max_length=50, description="Condence into explanatory concise dense name of the meeting, 50 char max reusing same wording")
+    
+    
+
+
+class SearchQuery(BaseModel):
+    query: str = Field(
+        ..., 
+        description="Short search query (1-3 words)"
+    )
+
+class ParsedSearchRequest(BaseCall):
+    search_queries: List[SearchQuery] = Field(
+        ...,
+        description="List of structured search queries derived from the request",
+        min_items=1
+    )
+    
+    @classmethod
+    async def parse_request(cls, spoken_request: str) -> "ParsedSearchRequest":
+        """Helper method to create a ParsedSearchRequest instance"""
+        messages = [
+            system_msg("""Analyze requests and extract meaningful search phrases that will find relevant information.
+            Focus on preserving context and relationships between terms.
+            Identify complete semantic units that capture the actual search intent.
+            Remove filler phrases that don't add search value.
+            
+            The goal is to create search phrases that will effectively match relevant content."""),
+            
+            user_msg(f"What are the essential search phrases needed to find relevant information for this request: {spoken_request}")
+        ]
+        
+        return await cls.call(messages)
