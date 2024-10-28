@@ -181,11 +181,11 @@ async def get_meetings_processed(current_user: tuple = Depends(get_current_user)
         
     return MeetingsProcessedResponse(meetings_processed=meetings_processed)
 
-# @app.get("/indexing_status")
-# async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
-#     user_id, _ = current_user
-#     is_indexing = await search_assistant.is_indexing(user_id)
-#     return {"is_indexing": is_indexing}
+@app.get("/indexing_status")
+async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
+    user_id, _ = current_user
+    is_indexing = await search_assistant.is_indexing(user_id)
+    return {"is_indexing": is_indexing}
 
 @app.delete("/user/data")
 async def remove_user_data(current_user: tuple = Depends(get_current_user)):

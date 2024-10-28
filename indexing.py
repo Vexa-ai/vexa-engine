@@ -141,7 +141,7 @@ class Indexing:
     def __init__(self, token: str):
         self.vexa = VexaAPI(token=token)
 
-    async def index_meetings(self, user_id: str, num_meetings: int = 200):
+    async def index_meetings(self, user_id: str, num_meetings: int = 300):
         await self.vexa.get_user_info()
         meetings = await self.vexa.get_meetings()
         meetings = meetings[-num_meetings:]  # Process last N meetings
@@ -164,5 +164,3 @@ class Indexing:
             except Exception as e:
                 print(f"Error processing meeting {meeting_id}: {e}")
                 continue
-
-# Remove or modify the main() function since we'll be calling index_meetings directly
