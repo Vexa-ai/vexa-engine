@@ -100,3 +100,13 @@ def remove_user_data():
         headers=HEADERS
     )
     print("User Data Removed:", response.json())
+    
+def test_indexing_flow():
+    # Start indexing
+    start_indexing()
+    
+    # Check status immediately after starting
+    check_indexing_status()
+    
+    # Check number of processed meetings
+    get_meetings_processed()

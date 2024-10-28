@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from search import SearchAssistant
 from token_manager import TokenManager
-#from indexing import Indexing
+from indexing import Indexing
 import asyncio
 from datetime import datetime
 import json
@@ -13,8 +13,10 @@ import json
 from psql_models import (
     async_session,
     get_first_meeting_timestamp,
-    get_last_meeting_timestamp
+    get_last_meeting_timestamp,
+    Meeting
 )
+from sqlalchemy import func, select
 
 app = FastAPI()
 
@@ -144,29 +146,39 @@ async def get_meeting_timestamps(current_user: tuple = Depends(get_current_user)
         last_meeting=last_meeting
     )
 
-# async def run_indexing_job(token: str, num_meetings: int):
-#     indexer = Indexing(token=token)
-#     await indexer.index_meetings(num_meetings=num_meetings)
+async def run_indexing_job(token: str, user_id: str, num_meetings: int):
+    indexer = Indexing(token=token)
+    await indexer.index_meetings(user_id=user_id, num_meetings=num_meetings)
 
-# @app.post("/start_indexing")
-# async def start_indexing(
-#     request: IndexingRequest,
-#     background_tasks: BackgroundTasks,
-#     authorization: str = Header(...)
-# ):
-#     token = authorization.split("Bearer ")[-1]
-#     user_id, user_name = await token_manager.check_token(token)
+@app.post("/start_indexing")
+async def start_indexing(
+    request: IndexingRequest,
+    background_tasks: BackgroundTasks,
+    authorization: str = Header(...)
+):
+    token = authorization.split("Bearer ")[-1]
+    user_id, user_name = await token_manager.check_token(token)
     
-#     if not user_id:
-#         raise HTTPException(status_code=401, detail="Invalid token")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-#     background_tasks.add_task(run_indexing_job, token, request.num_meetings)
-#     return {"message": f"Indexing job started for {request.num_meetings} meetings"}
+    background_tasks.add_task(
+        run_indexing_job, 
+        token=token, 
+        user_id=user_id, 
+        num_meetings=request.num_meetings or 200
+    )
+    return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
 
 @app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
 async def get_meetings_processed(current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
-    meetings_processed = await search_assistant.analyzer.count_documents(user_id=user_id,doc_type="summary")
+    async with async_session() as session:
+        # Count meetings for this user
+        query = select(func.count()).select_from(Meeting)
+        result = await session.execute(query)
+        meetings_processed = result.scalar() or 0
+        
     return MeetingsProcessedResponse(meetings_processed=meetings_processed)
 
 # @app.get("/indexing_status")

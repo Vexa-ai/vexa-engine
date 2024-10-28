@@ -137,30 +137,32 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
             print(f"Error saving to database: {e}")
             raise
 
-async def main():
-    vexa = VexaAPI()
-    await vexa.get_user_info()
-    meetings = await vexa.get_meetings()
-    meetings = meetings[-250:]  # Process last 250 meetings
+class Indexing:
+    def __init__(self, token: str):
+        self.vexa = VexaAPI(token=token)
 
-    for meeting in meetings:
-        meeting_id = meeting['id']
-        try:
-            if not await check_item_exists(meeting_id):
-                transcription = await vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
-                if transcription:   
-                    df, formatted_input, start_datetime, speakers, transcript = transcription
-                    final_df = await asyncio.wait_for(
-                        process_meeting_data(formatted_input, df),
-                        timeout=60
-                    )
-                    await save_meeting_data_to_db(final_df, meeting_id, transcript, start_datetime)
-        except asyncio.TimeoutError:
-            print(f"Timeout occurred while processing meeting {meeting_id}")
-            continue
-        except Exception as e:
-            print(f"Error processing meeting {meeting_id}: {e}")
-            continue
+    async def index_meetings(self, user_id: str, num_meetings: int = 200):
+        await self.vexa.get_user_info()
+        meetings = await self.vexa.get_meetings()
+        meetings = meetings[-num_meetings:]  # Process last N meetings
 
-if __name__ == "__main__":
-    asyncio.run(main())
+        for meeting in meetings:
+            meeting_id = meeting['id']
+            try:
+                if not await check_item_exists(meeting_id):
+                    transcription = await self.vexa.get_transcription(meeting_session_id=meeting_id, use_index=True)
+                    if transcription:   
+                        df, formatted_input, start_datetime, speakers, transcript = transcription
+                        final_df = await asyncio.wait_for(
+                            process_meeting_data(formatted_input, df),
+                            timeout=60
+                        )
+                        await save_meeting_data_to_db(final_df, meeting_id, transcript, start_datetime)
+            except asyncio.TimeoutError:
+                print(f"Timeout occurred while processing meeting {meeting_id}")
+                continue
+            except Exception as e:
+                print(f"Error processing meeting {meeting_id}: {e}")
+                continue
+
+# Remove or modify the main() function since we'll be calling index_meetings directly
