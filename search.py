@@ -147,10 +147,12 @@ class SearchAssistant:
         # Calculate weighted average score for each meeting, giving more weight to higher scores
         meeting_groups = search_results.sort_values('relevance_score', ascending=False).groupby('meeting_id').agg({
             'relevance_score': lambda x: np.average(x, weights=np.exp2(x)),  # Exponential weighting
-            'topic_name': 'first',
+            'summary': 'first',
             'speaker_name': set,
             'timestamp': 'first'
         }).sort_values('relevance_score', ascending=False).reset_index().head(20)
+        
+        meeting_groups.rename(columns={'summary': 'topic_name'}, inplace=True)
         meeting_groups['url'] = meeting_groups['meeting_id'].apply(lambda meeting_id: f'https://dashboard.vexa.ai/#{meeting_id}')
         meeting_groups = meeting_groups.drop(columns=['meeting_id'])
         meeting_groups['speaker_name'] = meeting_groups['speaker_name'].apply(list)
