@@ -57,21 +57,21 @@ class SearchAssistant:
         min_value = series.min()
         max_value = series.max()
         normalized = (series - min_value) / (max_value - min_value)
-        return normalized * 0.5 + 0.5  # Scale to range [0.5, 1]
+        return normalized * 0.5 + series.min() # Scale to range [0.5, 1]
 
-    async def search(self, query: str) -> pd.DataFrame:
+    async def search(self, query: str, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
         # Get search results
         main_results = await self.search_engine.search(
             query_text=query,
-            limit=200,
-            min_score=0.4,
+            limit=limit,
+            min_score=min_score,
         )
         
 
         speaker_results = await self.search_engine.search_by_speaker(
             speaker_query=query,
-            limit=200,
-            min_score=0.49
+            limit=limit,
+            min_score=min_score
         )
 
         # Process results into DataFrames
@@ -142,13 +142,15 @@ class SearchAssistant:
         # Prepare context
         
         prepared_df, indexed_meetings = self.prep_context(search_results)
+    
         
+        # Calculate weighted average score for each meeting, giving more weight to higher scores
         meeting_groups = search_results.sort_values('relevance_score', ascending=False).groupby('meeting_id').agg({
-         'relevance_score': 'sum',
+            'relevance_score': lambda x: np.average(x, weights=np.exp2(x)),  # Exponential weighting
             'topic_name': 'first',
             'speaker_name': set,
-            'timestamp': 'first'  # Assuming you want the first datetime for each meeting
-        }).sort_values('relevance_score', ascending=False).drop(columns=['relevance_score']).reset_index().head(20)
+            'timestamp': 'first'
+        }).sort_values('relevance_score', ascending=False).reset_index().head(20)
         meeting_groups['url'] = meeting_groups['meeting_id'].apply(lambda meeting_id: f'https://dashboard.vexa.ai/#{meeting_id}')
         meeting_groups = meeting_groups.drop(columns=['meeting_id'])
         meeting_groups['speaker_name'] = meeting_groups['speaker_name'].apply(list)
