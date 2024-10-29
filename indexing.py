@@ -12,7 +12,7 @@ from vexa import VexaAPI
 from core import system_msg, user_msg
 from prompts import Prompts
 from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
-from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel
+from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel, DefaultAccess
 from psql_helpers import get_session
 from qdrant_search import QdrantSearchEngine
 
@@ -89,7 +89,7 @@ async def process_meeting_data(formatted_input, df):
         print(f"Error processing meeting data: {e}")
         return pd.DataFrame()
 
-async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime, user_id):  # Added user_id parameter
+async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime, user_id):
     async with AsyncSession(engine) as session:
         try:
             existing_meeting = await session.execute(
@@ -105,9 +105,8 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                     timestamp=naive_datetime
                 )
                 session.add(new_meeting)
-                await session.flush()
-
-                # Create UserMeeting relationship with owner access
+                
+                # Create owner UserMeeting record
                 user_meeting = UserMeeting(
                     meeting_id=meeting_id,
                     user_id=user_id,
@@ -117,39 +116,66 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                 )
                 session.add(user_meeting)
                 await session.flush()
+
+                # Check and propagate default access settings
+                default_access_query = await session.execute(
+                    select(DefaultAccess)
+                    .where(DefaultAccess.owner_user_id == user_id)
+                )
+                default_access_records = default_access_query.scalars().all()
+
+                # Create UserMeeting records for users with default access
+                for default_access in default_access_records:
+                    new_user_meeting = UserMeeting(
+                        meeting_id=meeting_id,
+                        user_id=default_access.granted_user_id,
+                        access_level=default_access.access_level,
+                        is_owner=False,
+                        created_by=user_id
+                    )
+                    session.add(new_user_meeting)
             else:
                 new_meeting = existing_meeting
 
-            for _, row in final_df.iterrows():
-                speaker_query = await session.execute(
-                    select(Speaker).where(Speaker.name == row['speaker'])
-                )
-                speaker = speaker_query.scalar_one_or_none()
-                
-                if not speaker:
-                    speaker = Speaker(name=row['speaker'])
-                    session.add(speaker)
-                    await session.flush()
+            # Bulk insert speakers
+            unique_speakers = final_df['speaker'].unique()
+            existing_speakers = {
+                s.name: s for s in (await session.execute(
+                    select(Speaker).where(Speaker.name.in_(unique_speakers))
+                )).scalars()
+            }
+            
+            new_speakers = []
+            for speaker_name in unique_speakers:
+                if speaker_name not in existing_speakers:
+                    new_speaker = Speaker(name=speaker_name)
+                    new_speakers.append(new_speaker)
+                    existing_speakers[speaker_name] = new_speaker
+            
+            if new_speakers:
+                session.add_all(new_speakers)
+                await session.flush()
 
-                new_discussion_point = DiscussionPoint(
+            # Bulk insert discussion points
+            discussion_points = [
+                DiscussionPoint(
                     summary_index=row['summary_index'],
                     summary=row['summary'],
                     details=row['details'],
                     referenced_text=row['referenced_text'],
                     meeting_id=new_meeting.meeting_id,
-                    speaker_id=speaker.id,
+                    speaker_id=existing_speakers[row['speaker']].id,
                     topic_name=row['topic_name'],
                     topic_type=row['topic_type'],
                     model=row['model']
                 )
-                session.add(new_discussion_point)
-                await session.flush()
-
+                for _, row in final_df.iterrows()
+            ]
+            session.add_all(discussion_points)
             await session.commit()
-            print("Meeting data and discussion points saved successfully to the database.")
+            
         except Exception as e:
             await session.rollback()
-            print(f"Error saving to database: {e}")
             raise
 
 class Indexing:
@@ -177,6 +203,10 @@ class Indexing:
         
         # Add lock timeout for indexing
         self._lock_timeout = 3600  # 1 hour timeout for indexing lock
+        
+        # Add dead letter queue key
+        self.dead_letter_key = 'meetings:dead_letter'
+        self.max_retries = 3  # Maximum number of retry attempts
 
     @property
     def status(self):
@@ -186,74 +216,89 @@ class Indexing:
             "processing_meetings": list(self.redis.smembers(self.processing_key))
         }
 
-    async def index_meetings(self, num_meetings: int = 400):
+    async def process_single_meeting(self, meeting, user_id):
+        meeting_id = meeting['id']
+        
+        async with self._semaphore:
+            # Check if meeting is in dead letter queue
+            if self.redis.sismember(self.dead_letter_key, meeting_id):
+                print(f"Meeting {meeting_id} in dead letter queue, skipping...")
+                return
+
+            # Get retry count
+            retry_key = f"meeting:retry:{meeting_id}"
+            retry_count = int(self.redis.get(retry_key) or 0)
+            
+            if retry_count >= self.max_retries:
+                print(f"Meeting {meeting_id} exceeded max retries, moving to dead letter queue")
+                self.redis.sadd(self.dead_letter_key, meeting_id)
+                self.redis.delete(retry_key)
+                return
+
+            if self.redis.sismember(self.processing_key, meeting_id):
+                print(f"Meeting {meeting_id} already being processed, skipping...")
+                return
+            
+            try:
+                if not await check_item_exists(meeting_id):
+                    self.redis.sadd(self.processing_key, meeting_id)
+                    self.redis.set(self.current_meeting_key, meeting_id)
+                    
+                    transcription = await self.vexa.get_transcription(
+                        meeting_session_id=meeting_id, 
+                        use_index=True
+                    )
+                    
+                    if transcription:   
+                        df, formatted_input, start_datetime, speakers, transcript = transcription
+                        final_df = await asyncio.wait_for(
+                            process_meeting_data(formatted_input, df),
+                            timeout=60
+                        )
+                        await save_meeting_data_to_db(
+                            final_df, 
+                            meeting_id, 
+                            transcript, 
+                            start_datetime, 
+                            user_id
+                        )
+                        async with get_session() as session:
+                            await self.qdrant.sync_meeting(meeting_id, session)
+            except Exception as e:
+                print(f"Error processing meeting {meeting_id}: {e}")
+                # Increment retry counter
+                self.redis.incr(retry_key)
+                # Set expiry on retry key to avoid orphaned counters
+                self.redis.expire(retry_key, 86400)  # 24 hours
+            finally:
+                self.redis.srem(self.processing_key, meeting_id)
+                self.redis.delete(self.current_meeting_key)
+
+    async def index_meetings(self, num_meetings: int = 110):
+        num_meetings = 120 #temp
         await self.vexa.get_user_info()
         user_id = self.vexa.user_id
-        # Add user-specific lock key
         indexing_lock_key = f"indexing:lock:{user_id}"
         
-        # Try to acquire lock with timeout
         if not self.redis.set(indexing_lock_key, 'true', nx=True, ex=self._lock_timeout):
             raise ValueError("Indexing already in progress for this user")
 
         try:
-            # Add initial full sync with Qdrant
             await self.qdrant.sync_from_postgres(get_session)
-            print("Initial Qdrant sync completed")
-
+            
             meetings = await self.vexa.get_meetings()
             meetings = meetings[-num_meetings:]
 
-            for meeting in reversed(meetings):
-                # Add delay between processing meetings
-                await asyncio.sleep(0.1)  
-                
-                meeting_id = meeting['id']
-                
-                # Skip if already being processed
-                if self.redis.sismember(self.processing_key, meeting_id):
-                    print(f"Meeting {meeting_id} already being processed, skipping...")
-                    continue
-                
-                try:
-                    if not await check_item_exists(meeting_id):
-                        # Add to processing set and set current meeting
-                        self.redis.sadd(self.processing_key, meeting_id)
-                        self.redis.set(self.current_meeting_key, meeting_id)
-                        print(f"Processing meeting {meeting_id}")
-                        
-                        transcription = await self.vexa.get_transcription(
-                            meeting_session_id=meeting_id, 
-                            use_index=True
-                        )
-                        
-                        if transcription:   
-                            df, formatted_input, start_datetime, speakers, transcript = transcription
-                            final_df = await asyncio.wait_for(
-                                process_meeting_data(formatted_input, df),
-                                timeout=60
-                            )
-                            await save_meeting_data_to_db(
-                                final_df, 
-                                meeting_id, 
-                                transcript, 
-                                start_datetime, 
-                                user_id
-                            )
-                            # Add Qdrant sync with session factory
-                            async with get_session() as session:
-                                await self.qdrant.sync_meeting(meeting_id, session)
-                            print(f"Successfully processed and indexed meeting {meeting_id}")
-                except Exception as e:
-                    print(f"Error processing meeting {meeting_id}: {e}")
-                finally:
-                    # Clean up meeting state
-                    self.redis.srem(self.processing_key, meeting_id)
-                    self.redis.delete(self.current_meeting_key)
+            # Process meetings concurrently
+            tasks = [
+                asyncio.create_task(self.process_single_meeting(meeting, user_id))
+                for meeting in reversed(meetings)
+            ]
+            await asyncio.gather(*tasks)
+            
         except Exception as e:
             print(f"Error in index_meetings: {e}")
             raise
         finally:
-            # Clean up indexing state
             self.redis.delete(indexing_lock_key)
             self.redis.delete(self.indexing_key)

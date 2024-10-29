@@ -14,12 +14,17 @@ from psql_helpers import (
     async_session,
     get_first_meeting_timestamp,
     get_last_meeting_timestamp,
+    create_share_link,
+    accept_share_link,
 )
 from sqlalchemy import func, select
 from vexa import VexaAPI
 
 from psql_models import Meeting,UserMeeting
 from sqlalchemy import and_
+from pydantic import BaseModel, EmailStr
+from uuid import UUID
+from psql_models import AccessLevel
 
 app = FastAPI()
 
@@ -61,6 +66,19 @@ class IndexingRequest(BaseModel):
 class MeetingsProcessedResponse(BaseModel):
     meetings_processed: int
     total_meetings: int
+
+class CreateShareLinkRequest(BaseModel):
+    access_level: str
+    target_email: Optional[EmailStr] = None
+    expiration_hours: Optional[int] = 24
+    include_existing_meetings: Optional[bool] = False
+
+class CreateShareLinkResponse(BaseModel):
+    token: str
+
+class AcceptShareLinkRequest(BaseModel):
+    token: str
+    accepting_email: Optional[EmailStr] = None
 
 @app.on_event("startup")
 async def startup_event():
@@ -238,6 +256,56 @@ async def remove_user_data(current_user: tuple = Depends(get_current_user)):
     user_id, user_name = current_user
     deleted_points = await search_assistant.remove_user_data(user_id)
     return {"message": f"Successfully removed {deleted_points} data points for user {user_name}"}
+
+@app.post("/share-links", response_model=CreateShareLinkResponse)
+async def create_new_share_link(
+    request: CreateShareLinkRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    
+    try:
+        access_level = AccessLevel(request.access_level)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid access level. Must be one of: {[e.value for e in AccessLevel]}"
+        )
+    
+    async with async_session() as session:
+        token = await create_share_link(
+            session=session,
+            owner_id=user_id,
+            access_level=access_level,
+            target_email=request.target_email,
+            expiration_hours=request.expiration_hours,
+            include_existing_meetings=request.include_existing_meetings
+        )
+        
+    return CreateShareLinkResponse(token=token)
+
+@app.post("/share-links/accept")
+async def accept_new_share_link(
+    request: AcceptShareLinkRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    
+    async with async_session() as session:
+        success = await accept_share_link(
+            session=session,
+            token=request.token,
+            accepting_user_id=user_id,
+            accepting_email=request.accepting_email
+        )
+        
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired share link"
+        )
+        
+    return {"message": "Share link accepted successfully"}
 
 if __name__ == "__main__":
     import uvicorn

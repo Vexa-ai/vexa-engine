@@ -570,10 +570,9 @@ async def accept_share_link(
     session: AsyncSession,
     token: str,
     accepting_user_id: UUID,
-    accepting_email: str = None
+    accepting_email: Optional[str] = None
 ) -> bool:
-    """Accept a sharing link and set up default access"""
-    # Find and validate share link
+    """Accept a share link and set up access"""
     share_query = await session.execute(
         select(ShareLink)
         .filter(
@@ -599,13 +598,14 @@ async def accept_share_link(
         access_level=AccessLevel(share_link.access_level)
     )
     
-    # Update all existing meetings for this owner
-    await update_user_meetings_access(
-        session,
-        owner_id=share_link.owner_id,
-        granted_user_id=accepting_user_id,
-        access_level=AccessLevel(share_link.access_level)
-    )
+    # Update existing meetings if the share link includes them
+    if share_link.include_existing_meetings:
+        await update_user_meetings_access(
+            session,
+            owner_id=share_link.owner_id,
+            granted_user_id=accepting_user_id,
+            access_level=AccessLevel(share_link.access_level)
+        )
     
     # Mark share link as used
     share_link.is_used = True
