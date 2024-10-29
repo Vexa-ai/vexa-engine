@@ -7,12 +7,7 @@ from pathlib import Path
 project_root = str(Path(__file__).parent.parent)
 sys.path.append(project_root)
 
-from back.psql_models import init_db
 
-async def reset_db():
-    """Reset the database (drop all tables and recreate them)"""
-    await init_db()
-    print("Database reset complete")
 
 def run_migrations():
     """Run all pending migrations"""
@@ -30,9 +25,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     command = sys.argv[1]
-    if command == "reset_db":
-        asyncio.run(reset_db())
-    elif command == "migrate":
+  
+    if command == "migrate":
         run_migrations()
     elif command == "create_migration":
         if len(sys.argv) < 3:

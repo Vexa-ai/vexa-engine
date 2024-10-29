@@ -20,7 +20,20 @@ class TokenManager:
 
     async def submit_token(self, token: str) -> Tuple[Optional[str], Optional[str]]:
         try:
-            # Get user info from Vexa API
+            # First check if token already exists and is valid
+            async with async_session() as session:
+                result = await session.execute(
+                    select(UserToken).filter_by(token=token)
+                )
+                existing_token = result.scalar_one_or_none()
+                
+                if existing_token:
+                    # Update last_used_at and return existing user info
+                    existing_token.last_used_at = datetime.utcnow()
+                    await session.commit()
+                    return str(existing_token.user_id), existing_token.user_name
+
+            # If token doesn't exist, validate with Vexa API and create new record
             vexa_api = VexaAPI(token=token)
             user_info = await vexa_api.get_user_info()
             
@@ -37,7 +50,7 @@ class TokenManager:
                 
                 # Merge user and await the operation
                 merged_user = await session.merge(user)
-                await session.flush()  # Ensure the user is created in the database
+                await session.flush()
                 
                 # Create new token record
                 user_token = UserToken(
@@ -50,6 +63,7 @@ class TokenManager:
                 await session.commit()
                 
                 return str(merged_user.id), user_token.user_name
+                
         except Exception as e:
             print(f"Error in submit_token: {e}")
             return None, None

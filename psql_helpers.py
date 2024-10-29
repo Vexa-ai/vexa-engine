@@ -22,8 +22,11 @@ from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, For
 
 #docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
 
-from psql_models import Base, Meeting, Speaker, User, DiscussionPoint, AccessLevel, UserMeeting, DefaultAccess,engine,async_session,DATABASE_URL
+from psql_models import Base, Meeting, Speaker, User, DiscussionPoint, AccessLevel, UserMeeting, DefaultAccess,engine,async_session,DATABASE_URL,ShareLink
 
+import secrets
+
+from datetime import timedelta
 
 # Async function to fetch context
 async def fetch_context(session: AsyncSession, speaker_names: List[str], reference_date: datetime, user_id: UUID):
@@ -211,32 +214,48 @@ async def is_meeting_owner(session: AsyncSession, user_id: UUID, meeting_id: UUI
 
 # Add these new methods to the file
 
-async def get_first_meeting_timestamp(session: AsyncSession, user_id: str) -> Optional[str]:
-    query = select(Meeting.timestamp)\
-        .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)\
-        .where(and_(
-            UserMeeting.user_id == user_id,
-            UserMeeting.is_owner == True
-        ))\
-        .order_by(Meeting.timestamp.asc())\
+async def get_first_meeting_timestamp(session: AsyncSession, user_id: UUID) -> Optional[str]:
+    """Get the timestamp of the user's earliest meeting"""
+    query = (
+        select(Meeting.timestamp)
+        .join(UserMeeting)
+        .where(
+            and_(
+                UserMeeting.user_id == user_id,
+                or_(
+                    UserMeeting.is_owner == True,
+                    UserMeeting.access_level != AccessLevel.REMOVED.value
+                )
+            )
+        )
+        .order_by(Meeting.timestamp.asc())
         .limit(1)
+    )
     
     result = await session.execute(query)
-    timestamp = result.scalar()
+    timestamp = result.scalar_one_or_none()
     return timestamp.isoformat() if timestamp else None
 
-async def get_last_meeting_timestamp(session: AsyncSession, user_id: str) -> Optional[str]:
-    query = select(Meeting.timestamp)\
-        .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)\
-        .where(and_(
-            UserMeeting.user_id == user_id,
-            UserMeeting.is_owner == True
-        ))\
-        .order_by(Meeting.timestamp.desc())\
+async def get_last_meeting_timestamp(session: AsyncSession, user_id: UUID) -> Optional[str]:
+    """Get the timestamp of the user's most recent meeting"""
+    query = (
+        select(Meeting.timestamp)
+        .join(UserMeeting)
+        .where(
+            and_(
+                UserMeeting.user_id == user_id,
+                or_(
+                    UserMeeting.is_owner == True,
+                    UserMeeting.access_level != AccessLevel.REMOVED.value
+                )
+            )
+        )
+        .order_by(Meeting.timestamp.desc())
         .limit(1)
+    )
     
     result = await session.execute(query)
-    timestamp = result.scalar()
+    timestamp = result.scalar_one_or_none()
     return timestamp.isoformat() if timestamp else None
 
 async def get_accessible_meetings(
@@ -494,4 +513,154 @@ async def create_user(
     await session.commit()
     return user
 
+async def update_user_meetings_access(
+    session: AsyncSession,
+    owner_id: UUID,
+    granted_user_id: UUID,
+    access_level: AccessLevel
+) -> None:
+    """
+    Update UserMeeting records for all meetings owned by owner_id to grant 
+    specified access level to granted_user_id
+    """
+    
+    # Get all meetings where the owner has owner access
+    owner_meetings_query = await session.execute(
+        select(Meeting.meeting_id)
+        .join(UserMeeting)
+        .filter(
+            and_(
+                UserMeeting.user_id == owner_id,
+                UserMeeting.is_owner == True
+            )
+        )
+    )
+    owner_meeting_ids = owner_meetings_query.scalars().all()
+    
+    for meeting_id in owner_meeting_ids:
+        # Check if UserMeeting already exists for this user and meeting
+        existing_query = await session.execute(
+            select(UserMeeting)
+            .filter(
+                and_(
+                    UserMeeting.meeting_id == meeting_id,
+                    UserMeeting.user_id == granted_user_id
+                )
+            )
+        )
+        existing_access = existing_query.scalar_one_or_none()
+        
+        if existing_access:
+            # Update existing access level
+            existing_access.access_level = access_level.value
+        else:
+            # Create new UserMeeting record
+            new_access = UserMeeting(
+                meeting_id=meeting_id,
+                user_id=granted_user_id,
+                access_level=access_level.value,
+                created_by=owner_id,
+                is_owner=False
+            )
+            session.add(new_access)
+    
+    await session.commit()
 
+async def accept_share_link(
+    session: AsyncSession,
+    token: str,
+    accepting_user_id: UUID,
+    accepting_email: str = None
+) -> bool:
+    """Accept a sharing link and set up default access"""
+    # Find and validate share link
+    share_query = await session.execute(
+        select(ShareLink)
+        .filter(
+            ShareLink.token == token,
+            ShareLink.expires_at > datetime.now(timezone.utc),
+            ShareLink.is_used == False
+        )
+    )
+    share_link = share_query.scalar_one_or_none()
+    
+    if not share_link:
+        return False
+    
+    if accepting_email:
+        if share_link.target_email and share_link.target_email.lower() != accepting_email.lower():
+            return False
+    
+    # Set default access
+    await set_default_access(
+        session,
+        owner_user_id=share_link.owner_id,
+        granted_user_id=accepting_user_id,
+        access_level=AccessLevel(share_link.access_level)
+    )
+    
+    # Update all existing meetings for this owner
+    await update_user_meetings_access(
+        session,
+        owner_id=share_link.owner_id,
+        granted_user_id=accepting_user_id,
+        access_level=AccessLevel(share_link.access_level)
+    )
+    
+    # Mark share link as used
+    share_link.is_used = True
+    share_link.accepted_by = accepting_user_id
+    share_link.accepted_at = datetime.now(timezone.utc)
+    
+    await session.commit()
+    return True
+
+async def create_share_link(
+    session: AsyncSession,
+    owner_id: UUID,
+    access_level: AccessLevel,
+    target_email: Optional[str] = None,
+    expiration_hours: int = 24
+) -> str:
+    """Create a sharing link with specified access level and optional target email"""
+    token = secrets.token_urlsafe(32)
+    
+    share_link = ShareLink(
+        token=token,
+        owner_id=owner_id,
+        target_email=target_email.lower() if target_email else None,
+        access_level=access_level.value,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=expiration_hours)
+    )
+    
+    session.add(share_link)
+    await session.commit()
+    
+    return token
+
+# # Update access for all existing meetings
+# async with async_session() as session:
+#     await update_user_meetings_access(
+#         session,
+#         owner_id=owner_uuid,
+#         granted_user_id=user_uuid,
+#         access_level=AccessLevel.SEARCH
+#     )
+
+
+# # Accept share link without updating existing meetings (default behavior)
+# success = await accept_share_link(
+#     session,
+#     token="received_token",
+#     accepting_user_id=user_uuid,
+#     accepting_email="user@example.com"
+# )
+
+# # Accept share link and update existing meetings
+# success = await accept_share_link(
+#     session,
+#     token="received_token",
+#     accepting_user_id=user_uuid,
+#     accepting_email="user@example.com",
+#     update_existing_meetings=True
+# )

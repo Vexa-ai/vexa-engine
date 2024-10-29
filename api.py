@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -162,7 +162,6 @@ async def run_indexing_job(token: str, num_meetings: int):
 @app.post("/start_indexing")
 async def start_indexing(
     request: IndexingRequest,
-    background_tasks: BackgroundTasks,
     authorization: str = Header(...)
 ):
     token = authorization.split("Bearer ")[-1]
@@ -183,10 +182,9 @@ async def start_indexing(
                 detail="Indexing already in progress for this user"
             )
 
-        background_tasks.add_task(
-            run_indexing_job, 
-            token=token, 
-            num_meetings=request.num_meetings or 200
+        # Start the indexing job as a background task using asyncio.create_task
+        asyncio.create_task(
+            run_indexing_job(token=token, num_meetings=request.num_meetings or 200)
         )
         return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
     except ValueError as e:

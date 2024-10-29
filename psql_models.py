@@ -194,3 +194,30 @@ class Output(Base):
     def generate_cache_key(input_text: str, model: str, temperature: float, max_tokens: int) -> str:
         key = f"{input_text}_{model}_{temperature}_{max_tokens}"
         return hashlib.md5(key.encode()).hexdigest()
+
+class ShareLink(Base):
+    __tablename__ = 'share_links'
+
+    token = Column(String(64), primary_key=True)
+    owner_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    target_email = Column(String(255), nullable=True)  # Optional email for specific recipient
+    access_level = Column(
+        String(20),
+        nullable=False,
+        default=AccessLevel.SEARCH.value
+    )
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    is_used = Column(Boolean, default=False)
+    accepted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    owner = relationship('User', foreign_keys=[owner_id])
+    accepted_user = relationship('User', foreign_keys=[accepted_by])
+
+    __table_args__ = (
+        CheckConstraint(
+            access_level.in_([e.value for e in AccessLevel]),
+            name='valid_share_link_access_level'
+        ),
+    )
