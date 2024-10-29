@@ -18,46 +18,41 @@ class TokenManager:
     def __init__(self):
         self.session_factory = async_session
 
-    async def submit_token(self, token: str) -> Tuple[str | None, str | None]:
-        vexa = VexaAPI(token=token)
-        await vexa.get_user_info()
-        
-        if vexa.user_id is None or vexa.user_name is None:
-            return None, None
-
-        async with self.session_factory() as session:
-            # Check if user exists
-            user = await session.execute(
-                select(User).filter_by(id=vexa.user_id)
-            )
-            user = user.scalar_one_or_none()
-
-            if not user:
-                # Create new user
+    async def submit_token(self, token: str) -> Tuple[Optional[str], Optional[str]]:
+        try:
+            # Get user info from Vexa API
+            vexa_api = VexaAPI(token=token)
+            user_info = await vexa_api.get_user_info()
+            
+            async with async_session() as session:
+                # Create user if doesn't exist
                 user = User(
-                    id=vexa.user_id,
-                    name=vexa.user_name,
+                    id=user_info["id"],
+                    email=user_info["email"],
+                    username=user_info.get("username"),
+                    first_name=user_info.get("first_name"),
+                    last_name=user_info.get("last_name"),
+                    image=user_info.get("image")
                 )
-                session.add(user)
-
-            # Update or create token
-            token_record = await session.execute(
-                select(UserToken).filter_by(token=token)
-            )
-            token_record = token_record.scalar_one_or_none()
-
-            if token_record:
-                token_record.last_used_at = datetime.utcnow()
-            else:
-                token_record = UserToken(
+                
+                # Merge user and await the operation
+                merged_user = await session.merge(user)
+                await session.flush()  # Ensure the user is created in the database
+                
+                # Create new token record
+                user_token = UserToken(
                     token=token,
-                    user_id=vexa.user_id,
-                    user_name=vexa.user_name
+                    user_id=merged_user.id,
+                    user_name=f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
+                    last_used_at=datetime.utcnow()
                 )
-                session.add(token_record)
-
-            await session.commit()
-            return str(vexa.user_id), vexa.user_name
+                session.add(user_token)
+                await session.commit()
+                
+                return str(merged_user.id), user_token.user_name
+        except Exception as e:
+            print(f"Error in submit_token: {e}")
+            return None, None
 
     async def check_token(self, token: str) -> Tuple[str | None, str | None]:
         async with self.session_factory() as session:
