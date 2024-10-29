@@ -24,9 +24,11 @@ class QdrantSearchEngine:
     def __init__(self):
         # Initialize with async client
         self.client = AsyncQdrantClient("127.0.0.1", port=6333)
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        # Change to multilingual model
+        self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
         self.collection_name = "discussion_points"
-        self.vector_size = 384
+        # Update vector size for new model
+        self.vector_size = 384  # Verify this matches the new model's output size
         
         # Refined weights for different field types
         self.weights = {
