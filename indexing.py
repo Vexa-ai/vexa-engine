@@ -14,6 +14,7 @@ from prompts import Prompts
 from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
 from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel
 from psql_helpers import get_session
+from qdrant_search import QdrantSearchEngine
 
 
 async def check_item_exists(meeting_id):
@@ -154,6 +155,7 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
 class Indexing:
     def __init__(self, token: str):
         self.vexa = VexaAPI(token=token)
+        self.qdrant = QdrantSearchEngine()
         
         # Use connection pooling for Redis
         self.redis = Redis(
@@ -195,6 +197,10 @@ class Indexing:
             raise ValueError("Indexing already in progress for this user")
 
         try:
+            # Add initial full sync with Qdrant
+            await self.qdrant.sync_from_postgres(get_session)
+            print("Initial Qdrant sync completed")
+
             meetings = await self.vexa.get_meetings()
             meetings = meetings[-num_meetings:]
 
@@ -234,7 +240,10 @@ class Indexing:
                                 start_datetime, 
                                 user_id
                             )
-                            print(f"Successfully processed meeting {meeting_id}")
+                            # Add Qdrant sync with session factory
+                            async with get_session() as session:
+                                await self.qdrant.sync_meeting(meeting_id, session)
+                            print(f"Successfully processed and indexed meeting {meeting_id}")
                 except Exception as e:
                     print(f"Error processing meeting {meeting_id}: {e}")
                 finally:

@@ -331,3 +331,66 @@ class QdrantSearchEngine:
             })
         
         return results
+
+    async def sync_meeting(self, meeting_id: str, session):
+        """Sync a specific meeting from PostgreSQL to Qdrant"""
+        query = select(DiscussionPoint, Meeting, Speaker).join(
+            Meeting, DiscussionPoint.meeting_id == Meeting.meeting_id
+        ).join(
+            Speaker, DiscussionPoint.speaker_id == Speaker.id
+        ).where(Meeting.meeting_id == meeting_id)
+        
+        result = await session.execute(query)
+        rows = result.fetchall()
+        
+        points = []
+        for dp, meeting, speaker in rows:
+            # Generate vectors for each field
+            topic_vector = self.model.encode(dp.topic_name if dp.topic_name else "")
+            summary_vector = self.model.encode(dp.summary if dp.summary else "")
+            details_vector = self.model.encode(dp.details if dp.details else "")
+            speaker_vector = self.model.encode(speaker.name)
+            
+            discussion_id = str(uuid.uuid4())
+            
+            # Base payload
+            base_payload = {
+                "topic_name": dp.topic_name,
+                "summary": dp.summary,
+                "details": dp.details,
+                "meeting_id": str(meeting.meeting_id),
+                "speaker_name": speaker.name,
+                "topic_type": dp.topic_type,
+                "discussion_id": discussion_id,
+                "timestamp": meeting.timestamp
+            }
+            
+            # Create points for each vector type
+            points.extend([
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=topic_vector.tolist(),
+                    payload={**base_payload, "vector_type": "topic_name"}
+                ),
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=summary_vector.tolist(),
+                    payload={**base_payload, "vector_type": "summary"}
+                ),
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=details_vector.tolist(),
+                    payload={**base_payload, "vector_type": "details"}
+                ),
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=speaker_vector.tolist(),
+                    payload={**base_payload, "vector_type": "speaker"}
+                )
+            ])
+        
+        if points:
+            await self.client.upsert(
+                collection_name=self.collection_name,
+                points=points
+            )
