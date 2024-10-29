@@ -143,13 +143,13 @@ class ThreadName(BaseCall):
 class SearchQuery(BaseModel):
     query: str = Field(
         ..., 
-        description="Short search query (1-3 words)"
+        description="Search query to find relevant information in meeting transcripts"
     )
 
 class ParsedSearchRequest(BaseCall):
     search_queries: List[SearchQuery] = Field(
         ...,
-        description="List of structured search queries derived from the request",
+        description="List of search queries that will be used to search meeting transcripts",
         min_items=1
     )
     
@@ -157,14 +157,25 @@ class ParsedSearchRequest(BaseCall):
     async def parse_request(cls, spoken_request: str) -> "ParsedSearchRequest":
         """Helper method to create a ParsedSearchRequest instance"""
         messages = [
-            system_msg("""Analyze requests and extract meaningful search phrases that will find relevant information.
-            Focus on preserving context and relationships between terms.
-            Identify complete semantic units that capture the actual search intent.
-            Remove filler phrases that don't add search value.
+            system_msg("""You are a search query parser that helps find relevant information in meeting transcripts.
+
+Your role in the system:
+1. User makes a natural language request
+2. You break it down into search queries
+3. These queries will be sent to a search engine that looks through meeting transcripts
+4. The search results will be used to construct a response to the user
+
+Guidelines for creating effective search queries:
+- Create queries that will find relevant discussions in meetings
+- Focus on key terms that people would actually say in conversations
+- Break complex requests into simple searchable concepts
+- Include different variations of important terms
+- Keep queries concise but meaningful
+- Think about what words would appear in relevant meeting discussions
+
+Remember: Your queries will be used to find actual conversations where people discussed these topics."""),
             
-            The goal is to create search phrases that will effectively match relevant content."""),
-            
-            user_msg(f"What are the essential search phrases needed to find relevant information for this request: {spoken_request}")
+            user_msg(f"What search queries would find relevant meeting discussions to answer this request: {spoken_request}")
         ]
         
         return await cls.call(messages)

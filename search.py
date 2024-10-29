@@ -139,6 +139,8 @@ class SearchAssistant:
         r = await ParsedSearchRequest.parse_request(query+str(messages))
         queries = [q.query for q in r.search_queries]
         
+        print(queries)
+        
         search_results = [await self.search(q) for q in queries]
         search_results = pd.concat(search_results)
         search_results = search_results.drop(columns=['vector_scores','exact_matches']).drop_duplicates(subset = ['topic_name','speaker_name','summary','details','meeting_id'])
@@ -174,12 +176,12 @@ class SearchAssistant:
         url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
 
         # Build messages
-        context_msg = system_msg(f"Context: {context}")
+        context_msg = system_msg(f"Context with CORRECT VERIFIED INDEX that must be used : {context}")
         messages_context = [
-            system_msg(self.prompts.perplexity),
+            system_msg(self.prompts.search2),
             *messages,
             context_msg,
-            user_msg(query)
+            user_msg(f'User request: {query}')
         ]
 
         # Generate response
