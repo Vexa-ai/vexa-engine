@@ -12,12 +12,15 @@ from qdrant_client.models import (
     Range,
     SearchParams,
     TextIndexParams,
-    TokenizerType
+    TokenizerType,
+    MatchAny
 )
+
+
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
-from psql_models import DiscussionPoint, Meeting, Speaker, get_session
+from psql_models import DiscussionPoint, Meeting, Speaker
 from sqlalchemy import select
 
 class QdrantSearchEngine:
@@ -184,24 +187,34 @@ class QdrantSearchEngine:
                 # Index might already exist, which is fine
                 print(f"Note: {e} for field {field_name}")
 
-    async def search(self, query_text: str, limit: int = 10, min_score: float = 0.7):
+    async def search(self, query_text: str, meeting_ids: List[str], limit: int = 10, min_score: float = 0.7):
         """Enhanced hybrid search combining vector similarity with text matching"""
         query_vector = self.model.encode(query_text)
         all_results = []
         
         # Search each field type
         for vector_type, weight in self.weights.items():
+            should_conditions = [
+                FieldCondition(
+                    key="vector_type",
+                    match=MatchValue(value=vector_type)
+                ),
+                FieldCondition(
+                    key=vector_type,
+                    match=MatchText(text=query_text)
+                )
+            ]
+            
+            must_conditions = [
+                FieldCondition(
+                    key="meeting_id",
+                    match={'any': meeting_ids}
+                )
+            ]
+            
             search_filter = Filter(
-                should=[  # Use should instead of must for more lenient matching
-                    FieldCondition(
-                        key="vector_type",
-                        match=MatchValue(value=vector_type)
-                    ),
-                    FieldCondition(
-                        key=vector_type,
-                        match=MatchText(text=query_text)
-                    )
-                ]
+                should=should_conditions,
+                must=must_conditions
             )
             
             # Perform vector search with text filter
@@ -280,21 +293,25 @@ class QdrantSearchEngine:
         
         return sorted_results[:limit]
 
-    async def search_by_speaker(self, speaker_query: str, limit: int = 5, min_score: float = 0.7):
+    async def search_by_speaker(self, speaker_query: str, meeting_ids: List[str], limit: int = 5, min_score: float = 0.7):
         """Search for discussions by speaker similarity"""
         query_vector = self.model.encode(speaker_query)
         
+        must_conditions = [
+            FieldCondition(
+                key="vector_type",
+                match=MatchValue(value="speaker")
+            ),
+            FieldCondition(
+                key="meeting_id",
+                match=MatchAny(any=meeting_ids)
+            )
+        ]
+        
         hits = await self.client.search(
             collection_name=self.collection_name,
-            query_vector=query_vector.tolist(),  # Convert numpy array to list
-            query_filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="vector_type",
-                        match=MatchValue(value="speaker")
-                    )
-                ]
-            ),
+            query_vector=query_vector.tolist(),
+            query_filter=Filter(must=must_conditions),
             limit=limit,
             score_threshold=min_score
         )

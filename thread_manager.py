@@ -4,7 +4,8 @@ from typing import List, Optional
 import uuid
 from pydantic import BaseModel, Field
 from core import Msg
-from psql_models import Thread, async_session, get_session
+from psql_models import Thread
+from psql_helpers import get_session
 from sqlalchemy import select
 from uuid import UUID
 

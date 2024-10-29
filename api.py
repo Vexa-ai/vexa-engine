@@ -10,14 +10,16 @@ import asyncio
 from datetime import datetime
 import json
 # Add these new imports
-from psql_models import (
+from psql_helpers import (
     async_session,
     get_first_meeting_timestamp,
     get_last_meeting_timestamp,
-    Meeting
 )
 from sqlalchemy import func, select
 from vexa import VexaAPI
+
+from psql_models import Meeting,UserMeeting
+from sqlalchemy import and_
 
 app = FastAPI()
 
@@ -153,9 +155,9 @@ async def get_meeting_timestamps(current_user: tuple = Depends(get_current_user)
         last_meeting=last_meeting
     )
 
-async def run_indexing_job(token: str, user_id: str, num_meetings: int):
+async def run_indexing_job(token: str, num_meetings: int):
     indexer = Indexing(token=token)
-    await indexer.index_meetings(user_id=user_id, num_meetings=num_meetings)
+    await indexer.index_meetings(num_meetings=num_meetings)
 
 @app.post("/start_indexing")
 async def start_indexing(
@@ -184,7 +186,6 @@ async def start_indexing(
         background_tasks.add_task(
             run_indexing_job, 
             token=token, 
-            user_id=user_id, 
             num_meetings=request.num_meetings or 200
         )
         return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
@@ -198,12 +199,17 @@ async def get_meetings_processed(current_user: tuple = Depends(get_current_user)
     
     # Get total meetings from Vexa
     vexa_api = VexaAPI(token=token)
-    total_meetings = await vexa_api.get_meetings(include_total=True,limit=1)
+    total_meetings = await vexa_api.get_meetings(include_total=True, limit=1)
     total_meetings_count = total_meetings[1] if isinstance(total_meetings, tuple) else 0
     
     # Get processed meetings count from database
     async with async_session() as session:
-        query = select(func.count()).select_from(Meeting).where(Meeting.owner_id == user_id)
+        query = select(func.count()).select_from(Meeting)\
+            .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)\
+            .where(and_(
+                UserMeeting.user_id == user_id,
+                UserMeeting.is_owner == True
+            ))
         result = await session.execute(query)
         meetings_processed = result.scalar() or 0
         

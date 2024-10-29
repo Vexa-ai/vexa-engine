@@ -2,7 +2,7 @@ import uuid
 from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 from vexa import VexaAPI
-from psql_models import User, UserToken, get_session, async_session
+from psql_models import User, UserToken, async_session
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool

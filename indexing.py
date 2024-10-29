@@ -12,7 +12,8 @@ from vexa import VexaAPI
 from core import system_msg, user_msg
 from prompts import Prompts
 from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
-from psql_models import Speaker, Meeting, DiscussionPoint, get_session, engine, read_table_async
+from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel
+from psql_helpers import get_session
 
 
 async def check_item_exists(meeting_id):
@@ -100,10 +101,20 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                 new_meeting = Meeting(
                     meeting_id=meeting_id, 
                     transcript=str(transcript),
-                    timestamp=naive_datetime,
-                    owner_id=user_id  # Added owner_id
+                    timestamp=naive_datetime
                 )
                 session.add(new_meeting)
+                await session.flush()
+
+                # Create UserMeeting relationship with owner access
+                user_meeting = UserMeeting(
+                    meeting_id=meeting_id,
+                    user_id=user_id,
+                    access_level=AccessLevel.OWNER.value,
+                    is_owner=True,
+                    created_by=user_id
+                )
+                session.add(user_meeting)
                 await session.flush()
             else:
                 new_meeting = existing_meeting
@@ -173,7 +184,9 @@ class Indexing:
             "processing_meetings": list(self.redis.smembers(self.processing_key))
         }
 
-    async def index_meetings(self, user_id: str, num_meetings: int = 400):
+    async def index_meetings(self, num_meetings: int = 400):
+        await self.vexa.get_user_info()
+        user_id = self.vexa.user_id
         # Add user-specific lock key
         indexing_lock_key = f"indexing:lock:{user_id}"
         
@@ -182,7 +195,6 @@ class Indexing:
             raise ValueError("Indexing already in progress for this user")
 
         try:
-            await self.vexa.get_user_info()
             meetings = await self.vexa.get_meetings()
             meetings = meetings[-num_meetings:]
 

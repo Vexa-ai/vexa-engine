@@ -12,6 +12,8 @@ from core import system_msg, user_msg, assistant_msg, generic_call_stream, count
 from prompts import Prompts
 from pydantic_models import ThreadName,ParsedSearchRequest
 from thread_manager import ThreadManager
+from psql_helpers import get_accessible_meetings,get_session
+from uuid import UUID
 
 
 class SearchResult(BaseModel):
@@ -59,17 +61,30 @@ class SearchAssistant:
         normalized = (series - min_value) / (max_value - min_value)
         return normalized * 0.5 + series.min() # Scale to range [0.5, 1]
 
-    async def search(self, query: str, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
-        # Get search results
+    async def search(self, query: str, user_id: str, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
+        # Get accessible meetings for user
+        async with get_session() as session:
+            meetings, _ = await get_accessible_meetings(
+                session=session,
+                user_id=UUID(user_id),
+                limit=1000  # Set high limit to get all accessible meetings
+            )
+            meeting_ids = [str(meeting.meeting_id) for meeting in meetings]
+        
+        if not meeting_ids:
+            return pd.DataFrame()  # Return empty dataframe if user has no accessible meetings
+
+        # Get search results with meeting filter
         main_results = await self.search_engine.search(
             query_text=query,
+            meeting_ids=meeting_ids,
             limit=limit,
             min_score=min_score,
         )
         
-
         speaker_results = await self.search_engine.search_by_speaker(
             speaker_query=query,
+            meeting_ids=meeting_ids,
             limit=limit,
             min_score=min_score
         )
@@ -141,7 +156,7 @@ class SearchAssistant:
         
         print(queries)
         
-        search_results = [await self.search(q) for q in queries]
+        search_results = [await self.search(q, user_id=user_id) for q in queries]
         search_results = pd.concat(search_results)
         search_results = search_results.drop(columns=['vector_scores','exact_matches']).drop_duplicates(subset = ['topic_name','speaker_name','summary','details','meeting_id'])
         
