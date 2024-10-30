@@ -28,7 +28,7 @@ class QdrantSearchEngine:
         # Initialize with async client
         self.client = AsyncQdrantClient("127.0.0.1", port=6333)
         # Change to multilingual model
-        self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+        self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2', device='cuda:3')
         self.collection_name = "discussion_points"
         # Update vector size for new model
         self.vector_size = 384  # Verify this matches the new model's output size
