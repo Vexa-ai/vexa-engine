@@ -7,14 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from redis import Redis
+from uuid import UUID
 
 from vexa import VexaAPI
 from core import system_msg, user_msg
 from prompts import Prompts
 from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
-from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel, DefaultAccess
+from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel, DefaultAccess,User, UserToken
 from psql_helpers import get_session
 from qdrant_search import QdrantSearchEngine
+
+from sqlalchemy import select, exists,distinct
 
 
 async def check_item_exists(meeting_id):
@@ -274,7 +277,7 @@ class Indexing:
                 self.redis.srem(self.processing_key, meeting_id)
                 self.redis.delete(self.current_meeting_key)
 
-    async def index_meetings(self, num_meetings: int = 110):
+    async def index_meetings(self, num_meetings: int = 150):
         num_meetings = 120 #temp
         await self.vexa.get_user_info()
         user_id = self.vexa.user_id
@@ -302,3 +305,201 @@ class Indexing:
         finally:
             self.redis.delete(indexing_lock_key)
             self.redis.delete(self.indexing_key)
+
+async def get_indexing_stats(session: AsyncSession) -> pd.DataFrame:
+    """
+    Get indexing statistics as a DataFrame for all users
+    Uses Vexa API with user tokens from database for total meeting counts
+    """
+    
+    # Get users with their tokens and meeting counts
+    users_query = (
+        select(
+            User.id,
+            User.email,
+            UserToken.token,
+            func.max(Meeting.timestamp).label('last_meeting_date')
+        )
+        .join(UserToken, User.id == UserToken.user_id)
+        .join(UserMeeting, User.id == UserMeeting.user_id)
+        .join(Meeting)
+        .where(UserMeeting.is_owner == True)
+        .group_by(User.id, User.email, UserToken.token)
+    )
+    
+    # Get indexed meetings count
+    indexed_query = (
+        select(
+            UserMeeting.user_id,
+            func.count(distinct(Meeting.meeting_id)).label('indexed_meetings')
+        )
+        .join(Meeting)
+        .join(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
+        .where(UserMeeting.is_owner == True)
+        .group_by(UserMeeting.user_id)
+    )
+    
+    # Execute queries
+    users_result = await session.execute(users_query)
+    indexed_result = await session.execute(indexed_query)
+    
+    # Create initial DataFrame
+    users_df = pd.DataFrame(
+        users_result.all(),
+        columns=['user_id', 'email', 'token', 'last_meeting_date']
+    )
+    
+    indexed_df = pd.DataFrame(
+        indexed_result.all(),
+        columns=['user_id', 'indexed_meetings']
+    )
+    
+    # Merge DataFrames
+    df = pd.merge(users_df, indexed_df, on='user_id', how='left')
+    df['indexed_meetings'] = df['indexed_meetings'].fillna(0).astype(int)
+    
+    # Get total meetings from Vexa API for each user
+    total_meetings_data = []
+    for _, row in df.iterrows():
+        try:
+            if row['token']:  # Only proceed if user has a token
+                vexa = VexaAPI(token=row['token'])
+                meetings, total = await vexa.get_meetings(include_total=True)
+                total_meetings_data.append({
+                    'user_id': row['user_id'],
+                    'total_meetings': total
+                })
+            else:
+                print(f"No token found for user {row['email']}")
+                total_meetings_data.append({
+                    'user_id': row['user_id'],
+                    'total_meetings': 0
+                })
+        except Exception as e:
+            print(f"Error getting meetings for user {row['email']}: {e}")
+            total_meetings_data.append({
+                'user_id': row['user_id'],
+                'total_meetings': 0
+            })
+    
+    # Create DataFrame for total meetings and merge
+    total_df = pd.DataFrame(total_meetings_data)
+    df = pd.merge(df, total_df, on='user_id', how='left')
+    
+    # Calculate additional metrics
+    df['remaining_meetings'] = df['total_meetings'] - df['indexed_meetings']
+    df['progress_percentage'] = round(
+        (df['indexed_meetings'] / df['total_meetings'] * 100).fillna(0), 2
+    )
+    
+    # Format timestamp
+    df['last_meeting_date'] = pd.to_datetime(df['last_meeting_date']).dt.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Remove token from final output and reorder columns
+    df = df[[
+        'user_id', 
+        'email',
+        'total_meetings',
+        'indexed_meetings',
+        'remaining_meetings',
+        'progress_percentage',
+        'last_meeting_date'
+    ]]
+    
+    return df
+
+async def start_indexing_for_users(session: AsyncSession, emails: list[str] = None, num_meetings: int = 150) -> dict:
+    """
+    Start indexing process for selected users by email
+    
+    Args:
+        session: AsyncSession - Database session
+        emails: Optional[list[str]] - List of user emails to index. If None, indexes all users
+        num_meetings: int - Number of most recent meetings to index per user
+    Returns:
+        dict with status of indexing initiation for each user
+    """
+    
+    # Query to get users and their tokens
+    users_query = (
+        select(
+            User.id,
+            User.email,
+            UserToken.token
+        )
+        .join(UserToken, User.id == UserToken.user_id)
+    )
+    
+    if emails:
+        users_query = users_query.where(User.email.in_(emails))
+    
+    users_result = await session.execute(users_query)
+    users_data = users_result.all()
+    
+    # Track which emails were not found
+    if emails:
+        found_emails = {user.email for user in users_data}
+        not_found = set(emails) - found_emails
+        results = {
+            email: {
+                "email": email,
+                "status": "failed",
+                "error": "User not found"
+            } for email in not_found
+        }
+    else:
+        results = {}
+    
+    tasks = []
+    
+    for user_id, email, token in users_data:
+        if not token:
+            results[email] = {
+                "email": email,
+                "status": "failed",
+                "error": "No token found"
+            }
+            continue
+            
+        try:
+            # Create indexer instance for each user
+            indexer = Indexing(token)
+            
+            # Create task for each user's indexing process
+            task = asyncio.create_task(
+                indexer.index_meetings(num_meetings=num_meetings)
+            )
+            tasks.append((email, task))
+            
+            results[email] = {
+                "email": email,
+                "status": "initiated"
+            }
+            
+        except Exception as e:
+            results[email] = {
+                "email": email,
+                "status": "failed",
+                "error": str(e)
+            }
+    
+    # Wait for all indexing tasks to complete or timeout
+    if tasks:
+        done, pending = await asyncio.wait(
+            [task for _, task in tasks],
+            timeout=10.0  # Timeout for waiting on task initiation
+        )
+        
+        # Update results based on task completion
+        for email, task in tasks:
+            if task in pending:
+                results[email]["status"] = "running"
+            elif task in done:
+                try:
+                    await task
+                    results[email]["status"] = "completed"
+                except Exception as e:
+                    results[email]["status"] = "failed"
+                    results[email]["error"] = str(e)
+    
+    return results

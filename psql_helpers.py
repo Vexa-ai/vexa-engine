@@ -95,17 +95,17 @@ from sqlalchemy.ext.compiler import compiles
 def _compile_drop_table(element, compiler, **kwargs):
     return compiler.visit_drop_table(element) + " CASCADE"
 
-async def init_db():
-    engine = create_async_engine(DATABASE_URL)
+# async def init_db():
+#     engine = create_async_engine(DATABASE_URL)
     
-    async with engine.begin() as conn:
-        # Drop all tables with CASCADE
-        await conn.run_sync(Base.metadata.drop_all)
+#     async with engine.begin() as conn:
+#         # Drop all tables with CASCADE
+#         await conn.run_sync(Base.metadata.drop_all)
         
-        # Create all tables
-        await conn.run_sync(Base.metadata.create_all)
+#         # Create all tables
+#         await conn.run_sync(Base.metadata.create_all)
     
-    print("Database initialized successfully.")
+#     print("Database initialized successfully.")
     
 @asynccontextmanager
 async def get_session():
@@ -123,16 +123,37 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession
 
-async def read_table_async(table_name):
+async def read_table_async(table_or_query):
     async with AsyncSession(engine) as session:
-        result = await session.execute(select(table_name))
+        # Convert table class to select query if needed
+        if hasattr(table_or_query, '__table__'):
+            query = select(table_or_query)
+        else:
+            query = table_or_query
+            
+        result = await session.execute(query)
         rows = result.fetchall()
         
-        # Extract attributes from the objects
-        data = []
-        for row in rows:
-            obj = row[0]  # Assuming the object is the first (and only) item in each row
-            data.append({column.name: getattr(obj, column.name) for column in table_name.__table__.columns})
+        # If it's a simple table query
+        if hasattr(table_or_query, '__table__'):
+            data = []
+            for row in rows:
+                obj = row[0]  # Assuming the object is the first item in each row
+                data.append({column.name: getattr(obj, column.name) for column in table_or_query.__table__.columns})
+        # If it's a complex query with multiple entities
+        else:
+            data = []
+            for row in rows:
+                row_data = {}
+                for entity, obj in zip(query.selected_columns, row):
+                    if hasattr(obj, '__table__'):
+                        # If it's an ORM object
+                        for column in obj.__table__.columns:
+                            row_data[f"{obj.__table__.name}_{column.name}"] = getattr(obj, column.name)
+                    else:
+                        # If it's a single column
+                        row_data[entity.name] = obj
+                data.append(row_data)
         
         return pd.DataFrame(data)
     

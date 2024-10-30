@@ -162,3 +162,76 @@ def assign_chunk_numbers(df, min_chars=300, max_chars=1000):
 class VexaAPIError(Exception):
     """Custom exception for Vexa API errors"""
     pass
+
+import requests
+import os
+from dotenv import load_dotenv
+from urllib.parse import urlparse, parse_qs
+
+class VexaAuth:
+    def __init__(self):
+        load_dotenv()
+        self.base_url = "http://127.0.0.1:8765"
+        self.vexa_api_url = "http://127.0.0.1:8001"
+        self.service_token = os.getenv('VEXA_SERVICE_TOKEN')
+
+    async def get_user_token(self, email: str):
+        """
+        Get user token using service token and email
+        """
+        auth_url = f"{self.vexa_api_url}/api/v1/auth/default"
+        
+        # Prepare payload for Vexa auth
+        payload = {
+            "email": email,
+            "utm_source": "string",
+            "utm_medium": "string",
+            "utm_campaign": "string",
+            "utm_term": "string",
+            "utm_content": "string",
+            "username": "string",
+            "first_name": "string",
+            "last_name": "string"
+        }
+        
+        # Add service token to headers
+        headers = {
+            "Authorization": f"Bearer {self.service_token}"
+        }
+        
+        # Make request to get auth link
+        response = requests.post(auth_url, json=payload, headers=headers)
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to get auth link: {response.text}")
+        
+        # Extract token from auth link
+        auth_link = response.json()['link']
+        parsed_url = urlparse(auth_link)
+        params = parse_qs(parsed_url.query)
+        user_token = params.get('__vexa_token', [None])[0]
+        
+        if not user_token:
+            raise Exception("Could not extract user token from auth link")
+        
+        return user_token
+
+    async def authenticate_user(self, email: str):
+        """
+        Complete authentication flow: get user token and submit it
+        """
+        # Get user token
+        user_token = await self.get_user_token(email)
+        
+        # Submit token to our API
+        submit_url = f"{self.base_url}/submit_token"
+        payload = {
+            "token": user_token
+        }
+        
+        response = requests.post(submit_url, json=payload)
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to submit token: {response.text}")
+        
+        return response.json()
