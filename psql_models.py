@@ -20,6 +20,7 @@ from enum import Enum
 from sqlalchemy import Index, UniqueConstraint, CheckConstraint
 from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, ForeignKey
 import os
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
@@ -31,8 +32,13 @@ DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTG
 
 #DATABASE_URL = 'postgresql+asyncpg://postgres:mysecretpassword@localhost:5432/postgres'
 
-# Create async engine
-engine = create_async_engine(DATABASE_URL)
+# Create async engine with connection pooling
+engine = create_async_engine(
+    DATABASE_URL,
+    poolclass=AsyncAdaptedQueuePool,
+    max_overflow=10,
+    pool_size=20,
+)
 
 # Create async session
 async_session = sessionmaker(

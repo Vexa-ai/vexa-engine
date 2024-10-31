@@ -25,6 +25,16 @@ from sqlalchemy import and_
 from pydantic import BaseModel, EmailStr
 from uuid import UUID
 from psql_models import AccessLevel
+from pyinstrument import Profiler
+from fastapi import FastAPI, Request
+from functools import lru_cache
+from fastapi_cache import FastAPICache
+from fastapi_cache.decorator import cache
+from fastapi_cache.backends.redis import RedisBackend
+import redis
+import os
+
+
 
 app = FastAPI()
 
@@ -79,6 +89,23 @@ class CreateShareLinkResponse(BaseModel):
 class AcceptShareLinkRequest(BaseModel):
     token: str
     accepting_email: Optional[EmailStr] = None
+    
+
+REDIS_HOST=os.getenv('REDIS_HOST', '127.0.0.1')
+if REDIS_HOST == '127.0.0.1':
+    DEV = True
+REDIS_PORT=int(os.getenv('REDIS_PORT', 6379))
+
+# Initialize Redis connection
+redis_client = redis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}")
+
+# Setup FastAPI cache with Redis backend
+@app.on_event("startup")
+async def startup():
+    FastAPICache.init(
+        backend=RedisBackend(redis_client),
+        prefix="fastapi-cache"
+    )
 
 @app.on_event("startup")
 async def startup_event():
@@ -209,7 +236,11 @@ async def start_indexing(
         raise HTTPException(status_code=409, detail=str(e))
 
 @app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
-async def get_meetings_processed(current_user: tuple = Depends(get_current_user), authorization: str = Header(...)):
+@cache(expire=300)  # Cache for 5 minutes
+async def get_meetings_processed(
+    authorization: str = Header(...),
+    current_user: tuple = Depends(get_current_user)
+):
     user_id, _ = current_user
     token = authorization.split("Bearer ")[-1]
     
@@ -307,12 +338,24 @@ async def accept_new_share_link(
         
     return {"message": "Share link accepted successfully"}
 
+if DEV:
+    @app.middleware("http")
+    async def profiler_middleware(request: Request, call_next):
+
+        profiler = Profiler()
+        profiler.start()
+        response = await call_next(request)
+        profiler.stop()
+        print(profiler.output_text(unicode=True, color=True))
+        return response
+        return await call_next(request)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)
     
     
-    # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8765 --reload
+    # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8766 --workers 1 --loop uvloop
 
 
 

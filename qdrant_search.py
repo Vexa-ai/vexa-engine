@@ -25,6 +25,8 @@ from sqlalchemy import select
 
 import os
 
+import asyncio
+
 QDRANT_HOST = os.getenv('QDRANT_HOST', '127.0.0.1')
 QDRANT_PORT = os.getenv('QDRANT_PORT', '6333')
 
@@ -159,8 +161,8 @@ class QdrantSearchEngine:
                     )
                 ])
                 
-                # Batch upload
-                if len(points) >= 100:
+                # Adjust batch size to prevent memory issues
+                if len(points) >= 500:  # Increased from 100
                     await self.client.upsert(
                         collection_name=self.collection_name,
                         points=points
@@ -194,9 +196,13 @@ class QdrantSearchEngine:
                 # Index might already exist, which is fine
                 print(f"Note: {e} for field {field_name}")
 
+    async def encode_text(self, text):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.model.encode, text)
+
     async def search(self, query_text: str, meeting_ids: List[str], limit: int = 10, min_score: float = 0.7):
         """Enhanced hybrid search combining vector similarity with text matching"""
-        query_vector = self.model.encode(query_text)
+        query_vector = await self.encode_text(query_text)
         all_results = []
         
         # Search each field type
@@ -302,7 +308,7 @@ class QdrantSearchEngine:
 
     async def search_by_speaker(self, speaker_query: str, meeting_ids: List[str], limit: int = 5, min_score: float = 0.7):
         """Search for discussions by speaker similarity"""
-        query_vector = self.model.encode(speaker_query)
+        query_vector = await self.encode_text(speaker_query)
         
         must_conditions = [
             FieldCondition(
