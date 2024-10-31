@@ -38,3 +38,4 @@ redis
 tiktoken
 litellm
 pydantic[email]
+tabulate

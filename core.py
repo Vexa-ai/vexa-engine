@@ -7,7 +7,6 @@ from abc import abstractmethod
 import pandas as pd
 import json
 import requests
-from graphviz import Digraph
 import hashlib
 import redis
 import re
