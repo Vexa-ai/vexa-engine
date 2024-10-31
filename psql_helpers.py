@@ -106,6 +106,11 @@ def _compile_drop_table(element, compiler, **kwargs):
 #         await conn.run_sync(Base.metadata.create_all)
     
 #     print("Database initialized successfully.")
+
+async def setup_database():
+    async with engine.begin() as conn:
+        # Create all tables
+        await conn.run_sync(Base.metadata.create_all)
     
 @asynccontextmanager
 async def get_session():

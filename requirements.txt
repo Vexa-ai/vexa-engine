@@ -1,0 +1,40 @@
+# Database
+sqlalchemy
+alembic
+asyncpg
+psycopg2-binary
+
+# Vector Database
+qdrant-client
+
+# ML/Embeddings
+sentence-transformers
+torch
+huggingface-hub
+
+# API Framework
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Async Support
+httpx
+aiohttp
+
+# Utilities
+python-dateutil
+pandas
+numpy
+pydantic
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Development
+jupyter
+ipykernel
+
+instructor
+redis
+tiktoken
+litellm
+pydantic[email]

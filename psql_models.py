@@ -19,10 +19,18 @@ from sqlalchemy import and_
 from enum import Enum
 from sqlalchemy import Index, UniqueConstraint, CheckConstraint
 from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, ForeignKey
+import os
 
+POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
+POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
+POSTGRES_USER = os.getenv('POSTGRES_USER', 'postgres')
+POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD', 'mysecretpassword')
+POSTGRES_DB = os.getenv('POSTGRES_DB', 'postgres')
 
+DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 
-DATABASE_URL = 'postgresql+asyncpg://postgres:mysecretpassword@localhost:5432/postgres'
+#DATABASE_URL = 'postgresql+asyncpg://postgres:mysecretpassword@localhost:5432/postgres'
+
 # Create async engine
 engine = create_async_engine(DATABASE_URL)
 
@@ -221,3 +229,6 @@ class ShareLink(Base):
             name='valid_share_link_access_level'
         ),
     )
+
+# The following code should be placed inside an async function to avoid the "async" not allowed outside of async function error.
+
