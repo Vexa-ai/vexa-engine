@@ -23,10 +23,17 @@ import numpy as np
 from psql_models import DiscussionPoint, Meeting, Speaker
 from sqlalchemy import select
 
+import os
+
+QDRANT_HOST = os.getenv('QDRANT_HOST', '127.0.0.1')
+QDRANT_PORT = os.getenv('QDRANT_PORT', '6333')
+
+
+
 class QdrantSearchEngine:
     def __init__(self):
         # Initialize with async client
-        self.client = AsyncQdrantClient("127.0.0.1", port=6333)
+        self.client = AsyncQdrantClient(QDRANT_HOST, port=QDRANT_PORT)
         # Change to multilingual model
         self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2', device='cuda:3')
         self.collection_name = "discussion_points"

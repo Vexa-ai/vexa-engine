@@ -5,19 +5,24 @@ from datetime import datetime
 import pandas as pd
 import asyncio
 
+
+VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
+API_URL = os.getenv('API_URL', 'http://127.0.0.1:8765')
+
 load_dotenv()
 
 class VexaAPI:
     def __init__(self, token=os.getenv('VEXA_TOKEN')):
         self.token = token
-        self.base_url = "http://127.0.0.1:8001/api/v1"
+        print(f"Vexa token: {self.token}")
+        self.base_url = VEXA_API_URL
         self.user_info = None
         self.user_id = None
         self.user_name = None
 
 
     async def get_meetings(self, offset=None, limit=None, include_total=False):
-        url = f"{self.base_url}/calls/all"
+        url = f"{self.base_url}/api/v1/calls/all"
         params = {
             "token": self.token
         }
@@ -49,7 +54,7 @@ class VexaAPI:
 
     async def get_transcription_(self, meeting_id=None, meeting_session_id=None, last_msg_timestamp=None, offset=None, limit=None):
 
-            url = f"{self.base_url}/transcription"
+            url = f"{self.base_url}/api/v1/transcription"
             
             params = {
                 "meeting_id": meeting_id,
@@ -117,7 +122,7 @@ class VexaAPI:
         return df, formatted_output, start_datetime, speakers,transcript
     
     async def get_user_info(self):
-        url = f"{self.base_url}/users/me"
+        url = f"{self.base_url}/api/v1/users/me"
         params = {
             "token": self.token
         }
@@ -170,9 +175,8 @@ from urllib.parse import urlparse, parse_qs
 
 class VexaAuth:
     def __init__(self):
-        load_dotenv()
-        self.base_url = "http://127.0.0.1:8765"
-        self.vexa_api_url = "http://127.0.0.1:8001"
+        self.base_url = API_URL
+        self.vexa_api_url = VEXA_API_URL
         self.service_token = os.getenv('VEXA_SERVICE_TOKEN')
 
     async def get_user_token(self, email: str):
@@ -224,7 +228,7 @@ class VexaAuth:
         user_token = await self.get_user_token(email)
         
         # Submit token to our API
-        submit_url = f"{self.base_url}/submit_token"
+        submit_url = f"{self.base_url}/api/v1/submit_token"
         payload = {
             "token": user_token
         }
