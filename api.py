@@ -338,17 +338,53 @@ async def accept_new_share_link(
         
     return {"message": "Share link accepted successfully"}
 
-if DEV:
-    @app.middleware("http")
-    async def profiler_middleware(request: Request, call_next):
+# if DEV:
+#     @app.middleware("http")
+#     async def profiler_middleware(request: Request, call_next):
 
-        profiler = Profiler()
-        profiler.start()
-        response = await call_next(request)
-        profiler.stop()
-        print(profiler.output_text(unicode=True, color=True))
-        return response
-        return await call_next(request)
+#         profiler = Profiler()
+#         profiler.start()
+#         response = await call_next(request)
+#         profiler.stop()
+#         print(profiler.output_text(unicode=True, color=True))
+#         return response
+#         return await call_next(request)
+
+@app.get("/transcript/{meeting_id}")
+async def get_transcript(
+    meeting_id: str,
+    authorization: str = Header(...)
+):
+    token = authorization.split("Bearer ")[-1]
+    vexa_api = VexaAPI(token=token)
+
+    try:
+        transcript = await vexa_api.get_transcription_(meeting_session_id=meeting_id)
+        if transcript is None:
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        
+        return transcript
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/meeting/{meeting_id}")
+async def get_meeting(
+    meeting_id: str,
+    authorization: str = Header(...)
+):
+    token = authorization.split("Bearer ")[-1]
+    vexa_api = VexaAPI(token=token)
+
+    try:
+        meeting = await vexa_api.get_meeting(meeting_id)
+        if meeting is None:
+            raise HTTPException(status_code=404, detail="Meeting not found")
+        
+        return meeting
+        
+    except VexaAPIError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
