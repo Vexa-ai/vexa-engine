@@ -368,22 +368,25 @@ async def get_transcript(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/meeting/{meeting_id}")
-async def get_meeting(
-    meeting_id: str,
-    authorization: str = Header(...)
+@app.get("/meetings/all")
+async def get_meetings(
+    authorization: str = Header(...),
+    current_user: tuple = Depends(get_current_user)
 ):
     token = authorization.split("Bearer ")[-1]
     vexa_api = VexaAPI(token=token)
 
     try:
-        meeting = await vexa_api.get_meeting(meeting_id)
-        if meeting is None:
-            raise HTTPException(status_code=404, detail="Meeting not found")
+        meetings = await vexa_api.get_meetings()
+        if meetings is None:
+            return {"total": 0, "meetings": []}
         
-        return meeting
+        return {
+            "total": len(meetings) if isinstance(meetings, list) else 0,
+            "meetings": meetings if isinstance(meetings, list) else []
+        }
         
-    except VexaAPIError as e:
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
