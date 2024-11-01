@@ -371,13 +371,15 @@ async def get_transcript(
 @app.get("/meetings/all")
 async def get_meetings(
     authorization: str = Header(...),
-    current_user: tuple = Depends(get_current_user)
+    current_user: tuple = Depends(get_current_user),
+    offset: int = 0,
+    limit: int = 200
 ):
     token = authorization.split("Bearer ")[-1]
     vexa_api = VexaAPI(token=token)
 
     try:
-        meetings = await vexa_api.get_meetings()
+        meetings = await vexa_api.get_meetings(offset=offset, limit=limit)
         if meetings is None:
             return {"total": 0, "meetings": []}
         
