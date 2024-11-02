@@ -179,3 +179,28 @@ Remember: Your queries will be used to find actual conversations where people di
         ]
         
         return await cls.call(messages)
+    
+
+class MeetingNameAndSummary(BaseCall):
+    summary: str = Field(..., description="""
+                         Dense, direct long text representation of the key points discussed, NO introductory words like meeting, discussion, etc. Reference speakers. 
+                         Make sure you include and highlight ALL the provided Points are included, 1000 chars max. ALWAYS: Use markdown to highlight ALL the Points""")
+    meeting_name: str = Field(..., max_length=100, description="Concise, explanatory name for the meeting that captures its main purpose")
+
+    @classmethod
+    async def extract(cls, formatted_input: str, summary_input: str, model: str = "gpt-4o-mini", use_cache: bool = False, force_store: bool = False):
+        output = await cls.call([
+            system_msg("""Create a direct text representation and concise meeting name based on the discussion points and transcript.
+                      For the text: Start immediately with content, no introductory phrases.
+                      For the meeting name: Create a dense, explanatory name (max 50 chars) that captures the main purpose.
+                      NO introductory words like meeting, discussion, etc. Reference speakers. Include and highlight ALL the POINTS adn important keywords"""),
+            user_msg(f"""Points. Include and highlight ALL the POINTS:
+                        {summary_input}
+
+                        Full transcript:
+                        {formatted_input}
+
+Generate a direct summary and concise meeting name.""")
+        ], model=model, use_cache=use_cache, force_store=force_store)
+
+        return output

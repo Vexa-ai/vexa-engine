@@ -12,7 +12,7 @@ from uuid import UUID
 from vexa import VexaAPI
 from core import system_msg, user_msg
 from prompts import Prompts
-from pydantic_models import MeetingExtraction, EntityExtraction, SummaryIndexesRefs, MeetingSummary
+from pydantic_models import MeetingExtraction, EntityExtraction, MeetingNameAndSummary
 from psql_models import Speaker, Meeting, DiscussionPoint, engine, UserMeeting, AccessLevel, DefaultAccess,User, UserToken
 from psql_helpers import get_session
 from qdrant_search import QdrantSearchEngine
@@ -53,46 +53,32 @@ async def process_meeting_data(formatted_input, df):
     topics_df = topics_df.rename(columns={'entity': 'topic_name', 'type': 'topic_type'})
     
     # Combine the dataframes
-    summary_df = pd.concat([discussion_points_df, topics_df]).reset_index(drop=True)
+    points_df = pd.concat([discussion_points_df, topics_df]).reset_index(drop=True)
+    points_df = points_df.reset_index().rename(columns={'index': 'summary_index'})
     
-    summary_refs = await SummaryIndexesRefs.extract(summary_df, formatted_input)
+    
+    
 
-    # Create a new dataframe for the references
-    ref_df = pd.DataFrame([(ref['summary_index'], r['s'], r['e']) 
-                           for ref in summary_refs 
-                           for r in ref['references']],
-                          columns=['summary_index', 'start', 'end'])
 
-    # Merge the ref_df with summary_df
-    entities_with_refs = summary_df.reset_index().rename(columns={'index': 'summary_index'})
-    entities_with_refs = entities_with_refs.merge(ref_df, on='summary_index', how='left')
 
-    # Function to extract text from df based on start and end indices, including speaker
-    def get_text_range_with_speaker(row):
-        text_range = df.loc[row['start']:row['end']]
-        return ' | '.join(f"{speaker}: {content}" for speaker, content in zip(text_range['speaker'], text_range['content']))
-
-    # Apply the function to get the referenced text with speakers
-    entities_with_refs['referenced_text'] = entities_with_refs.apply(get_text_range_with_speaker, axis=1)
-
-    # Group by summary_index to combine multiple references
     try:
-        final_df = entities_with_refs.groupby('summary_index').agg({
+        final_df = points_df.groupby('summary_index').agg({
             'topic_name': 'first',
             'topic_type': 'first',
             'summary': 'first',
             'details': 'first',
             'speaker': 'first',
-            'referenced_text': ' | '.join,
             'model': 'first'
         }).reset_index()
+        
+        meeting_name_and_summary = await MeetingNameAndSummary.extract(formatted_input, final_df.drop(columns=['model']).to_markdown(index=False))
 
-        return final_df
+        return final_df, meeting_name_and_summary
     except Exception as e:
         print(f"Error processing meeting data: {e}")
         return pd.DataFrame()
 
-async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime, user_id):
+async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_datetime, user_id, meeting_name_and_summary):
     async with AsyncSession(engine) as session:
         try:
             existing_meeting = await session.execute(
@@ -105,7 +91,9 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                 new_meeting = Meeting(
                     meeting_id=meeting_id, 
                     transcript=str(transcript),
-                    timestamp=naive_datetime
+                    timestamp=naive_datetime,
+                    meeting_name=meeting_name_and_summary.meeting_name,
+                    meeting_summary=meeting_name_and_summary.summary
                 )
                 session.add(new_meeting)
                 
@@ -138,6 +126,9 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                     )
                     session.add(new_user_meeting)
             else:
+                # Update existing meeting with name and summary
+                existing_meeting.meeting_name = meeting_name_and_summary.meeting_name
+                existing_meeting.meeting_summary = meeting_name_and_summary.summary
                 new_meeting = existing_meeting
 
             # Bulk insert speakers
@@ -165,7 +156,6 @@ async def save_meeting_data_to_db(final_df, meeting_id, transcript, meeting_date
                     summary_index=row['summary_index'],
                     summary=row['summary'],
                     details=row['details'],
-                    referenced_text=row['referenced_text'],
                     meeting_id=new_meeting.meeting_id,
                     speaker_id=existing_speakers[row['speaker']].id,
                     topic_name=row['topic_name'],
@@ -254,7 +244,7 @@ class Indexing:
                     
                     if transcription:   
                         df, formatted_input, start_datetime, speakers, transcript = transcription
-                        final_df = await asyncio.wait_for(
+                        final_df, meeting_name_and_summary = await asyncio.wait_for(
                             process_meeting_data(formatted_input, df),
                             timeout=60
                         )
@@ -263,7 +253,8 @@ class Indexing:
                             meeting_id, 
                             transcript, 
                             start_datetime, 
-                            user_id
+                            user_id,
+                            meeting_name_and_summary
                         )
                         async with get_session() as session:
                             await self.qdrant.sync_meeting(meeting_id, session)
@@ -277,7 +268,7 @@ class Indexing:
                 self.redis.srem(self.processing_key, meeting_id)
                 self.redis.delete(self.current_meeting_key)
 
-    async def index_meetings(self, num_meetings: int = 150):
+    async def index_meetings(self, num_meetings: int = 170):
         num_meetings = 120 #temp
         await self.vexa.get_user_info()
         user_id = self.vexa.user_id

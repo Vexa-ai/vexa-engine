@@ -96,9 +96,11 @@ class Meeting(Base):
     meeting_id = Column(PostgresUUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
     transcript = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
+    meeting_name = Column(String(100), nullable=True)
+    meeting_summary = Column(Text, nullable=True)
 
     discussion_points = relationship('DiscussionPoint', back_populates='meeting')
-    user_meetings = relationship('UserMeeting', back_populates='meeting')  # Renamed from shares
+    user_meetings = relationship('UserMeeting', back_populates='meeting')
     
 class UserMeeting(Base):
     __tablename__ = 'user_meetings'
