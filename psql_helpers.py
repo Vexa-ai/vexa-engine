@@ -664,6 +664,23 @@ async def create_share_link(
     
     return token
 
+# ... existing code ...
+
+async def get_meeting_by_id(session: AsyncSession, meeting_id: UUID) -> Optional[Meeting]:
+
+    query = (
+        select(Meeting)
+        .options(
+            joinedload(Meeting.discussion_points).joinedload(DiscussionPoint.speaker),
+            joinedload(Meeting.user_meetings)
+        )
+        .where(Meeting.meeting_id == meeting_id)
+    )
+    result = await session.execute(query)
+    return result.unique().scalar_one_or_none()
+
+# ... rest of the code ...
+
 # # Update access for all existing meetings
 # async with async_session() as session:
 #     await update_user_meetings_access(

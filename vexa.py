@@ -7,7 +7,7 @@ import asyncio
 
 
 VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
-API_URL = os.getenv('API_URL', 'http://127.0.0.1:8765')
+API_URL = os.getenv('API_URL', 'http://127.0.0.1:8766')
 
 load_dotenv()
 
@@ -228,7 +228,7 @@ class VexaAuth:
         user_token = await self.get_user_token(email)
         
         # Submit token to our API
-        submit_url = f"{self.base_url}/api/v1/submit_token"
+        submit_url = f"{self.base_url}/submit_token"
         payload = {
             "token": user_token
         }
