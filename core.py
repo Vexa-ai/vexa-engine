@@ -15,8 +15,10 @@ from enum import Enum
 from datetime import date
 from dotenv import load_dotenv
 import tiktoken
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from psql_models import Output, engine
+from sqlalchemy import select
+from psql_helpers import async_session
 
 # Load environment variables from .env file
 load_dotenv()
@@ -43,45 +45,59 @@ client = instructor.from_openai(AsyncOpenAI(api_key=OPENAI_API_KEY))
 Session = sessionmaker(bind=engine)
 session = Session()
 
+async def get_cached_output(cache_key: str) -> Optional[str]:
+    async with async_session() as session:
+        cached_output = await session.execute(
+            select(Output).filter_by(cache_key=cache_key)
+        )
+        result = cached_output.scalar_one_or_none()
+        if result:
+            print("Returning cached result from database")
+            return result.output_text
+    return None
+
 def generate_cache_key(messages: List[Dict[str, Any]], model: str, temperature: float) -> str:
     messages_str = json.dumps(messages, sort_keys=True)
     key = f"{model}_{temperature}_{messages_str}"
     return hashlib.md5(key.encode()).hexdigest()
 
-def get_cached_output(cache_key: str) -> Optional[str]:
-    cached_output = session.query(Output).filter_by(cache_key=cache_key).first()
-    if cached_output:
-        print("Returning cached result from database")
-        return cached_output.output_text
-    return None
-
-def store_output_in_cache(messages: List[Dict[str, Any]], output_text: str, model: str, temperature: float, max_tokens: int, cache_key: str, force_store: bool = False):
-    # Check if the cache_key already exists
-    existing_output = session.query(Output).filter_by(cache_key=cache_key).first()
-    
-    if existing_output:
-        if force_store:
-            # Update the existing record if force_store is True
-            existing_output.input_text = json.dumps(messages)
-            existing_output.output_text = output_text
-            existing_output.model = model
-            existing_output.temperature = temperature
-            existing_output.max_tokens = max_tokens
-            session.commit()
-        else:
-            print("Cache key already exists and force_store is not set. Skipping store.")
-    else:
-        # Insert new record if it doesn't exist
-        new_output = Output(
-            input_text=json.dumps(messages),
-            output_text=output_text,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            cache_key=cache_key
+async def store_output_in_cache(messages: List[Dict[str, Any]], output_text: str, model: str, temperature: float, max_tokens: int, cache_key: str, force_store: bool = False):
+    async with async_session() as session:
+        # Check if cache_key already exists
+        existing_output = await session.execute(
+            select(Output).filter_by(cache_key=cache_key)
         )
-        session.add(new_output)
-        session.commit()
+        existing_output = existing_output.scalar_one_or_none()
+
+        if existing_output:
+            if force_store:
+                # Update existing record
+                existing_output.output_text = output_text
+                existing_output.input_text = str(messages)
+                await session.commit()
+        else:
+            # Create new cache entry
+            new_output = Output(
+                input_text=str(messages),
+                output_text=output_text,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                cache_key=cache_key
+            )
+            session.add(new_output)
+            await session.commit()
+
+def get_cached_output_sync(cache_key: str) -> Optional[str]:
+    with Session(engine) as session:  # Use synchronous Session
+        cached_output = session.execute(
+            select(Output).filter_by(cache_key=cache_key)
+        )
+        result = cached_output.scalar_one_or_none()
+        if result:
+            print("Returning cached result from database")
+            return result.output
+    return None
 
 @dataclass
 class Msg:
@@ -130,7 +146,7 @@ async def generic_call_(messages: List[Msg], model='default', temperature=0, max
         )
         
         if (use_cache or force_store) and not streaming:
-            store_output_in_cache(messages_dict, results.choices[0].message.content, model, temperature, max_tokens, cache_key, force_store)
+            await store_output_in_cache(messages_dict, results.choices[0].message.content, model, temperature, max_tokens, cache_key, force_store)
 
     except Exception as e:
         print(f"Error with provided model {model}. Falling back to default model.")
@@ -174,10 +190,12 @@ class BaseCall(BaseModel):
             model = "gpt-4o"
 
         messages_dict = [msg.__dict__ for msg in messages]
-        cache_key = generate_cache_key(messages_dict, model, temperature)
+        
+        if use_cache or force_store:
+            cache_key = generate_cache_key(messages_dict, model, temperature)
 
         if use_cache:
-            cached_output = get_cached_output(cache_key)
+            cached_output = await get_cached_output(cache_key)
             if cached_output:
                 return cls.model_validate_json(cached_output)
 
@@ -194,7 +212,7 @@ class BaseCall(BaseModel):
             )
             
             if use_cache or force_store:
-                store_output_in_cache(
+                await store_output_in_cache(
                     messages_dict, 
                     response.model_dump_json(), 
                     model, 
