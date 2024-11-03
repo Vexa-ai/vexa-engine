@@ -571,19 +571,21 @@ class QdrantSearchEngine:
                                             query_text: str, 
                                             meeting_ids: List[str], 
                                             limit: int = 20, 
-                                            min_score: float = 0.3,
-                                            context_window: int = 2):
-        """Search transcripts and include surrounding context"""
-        # Get initial results
+                                            min_score: float = 0.3):
+        """Return all transcript items with search matches highlighted in bold"""
+        # First get the search results to know which content to highlight
         results_df = await self.search_transcripts(query_text, meeting_ids, limit, min_score)
         
-        if results_df.empty:
-            return results_df
+        # Create a set of content that matched the search for efficient lookup
+        matching_content = set()
+        if not results_df.empty:
+            matching_content = set(results_df['content'].tolist())
         
-        # Get all transcript chunks for each meeting
-        all_chunks = {}
-        for meeting_id in results_df['meeting_id'].unique():
-            chunks = await self.client.scroll(
+        # Get ALL transcript items for these meetings
+        all_results = []
+        for meeting_id in meeting_ids:
+            # Get all transcript chunks for this meeting
+            response = await self.client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=Filter(
                     must=[
@@ -598,63 +600,32 @@ class QdrantSearchEngine:
                     ]
                 ),
                 with_payload=True,
-                limit=10000  # Adjust as needed
-            )
-            # Sort chunks by chunk_index
-            meeting_chunks = sorted(
-                chunks[0], 
-                key=lambda x: x.payload.get('chunk_index', 0)
-            )
-            all_chunks[meeting_id] = meeting_chunks
-        
-        # Add context to results
-        contextualized_results = []
-        for _, row in results_df.iterrows():
-            meeting_id = row['meeting_id']
-            meeting_chunks = all_chunks[meeting_id]
-            
-            # Find current chunk index
-            current_idx = next(
-                (i for i, chunk in enumerate(meeting_chunks) 
-                 if chunk.payload['content'] == row['content']),
-                None
+                limit=10000  # Make sure we get all chunks
             )
             
-            if current_idx is not None:
-                # Get context chunks
-                start_idx = max(0, current_idx - context_window)
-                end_idx = min(len(meeting_chunks), current_idx + context_window + 1)
+            if response[0]:  # If we have results
+                # Sort chunks by timestamp to maintain conversation flow
+                chunks = sorted(response[0], 
+                              key=lambda x: x.payload.get('timestamp', ''))
                 
-                context_chunks = meeting_chunks[start_idx:end_idx]
-                
-                # Add to results with context
-                contextualized_results.append({
-                    "before_context": [
-                        {
-                            "content": chunk.payload["content"],
-                            "speaker": chunk.payload["speaker"],
-                            "timestamp": chunk.payload["timestamp"]
-                        }
-                        for chunk in context_chunks[:context_window]
-                    ],
-                    "match": {
-                        "content": row['content'],
-                        "speaker": row['speaker'],
-                        "timestamp": row['timestamp'],
-                        "similarity": row['similarity']
-                    },
-                    "after_context": [
-                        {
-                            "content": chunk.payload["content"],
-                            "speaker": chunk.payload["speaker"],
-                            "timestamp": chunk.payload["timestamp"]
-                        }
-                        for chunk in context_chunks[context_window+1:]
-                    ],
-                    "meeting_id": meeting_id
-                })
+                # Process each chunk
+                for chunk in chunks:
+                    content = chunk.payload['content']
+                    # If this content was in our search results, wrap it in bold tags
+                    if content in matching_content:
+                        content = f"<b>{content}</b>"
+                    
+                    all_results.append({
+                        "content": content,
+                        "speaker": chunk.payload['speaker'],
+                        "timestamp": chunk.payload['timestamp'],
+                        "meeting_id": meeting_id
+                    })
         
-        return contextualized_results
+        # Sort final results by timestamp if needed
+        all_results.sort(key=lambda x: x['timestamp'])
+        
+        return all_results
 
     async def show_collection_stats(self):
         """Show statistics about vectors in the collection"""

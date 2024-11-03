@@ -61,7 +61,7 @@ class SearchAssistant:
         normalized = (series - min_value) / (max_value - min_value)
         return normalized * 0.5 + series.min() # Scale to range [0.5, 1]
     
-    async def search_transcripts(self, query: str, user_id: str, meeting_ids: List[str] = None, limit: int = 20, min_score: float = 0.3, context_window: int = 0):
+    async def search_transcripts(self, query: str, user_id: str, meeting_ids: List[str] = None, limit: int = 20000000, min_score: float = 0.3, context_window: bool = True):
 
         # Get accessible meetings for user if meeting_ids not specified
         if not meeting_ids:
@@ -76,13 +76,12 @@ class SearchAssistant:
         if not meeting_ids:
             return [], []  # Return empty results if no accessible meetings
         
-        if context_window > 0:
+        if context_window ==True:
             context_results = await self.search_engine.search_transcripts_with_context(
                 query_text=query,
                 meeting_ids=meeting_ids,
                 limit=limit,
-                min_score=min_score,
-                context_window=context_window
+                min_score=min_score
             )
 
         basic_results = await self.search_engine.search_transcripts(
@@ -91,7 +90,7 @@ class SearchAssistant:
         limit=limit,
         min_score=min_score
         )
-        if context_window > 0:
+        if context_window ==True:
             return context_results
         else:
             return basic_results

@@ -707,3 +707,99 @@ async def get_meeting_by_id(session: AsyncSession, meeting_id: UUID) -> Optional
 #     accepting_email="user@example.com",
 #     update_existing_meetings=True
 # )
+
+async def get_meetings_by_user_id(
+    user_id: UUID,
+    include_transcript: bool = False,
+    include_summary: bool = False,
+    include_speakers: bool = True,
+    limit: int = 100,
+    offset: int = 0
+) -> tuple[List[dict], int]:
+    """
+    Get meetings for a user with optional transcript, summary, and speaker fields.
+    Returns tuple of (meetings list, total count).
+    
+    Args:
+        user_id: User UUID
+        include_transcript: Whether to include meeting transcripts
+        include_summary: Whether to include meeting summaries
+        include_speakers: Whether to include speaker information
+        limit: Maximum number of meetings to return
+        offset: Number of meetings to skip
+    """
+    async with async_session() as session:
+        # Select specific columns based on include flags
+        columns = [
+            Meeting.meeting_id,
+            Meeting.timestamp,
+            Meeting.meeting_name,
+            UserMeeting.access_level,
+            UserMeeting.is_owner,
+        ]
+        
+        if include_transcript:
+            columns.append(Meeting.transcript)
+        if include_summary:
+            columns.append(Meeting.meeting_summary)
+
+        # Build base query
+        query = (
+            select(*columns)
+            .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+            .where(
+                and_(
+                    UserMeeting.user_id == user_id,
+                    UserMeeting.access_level != AccessLevel.REMOVED.value
+                )
+            )
+        )
+
+        # Get total count
+        count_query = select(func.count()).select_from(query.subquery())
+        total_count = await session.scalar(count_query)
+
+        # Add ordering and pagination
+        query = (
+            query
+            .order_by(Meeting.timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+
+        # Execute query
+        result = await session.execute(query)
+        rows = result.all()
+
+        # Convert rows to dictionaries
+        meetings = []
+        for row in rows:
+            meeting_dict = {
+                "meeting_id": row.meeting_id,
+                "timestamp": row.timestamp,
+                "meeting_name": row.meeting_name,
+                "access_level": row.access_level,
+                "is_owner": row.is_owner,
+            }
+            
+            if include_transcript:
+                meeting_dict["transcript"] = row.transcript
+            if include_summary:
+                meeting_dict["meeting_summary"] = row.meeting_summary
+
+            # Add speakers if requested
+            if include_speakers:
+                # Query to get speakers for this meeting
+                speakers_query = (
+                    select(Speaker.name)
+                    .join(DiscussionPoint, Speaker.id == DiscussionPoint.speaker_id)
+                    .where(DiscussionPoint.meeting_id == row.meeting_id)
+                    .distinct()
+                )
+                speakers_result = await session.execute(speakers_query)
+                speakers = [speaker[0] for speaker in speakers_result.fetchall()]
+                meeting_dict["speakers"] = speakers
+                
+            meetings.append(meeting_dict)
+
+        return meetings, total_count

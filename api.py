@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Path
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -34,19 +34,42 @@ from fastapi_cache.backends.redis import RedisBackend
 import redis
 import os
 
+from psql_models import Speaker, DiscussionPoint, Meeting, UserMeeting, AccessLevel
+
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+from sqlalchemy import distinct
 
 
 app = FastAPI()
 
-# Add CORS middleware
+# Move this BEFORE any other middleware or app setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=[
+        "http://localhost:5175",
+        "http://localhost:5173",
+        "http://chat.dev.vexa.ai",
+        "https://chat.dev.vexa.ai",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],  # Be explicit about methods
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "User-Agent",
+        "DNT",
+        "Cache-Control",
+        "X-Requested-With",
+    ],
+    expose_headers=["Content-Length"],
+    max_age=3600,
 )
 
+# Other middleware and routes should come after CORS middleware
 
 search_assistant = SearchAssistant()
 token_manager = TokenManager()
@@ -111,14 +134,55 @@ async def startup():
 async def startup_event():
     await search_assistant.initialize()
 
+# Add logging configuration after the imports and before app initialization
+def setup_logger():
+    # Create logger
+    logger = logging.getLogger('vexa_api')
+    logger.setLevel(logging.DEBUG)
+
+    # Create handlers
+    console_handler = logging.StreamHandler(sys.stdout)
+    file_handler = RotatingFileHandler('api.log', maxBytes=10485760, backupCount=5)  # 10MB per file, keep 5 files
+
+    # Create formatters and add it to handlers
+    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(log_format)
+    file_handler.setFormatter(log_format)
+
+    # Add handlers to the logger
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    return logger
+
+logger = setup_logger()
+
+# Add this middleware after app initialization
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Request: {request.method} {request.url}")
+    logger.debug(f"Headers: {request.headers}")
+    
+    try:
+        response = await call_next(request)
+        logger.info(f"Response status: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request failed: {str(e)}", exc_info=True)
+        raise
+
 async def get_current_user(authorization: str = Header(...)):
+    logger.debug("Checking authorization token")
     token = authorization.split("Bearer ")[-1]
     try:
         user_id, user_name = await token_manager.check_token(token)
         if not user_id:
+            logger.warning("Invalid token provided")
             raise HTTPException(status_code=401, detail="Invalid token")
+        logger.debug(f"Authenticated user: {user_name} ({user_id})")
         return user_id, user_name
     except Exception as e:
+        logger.error(f"Authentication failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=401, detail="Invalid token")
 
 @app.post("/submit_token")
@@ -350,7 +414,7 @@ async def accept_new_share_link(
 #         return response
 #         return await call_next(request)
 
-@app.get("/transcript/{meeting_id}")
+@app.get("/meeting/{meeting_id}")
 async def get_transcript(
     meeting_id: str,
     authorization: str = Header(...)
@@ -370,25 +434,198 @@ async def get_transcript(
 
 @app.get("/meetings/all")
 async def get_meetings(
-    authorization: str = Header(...),
-    current_user: tuple = Depends(get_current_user),
+    authorization: str = Header(None),
     offset: int = 0,
-    limit: int = None
+    limit: int = None,
+    current_user: tuple = Depends(get_current_user)
 ):
-    token = authorization.split("Bearer ")[-1]
-    vexa_api = VexaAPI(token=token)
-
+    logger.info(f"Getting meetings with offset={offset}, limit={limit}")
+    user_id, _ = current_user
+    
     try:
-        meetings = await vexa_api.get_meetings(offset=offset, limit=limit)
-        if meetings is None:
-            return {"total": 0, "meetings": []}
+        async with async_session() as session:
+            # Build base query
+            query = (
+                select(
+                    Meeting.meeting_id,
+                    Meeting.meeting_name,
+                    Meeting.timestamp,
+                    func.array_agg(distinct(Speaker.name)).label('speakers')
+                )
+                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                .join(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
+                .join(Speaker, DiscussionPoint.speaker_id == Speaker.id)
+                .where(
+                    and_(
+                        UserMeeting.user_id == user_id,
+                        UserMeeting.access_level != AccessLevel.REMOVED.value
+                    )
+                )
+                .group_by(Meeting.meeting_id, Meeting.meeting_name, Meeting.timestamp)
+                .order_by(Meeting.timestamp.desc())
+            )
+            
+            # Add limit and offset if provided
+            if limit is not None:
+                query = query.limit(limit)
+            if offset:
+                query = query.offset(offset)
+
+            # Execute query
+            result = await session.execute(query)
+            meetings = result.all()
+            
+            # Format response
+            meetings_list = [
+                {
+                    "meeting_id": str(meeting.meeting_id),
+                    "meeting_name": meeting.meeting_name,
+                    "timestamp": meeting.timestamp.isoformat(),
+                    "speakers": meeting.speakers if meeting.speakers[0] is not None else []
+                }
+                for meeting in meetings
+            ]
+            
+            # Get total count
+            count_query = (
+                select(func.count(distinct(Meeting.meeting_id)))
+                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                .where(
+                    and_(
+                        UserMeeting.user_id == user_id,
+                        UserMeeting.access_level != AccessLevel.REMOVED.value
+                    )
+                )
+            )
+            total_count = await session.execute(count_query)
+            total = total_count.scalar() or 0
+            
+            return {
+                "total": total,
+                "meetings": meetings_list
+            }
+            
+    except Exception as e:
+        logger.error(f"Error getting meetings: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/meeting/{meeting_id}/details")
+async def get_meeting_details(
+    meeting_id: UUID = Path(..., description="The UUID of the meeting"),
+    current_user: tuple = Depends(get_current_user)
+):
+    """
+    Get detailed information about a specific meeting including transcript,
+    summary, speakers, and metadata.
+    """
+    user_id, _ = current_user
+    
+    async with async_session() as session:
+        # Build query with all necessary joins
+        query = (
+            select(Meeting, UserMeeting)
+            .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+            .where(
+                and_(
+                    Meeting.meeting_id == meeting_id,
+                    UserMeeting.user_id == user_id,
+                    UserMeeting.access_level != AccessLevel.REMOVED.value
+                )
+            )
+        )
+        
+        result = await session.execute(query)
+        row = result.first()
+        
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail="Meeting not found or access denied"
+            )
+            
+        meeting, user_meeting = row
+        
+        # Get speakers for this meeting
+        speakers_query = (
+            select(Speaker.name)
+            .join(DiscussionPoint, Speaker.id == DiscussionPoint.speaker_id)
+            .where(DiscussionPoint.meeting_id == meeting_id)
+            .distinct()
+        )
+        speakers_result = await session.execute(speakers_query)
+        speakers = [speaker[0] for speaker in speakers_result.fetchall()]
+        
+        # Build response
+        response = {
+            "meeting_id": meeting.meeting_id,
+            "timestamp": meeting.timestamp,
+            "meeting_name": meeting.meeting_name,
+            "transcript": json.dumps(eval(meeting.transcript)),
+            "meeting_summary": meeting.meeting_summary,
+            "speakers": speakers,
+            "access_level": user_meeting.access_level,
+            "is_owner": user_meeting.is_owner
+        }
+        
+        return response
+
+class SearchTranscriptsRequest(BaseModel):
+    query: str
+    meeting_ids: Optional[List[str]] = None
+    min_score: Optional[float] = 0.80
+
+@app.post("/search/transcripts")
+async def search_transcripts(
+    request: SearchTranscriptsRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    try:
+        results = await search_assistant.search_transcripts(
+            query=request.query,
+            user_id=user_id,
+            meeting_ids=request.meeting_ids,
+            min_score=request.min_score
+        )
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error searching transcripts: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GlobalSearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 200
+    min_score: Optional[float] = 0.4
+
+@app.post("/search/global")
+async def global_search(
+    request: GlobalSearchRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    """
+    Global search across all accessible meetings and their content.
+    Returns ranked results with relevance scores.
+    """
+    user_id, _ = current_user
+    
+    try:
+        results = await search_assistant.search(
+            query=request.query,
+            user_id=user_id,
+            limit=request.limit,
+            min_score=request.min_score
+        )
+        
+        # Convert DataFrame to list of dictionaries
+        results_list = results.to_dict(orient='records') if not results.empty else []
         
         return {
-            "total": len(meetings) if isinstance(meetings, list) else 0,
-            "meetings": meetings if isinstance(meetings, list) else []
+            "results": results_list,
+            "total": len(results_list)
         }
         
     except Exception as e:
+        logger.error(f"Error in global search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
@@ -396,7 +633,7 @@ if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)
     
     
-    # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8766 --workers 1 --loop uvloop
+    # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8765 --workers 1 --loop uvloop --reload
 
 
 
