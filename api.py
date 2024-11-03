@@ -616,6 +616,8 @@ async def global_search(
             min_score=request.min_score
         )
         
+        results = results.drop(columns=['vector_scores','exact_matches']).drop_duplicates(subset = ['topic_name','speaker_name','summary','details','meeting_id'])
+        
         # Convert DataFrame to list of dictionaries
         results_list = results.to_dict(orient='records') if not results.empty else []
         
