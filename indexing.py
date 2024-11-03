@@ -56,11 +56,6 @@ async def process_meeting_data(formatted_input, df):
     points_df = pd.concat([discussion_points_df, topics_df]).reset_index(drop=True)
     points_df = points_df.reset_index().rename(columns={'index': 'summary_index'})
     
-    
-    
-
-
-
     try:
         final_df = points_df.groupby('summary_index').agg({
             'topic_name': 'first',
@@ -268,7 +263,7 @@ class Indexing:
                 self.redis.srem(self.processing_key, meeting_id)
                 self.redis.delete(self.current_meeting_key)
 
-    async def index_meetings(self, num_meetings: int = 170):
+    async def index_meetings(self, num_meetings: int = 20):
         num_meetings = 120 #temp
         await self.vexa.get_user_info()
         user_id = self.vexa.user_id
@@ -297,16 +292,55 @@ class Indexing:
             self.redis.delete(indexing_lock_key)
             self.redis.delete(self.indexing_key)
 
+    def show_redis_queues(self):
+        """Display contents of all Redis queues related to indexing"""
+        queues_info = {
+            "Processing Queue": list(self.redis.smembers(self.processing_key)),
+            "Dead Letter Queue": list(self.redis.smembers(self.dead_letter_key)),
+            "Current Meeting": self.redis.get(self.current_meeting_key),
+            "Is Indexing": bool(self.redis.get(self.indexing_key))
+        }
+        
+        # Get all retry counters
+        retry_keys = self.redis.keys("meeting:retry:*")
+        retry_counts = {}
+        for key in retry_keys:
+            meeting_id = key.split(":")[-1]
+            count = self.redis.get(key)
+            retry_counts[meeting_id] = count
+            
+        queues_info["Retry Counts"] = retry_counts
+        
+        return queues_info
+
+    def reset_redis_queues(self):
+        """Reset all Redis queues related to indexing"""
+        # Delete all keys
+        self.redis.delete(self.processing_key)
+        self.redis.delete(self.indexing_key)
+        self.redis.delete(self.current_meeting_key)
+        self.redis.delete(self.dead_letter_key)
+        
+        # Delete all retry counters
+        retry_keys = self.redis.keys("meeting:retry:*")
+        if retry_keys:
+            self.redis.delete(*retry_keys)
+            
+        # Delete any indexing locks
+        lock_keys = self.redis.keys("indexing:lock:*")
+        if lock_keys:
+            self.redis.delete(*lock_keys)
+            
+        return {
+            "status": "success",
+            "message": "All indexing queues have been reset"
+        }
+
 async def get_indexing_stats(session: AsyncSession) -> pd.DataFrame:
-    """
-    Get indexing statistics as a DataFrame for all users
-    Uses Vexa API with user tokens from database for total meeting counts
-    """
-    
     # Get users with their tokens and meeting counts
     users_query = (
         select(
-            User.id,
+            User.id.label('user_id'),
             User.email,
             UserToken.token,
             func.max(Meeting.timestamp).label('last_meeting_date')
@@ -317,6 +351,40 @@ async def get_indexing_stats(session: AsyncSession) -> pd.DataFrame:
         .where(UserMeeting.is_owner == True)
         .group_by(User.id, User.email, UserToken.token)
     )
+    
+    result = await session.execute(users_query)
+    users_data = result.mappings().all()
+    df = pd.DataFrame(users_data)
+    
+    # Get total meetings count
+    total_meetings_query = (
+        select(
+            UserMeeting.user_id,
+            func.count(distinct(Meeting.meeting_id)).label('total_meetings')
+        )
+        .join(Meeting)
+        .where(UserMeeting.is_owner == True)
+        .group_by(UserMeeting.user_id)
+    )
+    
+    result = await session.execute(total_meetings_query)
+    total_meetings_data = result.mappings().all()
+    total_df = pd.DataFrame(total_meetings_data)
+    
+    # Print debugging information
+    print("df columns:", df.columns.tolist())
+    print("total_df columns:", total_df.columns.tolist())
+    print("\ndf head:\n", df.head())
+    print("\ntotal_df head:\n", total_df.head())
+    
+    # Convert UUID to string in both DataFrames before merge
+    if 'user_id' in df.columns:
+        df['user_id'] = df['user_id'].astype(str)
+    if 'user_id' in total_df.columns:
+        total_df['user_id'] = total_df['user_id'].astype(str)
+    
+    # Merge with total meetings
+    df = pd.merge(df, total_df, on='user_id', how='left')
     
     # Get indexed meetings count
     indexed_query = (
@@ -330,52 +398,15 @@ async def get_indexing_stats(session: AsyncSession) -> pd.DataFrame:
         .group_by(UserMeeting.user_id)
     )
     
-    # Execute queries
-    users_result = await session.execute(users_query)
-    indexed_result = await session.execute(indexed_query)
+    result = await session.execute(indexed_query)
+    indexed_data = result.mappings().all()
+    indexed_df = pd.DataFrame(indexed_data)
     
-    # Create initial DataFrame
-    users_df = pd.DataFrame(
-        users_result.all(),
-        columns=['user_id', 'email', 'token', 'last_meeting_date']
-    )
+    if 'user_id' in indexed_df.columns:
+        indexed_df['user_id'] = indexed_df['user_id'].astype(str)
     
-    indexed_df = pd.DataFrame(
-        indexed_result.all(),
-        columns=['user_id', 'indexed_meetings']
-    )
-    
-    # Merge DataFrames
-    df = pd.merge(users_df, indexed_df, on='user_id', how='left')
-    df['indexed_meetings'] = df['indexed_meetings'].fillna(0).astype(int)
-    
-    # Get total meetings from Vexa API for each user
-    total_meetings_data = []
-    for _, row in df.iterrows():
-        try:
-            if row['token']:  # Only proceed if user has a token
-                vexa = VexaAPI(token=row['token'])
-                meetings, total = await vexa.get_meetings(include_total=True)
-                total_meetings_data.append({
-                    'user_id': row['user_id'],
-                    'total_meetings': total
-                })
-            else:
-                print(f"No token found for user {row['email']}")
-                total_meetings_data.append({
-                    'user_id': row['user_id'],
-                    'total_meetings': 0
-                })
-        except Exception as e:
-            print(f"Error getting meetings for user {row['email']}: {e}")
-            total_meetings_data.append({
-                'user_id': row['user_id'],
-                'total_meetings': 0
-            })
-    
-    # Create DataFrame for total meetings and merge
-    total_df = pd.DataFrame(total_meetings_data)
-    df = pd.merge(df, total_df, on='user_id', how='left')
+    # Merge with indexed meetings
+    df = pd.merge(df, indexed_df, on='user_id', how='left')
     
     # Calculate additional metrics
     df['remaining_meetings'] = df['total_meetings'] - df['indexed_meetings']
@@ -399,7 +430,7 @@ async def get_indexing_stats(session: AsyncSession) -> pd.DataFrame:
     
     return df
 
-async def start_indexing_for_users(session: AsyncSession, emails: list[str] = None, num_meetings: int = 150) -> dict:
+async def start_indexing_for_users(session: AsyncSession, emails: list[str] = None, num_meetings: int = 10) -> dict:
     """
     Start indexing process for selected users by email
     

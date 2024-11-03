@@ -95,17 +95,17 @@ from sqlalchemy.ext.compiler import compiles
 def _compile_drop_table(element, compiler, **kwargs):
     return compiler.visit_drop_table(element) + " CASCADE"
 
-# async def init_db():
-#     engine = create_async_engine(DATABASE_URL)
+async def init_db():
+    engine = create_async_engine(DATABASE_URL)
     
-#     async with engine.begin() as conn:
-#         # Drop all tables with CASCADE
-#         await conn.run_sync(Base.metadata.drop_all)
+    async with engine.begin() as conn:
+        # Drop all tables with CASCADE
+        await conn.run_sync(Base.metadata.drop_all)
         
-#         # Create all tables
-#         await conn.run_sync(Base.metadata.create_all)
+        # Create all tables
+        await conn.run_sync(Base.metadata.create_all)
     
-#     print("Database initialized successfully.")
+    print("Database initialized successfully.")
 
 async def setup_database():
     async with engine.begin() as conn:

@@ -373,7 +373,7 @@ async def get_meetings(
     authorization: str = Header(...),
     current_user: tuple = Depends(get_current_user),
     offset: int = 0,
-    limit: int = 200
+    limit: int = None
 ):
     token = authorization.split("Bearer ")[-1]
     vexa_api = VexaAPI(token=token)

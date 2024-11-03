@@ -17,6 +17,11 @@ from qdrant_client.models import (
 )
 
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+import pandas as pd
+
+
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
@@ -345,8 +350,8 @@ class QdrantSearchEngine:
         
         return results
 
-    async def sync_meeting(self, meeting_id: str, session):
-        """Sync a specific meeting from PostgreSQL to Qdrant"""
+    async def sync_meeting_discussions(self, meeting_id: str, session: AsyncSession):
+        """Sync discussion points for a specific meeting to Qdrant"""
         query = select(DiscussionPoint, Meeting, Speaker).join(
             Meeting, DiscussionPoint.meeting_id == Meeting.meeting_id
         ).join(
@@ -359,10 +364,10 @@ class QdrantSearchEngine:
         points = []
         for dp, meeting, speaker in rows:
             # Generate vectors for each field
-            topic_vector = self.model.encode(dp.topic_name if dp.topic_name else "")
-            summary_vector = self.model.encode(dp.summary if dp.summary else "")
-            details_vector = self.model.encode(dp.details if dp.details else "")
-            speaker_vector = self.model.encode(speaker.name)
+            topic_vector = await self.encode_text(dp.topic_name if dp.topic_name else "")
+            summary_vector = await self.encode_text(dp.summary if dp.summary else "")
+            details_vector = await self.encode_text(dp.details if dp.details else "")
+            speaker_vector = await self.encode_text(speaker.name)
             
             discussion_id = str(uuid.uuid4())
             
@@ -375,10 +380,10 @@ class QdrantSearchEngine:
                 "speaker_name": speaker.name,
                 "topic_type": dp.topic_type,
                 "discussion_id": discussion_id,
-                "timestamp": meeting.timestamp
+                "timestamp": meeting.timestamp,
+                "vector_source": "discussion"  # Added to distinguish source
             }
             
-            # Create points for each vector type
             points.extend([
                 PointStruct(
                     id=str(uuid.uuid4()),
@@ -407,3 +412,324 @@ class QdrantSearchEngine:
                 collection_name=self.collection_name,
                 points=points
             )
+
+    async def sync_meeting_transcript(self, meeting_id: str, session: AsyncSession):
+        """Sync transcript chunks for a specific meeting to Qdrant"""
+        # Get meeting transcript
+        meeting = await session.execute(
+            select(Meeting).where(Meeting.meeting_id == meeting_id)
+        )
+        meeting = meeting.scalar_one()
+        
+        if not meeting.transcript:
+            return
+        
+        # Process transcript into grouped format
+        df = pd.DataFrame(eval(meeting.transcript)).reset_index()
+        
+        # Create groups based on speaker changes
+        speaker_change = (df['speaker'] != df['speaker'].shift())
+        group_id = (speaker_change | (df.groupby((speaker_change).cumsum())['speaker'].transform('size') > 5)).cumsum()
+        grouped_df = df.groupby(group_id)
+        
+        # Aggregate the groups
+        grouped_text = grouped_df.agg({
+            'speaker': 'first',
+            'content': ' '.join,
+            'timestamp': 'first',
+            'index': list
+        })
+        
+        # Generate embeddings for transcript chunks
+        transcript_points = []
+        for idx, row in grouped_text.iterrows():
+            vector = await self.encode_text(row['content'])
+            
+            # Convert timestamp to string if it's a datetime object
+            timestamp = row['timestamp'].isoformat() if hasattr(row['timestamp'], 'isoformat') else str(row['timestamp'])
+            
+            # Use UUID instead of formatted string for point ID
+            point_id = str(uuid.uuid4())  # Generate a proper UUID
+            
+            transcript_points.append(PointStruct(
+                id=point_id,  # Use UUID instead of formatted string
+                vector=vector.tolist(),
+                payload={
+                    'meeting_id': str(meeting_id),
+                    'content': row['content'],
+                    'speaker': row['speaker'],
+                    'timestamp': timestamp,
+                    'indices': row['index'],
+                    'vector_type': 'transcript',
+                    'vector_source': 'transcript',
+                    'chunk_index': idx  # Keep track of order if needed
+                }
+            ))
+
+        if transcript_points:
+            await self.client.upsert(
+                collection_name=self.collection_name,
+                points=transcript_points
+            )
+
+    async def sync_meeting(self, meeting_id: str, session: AsyncSession):
+        """Sync both discussion points and transcript for a meeting"""
+        await self.sync_meeting_discussions(meeting_id, session)
+        await self.sync_meeting_transcript(meeting_id, session)
+
+    async def search_transcripts(self, query_text: str, meeting_ids: List[str] = None, limit: int = 20, min_score: float = 0.3):
+        """
+        Search through meeting transcripts using semantic similarity
+        
+        Args:
+            query_text: str - The text to search for
+            meeting_ids: Optional[List[str]] - List of meeting IDs to search in. If None, searches all meetings
+            limit: int - Maximum number of results to return
+            min_score: float - Minimum similarity score threshold
+        """
+        try:
+            # Debug print
+            print(f"Searching for: {query_text}")
+            if meeting_ids:
+                print(f"Filtering for meetings: {meeting_ids}")
+            
+            query_vector = await self.encode_text(query_text)
+            
+            # Create base filter for transcripts
+            must_conditions = [
+                FieldCondition(
+                    key="vector_type",
+                    match=MatchValue(value="transcript")
+                )
+            ]
+            
+            # Add meeting filter if meeting_ids provided
+            if meeting_ids:
+                must_conditions.append(
+                    FieldCondition(
+                        key="meeting_id",
+                        match=MatchAny(any=meeting_ids)
+                    )
+                )
+            
+            search_filter = Filter(must=must_conditions)
+            
+            # Debug: Check if there are any transcript vectors
+            count = await self.client.count(
+                collection_name=self.collection_name,
+                count_filter=search_filter
+            )
+            print(f"Found {count.count} transcript vectors to search")
+            
+            # Perform vector search
+            results = await self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector.tolist(),
+                query_filter=search_filter,
+                limit=limit,
+                score_threshold=min_score,
+                search_params=SearchParams(
+                    hnsw_ef=128  # Increase search accuracy
+                ),
+                with_payload=True
+            )
+            
+            # Debug print
+            print(f"Search returned {len(results)} results")
+            
+            # Format results
+            formatted_results = []
+            for hit in results:
+                formatted_results.append({
+                    "content": hit.payload.get("content", ""),
+                    "speaker": hit.payload.get("speaker", ""),
+                    "timestamp": hit.payload.get("timestamp", ""),
+                    "similarity": hit.score,
+                    "meeting_id": hit.payload.get("meeting_id", ""),
+                    "indices": hit.payload.get("indices", [])
+                })
+            
+            df = pd.DataFrame(formatted_results)
+            
+            # Debug print
+            print(f"Created DataFrame with {len(df)} rows")
+            if not df.empty:
+                print("DataFrame columns:", df.columns.tolist())
+                print("Sample row:", df.iloc[0].to_dict())
+            
+            return df
+
+        except Exception as e:
+            print(f"Error in search_transcripts: {e}")
+            # Return empty DataFrame in case of error
+            return pd.DataFrame(columns=[
+                "content", "speaker", "timestamp", 
+                "similarity", "meeting_id", "indices"
+            ])
+
+    async def search_transcripts_with_context(self, 
+                                            query_text: str, 
+                                            meeting_ids: List[str], 
+                                            limit: int = 20, 
+                                            min_score: float = 0.3,
+                                            context_window: int = 2):
+        """Search transcripts and include surrounding context"""
+        # Get initial results
+        results_df = await self.search_transcripts(query_text, meeting_ids, limit, min_score)
+        
+        if results_df.empty:
+            return results_df
+        
+        # Get all transcript chunks for each meeting
+        all_chunks = {}
+        for meeting_id in results_df['meeting_id'].unique():
+            chunks = await self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="meeting_id",
+                            match=MatchValue(value=meeting_id)
+                        ),
+                        FieldCondition(
+                            key="vector_type",
+                            match=MatchValue(value="transcript")
+                        )
+                    ]
+                ),
+                with_payload=True,
+                limit=10000  # Adjust as needed
+            )
+            # Sort chunks by chunk_index
+            meeting_chunks = sorted(
+                chunks[0], 
+                key=lambda x: x.payload.get('chunk_index', 0)
+            )
+            all_chunks[meeting_id] = meeting_chunks
+        
+        # Add context to results
+        contextualized_results = []
+        for _, row in results_df.iterrows():
+            meeting_id = row['meeting_id']
+            meeting_chunks = all_chunks[meeting_id]
+            
+            # Find current chunk index
+            current_idx = next(
+                (i for i, chunk in enumerate(meeting_chunks) 
+                 if chunk.payload['content'] == row['content']),
+                None
+            )
+            
+            if current_idx is not None:
+                # Get context chunks
+                start_idx = max(0, current_idx - context_window)
+                end_idx = min(len(meeting_chunks), current_idx + context_window + 1)
+                
+                context_chunks = meeting_chunks[start_idx:end_idx]
+                
+                # Add to results with context
+                contextualized_results.append({
+                    "before_context": [
+                        {
+                            "content": chunk.payload["content"],
+                            "speaker": chunk.payload["speaker"],
+                            "timestamp": chunk.payload["timestamp"]
+                        }
+                        for chunk in context_chunks[:context_window]
+                    ],
+                    "match": {
+                        "content": row['content'],
+                        "speaker": row['speaker'],
+                        "timestamp": row['timestamp'],
+                        "similarity": row['similarity']
+                    },
+                    "after_context": [
+                        {
+                            "content": chunk.payload["content"],
+                            "speaker": chunk.payload["speaker"],
+                            "timestamp": chunk.payload["timestamp"]
+                        }
+                        for chunk in context_chunks[context_window+1:]
+                    ],
+                    "meeting_id": meeting_id
+                })
+        
+        return contextualized_results
+
+    async def show_collection_stats(self):
+        """Show statistics about vectors in the collection"""
+        try:
+            # Get collection info
+            collection_info = await self.client.get_collection(self.collection_name)
+            
+            # Get points count
+            points_count = await self.client.count(
+                collection_name=self.collection_name
+            )
+            
+            # Get counts by vector type
+            vector_types = ['topic_name', 'summary', 'details', 'speaker', 'transcript']
+            type_counts = {}
+            
+            for vector_type in vector_types:
+                count = await self.client.count(
+                    collection_name=self.collection_name,
+                    count_filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="vector_type",
+                                match=MatchValue(value=vector_type)
+                            )
+                        ]
+                    )
+                )
+                type_counts[vector_type] = count.count
+            
+            # Get counts by vector source
+            source_counts = {}
+            for source in ['discussion', 'transcript']:
+                count = await self.client.count(
+                    collection_name=self.collection_name,
+                    count_filter=Filter(
+                        must=[
+                            FieldCondition(
+                                key="vector_source",
+                                match=MatchValue(value=source)
+                            )
+                        ]
+                    )
+                )
+                source_counts[source] = count.count
+            
+            # Get unique meeting count
+            unique_meetings = await self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=None,
+                limit=1,
+                with_payload=["meeting_id"],
+                with_vectors=False
+            )
+            unique_meeting_ids = set()
+            if unique_meetings[0]:
+                unique_meeting_ids = {
+                    point.payload.get("meeting_id") 
+                    for point in unique_meetings[0] 
+                    if point.payload.get("meeting_id")
+                }
+            
+            # Get vector dimension from collection config
+            vector_size = collection_info.config.params.vectors.size
+            
+            return {
+                "total_vectors": points_count.count,
+                "vector_dimension": vector_size,  # Updated to use correct path
+                "vectors_by_type": type_counts,
+                "vectors_by_source": source_counts,
+                "unique_meetings": len(unique_meeting_ids),
+                "collection_name": self.collection_name
+            }
+            
+        except Exception as e:
+            return {
+                "error": f"Failed to get collection stats: {str(e)}"
+            }

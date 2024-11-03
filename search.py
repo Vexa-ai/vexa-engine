@@ -60,6 +60,41 @@ class SearchAssistant:
         max_value = series.max()
         normalized = (series - min_value) / (max_value - min_value)
         return normalized * 0.5 + series.min() # Scale to range [0.5, 1]
+    
+    async def search_transcripts(self, query: str, user_id: str, meeting_ids: List[str] = None, limit: int = 20, min_score: float = 0.3, context_window: int = 0):
+
+        # Get accessible meetings for user if meeting_ids not specified
+        if not meeting_ids:
+            async with get_session() as session:
+                meetings, _ = await get_accessible_meetings(
+                    session=session,
+                    user_id=UUID(user_id),
+                    limit=1000  # Set high limit to get all accessible meetings
+                )
+                meeting_ids = [str(meeting.meeting_id) for meeting in meetings]
+        
+        if not meeting_ids:
+            return [], []  # Return empty results if no accessible meetings
+        
+        if context_window > 0:
+            context_results = await self.search_engine.search_transcripts_with_context(
+                query_text=query,
+                meeting_ids=meeting_ids,
+                limit=limit,
+                min_score=min_score,
+                context_window=context_window
+            )
+
+        basic_results = await self.search_engine.search_transcripts(
+        query_text=query,
+        meeting_ids=meeting_ids,
+        limit=limit,
+        min_score=min_score
+        )
+        if context_window > 0:
+            return context_results
+        else:
+            return basic_results
 
     async def search(self, query: str, user_id: str, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
         # Get accessible meetings for user
