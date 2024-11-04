@@ -12435,3 +12435,4 @@ Index: []...
 2024-11-04 14:57:03,465 - vexa_api - DEBUG - api.py:168 - Checking authorization token
 2024-11-04 14:57:03,477 - vexa_api - DEBUG - api.py:175 - Authenticated user: string string (ef7c085b-fdb5-4c94-b7b6-a61a3d04c210)
 2024-11-04 14:57:03,480 - vexa_api - INFO - api.py:161 - Response status: 200
+2024-11-04 22:19:38,370 - vexa_api - INFO - search.py:33 - Initializing SearchAssistant
