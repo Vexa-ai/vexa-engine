@@ -58,7 +58,7 @@ class QdrantSearchEngine:
         """Drop the collection if it exists"""
         try:
             await self.client.delete_collection(
-                collection_name=self.collection_name
+                collection_name=self.collection_name 
             )
             print(f"Collection {self.collection_name} dropped successfully")
         except Exception as e:
@@ -202,6 +202,7 @@ class QdrantSearchEngine:
                 print(f"Note: {e} for field {field_name}")
 
     async def encode_text(self, text):
+        print(f"Model device: {self.model.device}")
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.model.encode, text)
 

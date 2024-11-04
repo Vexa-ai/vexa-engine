@@ -41,32 +41,25 @@ from logging.handlers import RotatingFileHandler
 import sys
 from sqlalchemy import distinct
 
+from logger import logger
 
 app = FastAPI()
 
 # Move this BEFORE any other middleware or app setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5175",
-        "http://localhost:5173",
-        "http://chat.dev.vexa.ai",
-        "https://chat.dev.vexa.ai",
-    ],
+    allow_origins=["*"],  # Or your specific origins
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],  # Be explicit about methods
+    allow_methods=["*"],
     allow_headers=[
         "Authorization",
         "Content-Type",
         "Accept",
         "Origin",
-        "User-Agent",
-        "DNT",
-        "Cache-Control",
         "X-Requested-With",
+        "Access-Control-Allow-Headers",
     ],
-    expose_headers=["Content-Length"],
-    max_age=3600,
+    expose_headers=["*"],
 )
 
 # Other middleware and routes should come after CORS middleware
@@ -580,15 +573,29 @@ async def search_transcripts(
     current_user: tuple = Depends(get_current_user)
 ):
     user_id, _ = current_user
+    logger.info(f"Starting transcript search for user {user_id}")
+    
+    # Add debug points
+    print("DEBUG: Request received:", request.dict())
+    
     try:
+        # Add timing
+        import time
+        start_time = time.time()
+        
         results = await search_assistant.search_transcripts(
             query=request.query,
             user_id=user_id,
             meeting_ids=request.meeting_ids,
             min_score=request.min_score
         )
+        
+        elapsed_time = time.time() - start_time
+        print(f"DEBUG: Search completed in {elapsed_time:.2f} seconds")
+        
         return {"results": results}
     except Exception as e:
+        print("DEBUG: Error occurred:", str(e))
         logger.error(f"Error searching transcripts: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 

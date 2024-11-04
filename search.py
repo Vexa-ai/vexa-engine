@@ -14,6 +14,7 @@ from pydantic_models import ThreadName,ParsedSearchRequest
 from thread_manager import ThreadManager
 from psql_helpers import get_accessible_meetings,get_session
 from uuid import UUID
+from logger import logger
 
 
 class SearchResult(BaseModel):
@@ -29,6 +30,7 @@ class SearchResult(BaseModel):
 
 class SearchAssistant:
     def __init__(self):
+        logger.info("Initializing SearchAssistant")
         self.search_engine = QdrantSearchEngine()
         self.thread_manager = None
         self.prompts = Prompts()
@@ -61,39 +63,56 @@ class SearchAssistant:
         normalized = (series - min_value) / (max_value - min_value)
         return normalized * 0.5 + series.min() # Scale to range [0.5, 1]
     
-    async def search_transcripts(self, query: str, user_id: str, meeting_ids: List[str] = None, limit: int = 20000000, min_score: float = 0.3, context_window: bool = True):
-
-        # Get accessible meetings for user if meeting_ids not specified
-        if not meeting_ids:
-            async with get_session() as session:
-                meetings, _ = await get_accessible_meetings(
-                    session=session,
-                    user_id=UUID(user_id),
-                    limit=1000  # Set high limit to get all accessible meetings
+    async def search_transcripts(self, query: str, user_id: str, meeting_ids: Optional[List[str]] = None, min_score: float = 0.80,context_window:bool=True,limit:int=200):
+        logger.info(f"Starting search_transcripts in SearchAssistant")
+        logger.debug(f"Parameters: query='{query}', user_id={user_id}, meeting_ids={meeting_ids}, min_score={min_score}")
+        
+        try:
+            # Add logging before major operations
+            logger.info("Processing search request...")
+            # Get accessible meetings for user if meeting_ids not specified
+            if not meeting_ids:
+                async with get_session() as session:
+                    meetings, _ = await get_accessible_meetings(
+                        session=session,
+                        user_id=UUID(user_id),
+                        limit=1000  # Set high limit to get all accessible meetings
+                    )
+                    meeting_ids = [str(meeting.meeting_id) for meeting in meetings]
+            
+            if not meeting_ids:
+                logger.warning("No accessible meetings found for user")
+                return [], []  # Return empty results if no accessible meetings
+            
+            logger.info(f"Searching through {len(meeting_ids)} meetings")
+            
+            if context_window ==True:
+                logger.debug("Using context window search")
+                context_results = await self.search_engine.search_transcripts_with_context(
+                    query_text=query,
+                    meeting_ids=meeting_ids,
+                    limit=limit,
+                    min_score=min_score
                 )
-                meeting_ids = [str(meeting.meeting_id) for meeting in meetings]
-        
-        if not meeting_ids:
-            return [], []  # Return empty results if no accessible meetings
-        
-        if context_window ==True:
-            context_results = await self.search_engine.search_transcripts_with_context(
+
+            basic_results = await self.search_engine.search_transcripts(
                 query_text=query,
                 meeting_ids=meeting_ids,
                 limit=limit,
                 min_score=min_score
             )
+            
+            logger.info(f"Search complete. Found {len(basic_results)} results")
+            logger.debug(f"Results: {basic_results[:5]}...")  # Log first 5 results
+            
+            if context_window ==True:
+                return context_results
+            else:
+                return basic_results
 
-        basic_results = await self.search_engine.search_transcripts(
-        query_text=query,
-        meeting_ids=meeting_ids,
-        limit=limit,
-        min_score=min_score
-        )
-        if context_window ==True:
-            return context_results
-        else:
-            return basic_results
+        except Exception as e:
+            logger.error(f"Error in search_transcripts: {str(e)}", exc_info=True)
+            raise
 
     async def search(self, query: str, user_id: str, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
         # Get accessible meetings for user
@@ -222,7 +241,7 @@ class SearchAssistant:
         context_prepared = prepared_df.drop(columns=existing_columns)
         
         context = context_prepared.to_markdown(index=False) if not prepared_df.empty else "No relevant context found."
-        url_dict = {k: f'https://dashboard.vexa.ai/#{v}' for k, v in indexed_meetings.items()}
+        url_dict = {k: v for k, v in indexed_meetings.items()}
 
         # Build messages
         context_msg = system_msg(f"Context with CORRECT VERIFIED INDEX that must be used : {context}")
