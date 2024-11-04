@@ -228,7 +228,7 @@ class SearchAssistant:
         }).sort_values('relevance_score', ascending=False).reset_index().head(20)
         
         meeting_groups.rename(columns={'summary': 'topic_name'}, inplace=True)
-        meeting_groups['url'] = meeting_groups['meeting_id'].apply(lambda meeting_id: f'https://dashboard.vexa.ai/#{meeting_id}')
+        meeting_groups['url'] = meeting_groups['meeting_id']#.apply(lambda meeting_id: f'https://dashboard.vexa.ai/#{meeting_id}')
         meeting_groups = meeting_groups.drop(columns=['meeting_id'])
         meeting_groups['speaker_name'] = meeting_groups['speaker_name'].apply(list)
         meeting_groups = meeting_groups.to_dict(orient='records')
