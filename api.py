@@ -565,7 +565,7 @@ async def get_meeting_details(
 class SearchTranscriptsRequest(BaseModel):
     query: str
     meeting_ids: Optional[List[str]] = None
-    min_score: Optional[float] = 0.80
+    min_score: Optional[float] = 0.50
 
 @app.post("/search/transcripts")
 async def search_transcripts(
