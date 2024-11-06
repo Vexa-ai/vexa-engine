@@ -16,6 +16,9 @@ from psql_helpers import (
     get_last_meeting_timestamp,
     create_share_link,
     accept_share_link,
+    get_session,
+    has_meeting_access,
+    get_meeting_by_id,
 )
 from sqlalchemy import func, select
 from vexa import VexaAPI
@@ -43,23 +46,17 @@ from sqlalchemy import distinct
 
 from logger import logger
 
+from chat import MeetingChatManager
+
 app = FastAPI()
 
 # Move this BEFORE any other middleware or app setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Or your specific origins
+    allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173"],  # Must be explicit
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
-        "X-Requested-With",
-        "Access-Control-Allow-Headers",
-    ],
-    expose_headers=["*"],
+    allow_headers=["*"],
 )
 
 # Other middleware and routes should come after CORS middleware
@@ -636,6 +633,58 @@ async def global_search(
     except Exception as e:
         logger.error(f"Error in global search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/threads/{meeting_id}")
+async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(get_current_user)):
+    user_id, _ = current_user
+    async with get_session() as session:
+        if not await has_meeting_access(session, user_id, meeting_id):
+            raise HTTPException(status_code=403, detail="No access to meeting")
+        result = await session.execute(
+            select(Thread)
+            .where(and_(Thread.user_id == user_id, Thread.meeting_id == meeting_id))
+            .order_by(Thread.timestamp.desc())
+        )
+        return [{
+            "thread_id": t.thread_id,
+            "thread_name": t.thread_name,
+            "timestamp": t.timestamp
+        } for t in result.scalars().all()]
+
+class MeetingChatRequest(BaseModel):
+    query: str
+    meeting_ids: List[UUID]
+    thread_id: Optional[str] = None
+    model: Optional[str] = None
+    temperature: Optional[float] = None
+
+@app.post("/chat/meeting")
+async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depends(get_current_user)):
+    user_id, _ = current_user
+    try:
+        async with get_session() as session:
+            meeting_chat_manager = MeetingChatManager(session)
+            
+            async def stream_response():
+                async for item in meeting_chat_manager.chat(
+                    user_id=user_id,
+                    query=request.query,
+                    meeting_ids=request.meeting_ids,
+                    thread_id=request.thread_id,
+                    model=request.model,
+                    temperature=request.temperature
+                ):
+                    if isinstance(item, dict):
+                        yield f"data: {json.dumps(item)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
+                yield "data: {\"type\": \"done\"}\n\n"
+
+            return StreamingResponse(stream_response(), media_type="text/event-stream")
+    except ValueError as e:
+        if "Thread with id" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        raise
 
 if __name__ == "__main__":
     import uvicorn

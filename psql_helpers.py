@@ -803,3 +803,14 @@ async def get_meetings_by_user_id(
             meetings.append(meeting_dict)
 
         return meetings, total_count
+
+async def has_meeting_access(session: AsyncSession, user_id: UUID, meeting_id: UUID) -> bool:
+    result = await session.execute(
+        select(UserMeeting)
+        .where(and_(
+            UserMeeting.user_id == user_id,
+            UserMeeting.meeting_id == meeting_id,
+            UserMeeting.access_level != AccessLevel.REMOVED.value
+        ))
+    )
+    return result.scalar_one_or_none() is not None

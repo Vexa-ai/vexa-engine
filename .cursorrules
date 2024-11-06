@@ -34,3 +34,7 @@ async def sample_user_discussions(self, user_id: str, session: AsyncSession = No
     %load_ext autoreload
 %autoreload 2
 
+
+
+models:
+- for GPT models always use gpt-4o-mini in examples, NEVER use gpt-4

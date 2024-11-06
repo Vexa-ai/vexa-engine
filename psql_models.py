@@ -161,12 +161,17 @@ class Thread(Base):
 
     thread_id = Column(String, primary_key=True)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    meeting_id = Column(PostgresUUID(as_uuid=True), ForeignKey('meetings.meeting_id'), nullable=True)
     thread_name = Column(String(255))
     messages = Column(Text)  # We'll store JSON serialized messages
     timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     user = relationship('User')
-    
+    meeting = relationship('Meeting')
+
+    __table_args__ = (
+        Index('idx_thread_user_meeting', 'user_id', 'meeting_id'),
+    )
 
 class DefaultAccess(Base):
     __tablename__ = 'default_access'

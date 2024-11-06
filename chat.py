@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from psql_models import Meeting
 
-from core import system_msg, user_msg, assistant_msg, generic_call_
+from core import system_msg, user_msg, assistant_msg, generic_call_, Msg
 from prompts import Prompts
 from thread_manager import ThreadManager
 from psql_helpers import get_meeting_by_id, get_accessible_meetings
@@ -130,7 +130,7 @@ class MeetingListContextProvider(BaseContextProvider):
 class ChatManager:
     def __init__(self):
         logger.info("Initializing ChatManager")
-        self.thread_manager = None
+        self.thread_manager = ThreadManager()
         self.prompts = Prompts()
         self.model = "gpt-4o-mini"
         
@@ -143,6 +143,7 @@ class ChatManager:
         query: str,
         context_provider: BaseContextProvider,
         thread_id: Optional[str] = None,
+        meeting_id: Optional[UUID] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         prompt: Optional[str] = None,
@@ -161,40 +162,36 @@ class ChatManager:
             prompt: Optional system prompt override
             **context_kwargs: Additional arguments passed to context provider
         """
-        # Get thread info
         if thread_id:
             thread = await self.thread_manager.get_thread(thread_id)
             if not thread:
                 raise ValueError(f"Thread with id {thread_id} not found")
-            messages = thread.messages
+            if thread.user_id != user_id:
+                raise ValueError("Thread belongs to different user")
+            if meeting_id and thread.meeting_id != meeting_id:
+                raise ValueError("Thread does not belong to specified meeting")
+            # Convert stored dicts back to Msg objects
+            messages = [Msg(**msg) for msg in thread.messages]
             thread_name = thread.thread_name
         else:
             messages = []
-            thread_name = query[:50]  # Use first 50 chars of query as thread name
+            thread_name = query[:50]
 
-        # Get context from provider - pass user_id and query
-        context = await context_provider.get_context(
-            user_id=user_id,
-            query=query,
-            **context_kwargs
-        )
+        context = await context_provider.get_context(**context_kwargs)
         
-        # Build messages with optional custom prompt
         context_msg = system_msg(f"Context: {context}")
         messages_context = [
-            system_msg(prompt or self.prompts.search2),  # Use custom prompt if provided
+            system_msg(prompt or self.prompts.search2),
             *messages,
             context_msg,
             user_msg(f'User request: {query}')
         ]
 
-        # Generate response
         output = ""
         async for chunk in generic_call_(messages_context, streaming=True):
             output += chunk
             yield {"chunk": chunk}
 
-        # Update thread
         messages.append(user_msg(query))
         service_content = {
             'output': output,
@@ -206,20 +203,22 @@ class ChatManager:
             thread_id = await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 thread_name=thread_name,
-                messages=messages
+                messages=messages,  # Pass Msg objects directly
+                meeting_id=meeting_id
             )
         else:
             await self.thread_manager.upsert_thread(
                 user_id=user_id,
-                messages=messages,
-                thread_id=thread_id
+                messages=messages,  # Pass Msg objects directly
+                thread_id=thread_id,
+                meeting_id=meeting_id
             )
 
         yield {
             "thread_id": thread_id,
             "output": output,
             "service_content": service_content
-        } 
+        }
         
         
 class SearchChatManager(ChatManager):
@@ -268,6 +267,7 @@ class MeetingChatManager(ChatManager):
     def __init__(self, session: AsyncSession):
         super().__init__()
         self.session = session
+        self.model = "gpt-4o-mini"
 
     async def chat(
         self,
@@ -277,32 +277,16 @@ class MeetingChatManager(ChatManager):
         thread_id: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
-        prompt: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Chat about meetings. If meeting_ids is provided, chat about specific meetings.
-        If not provided, chat about all accessible meetings.
-        """
-        
-        # Get accessible meetings
+        # Get accessible meetings for user
         meetings, _ = await get_accessible_meetings(
             session=self.session,
             user_id=UUID(user_id),
-            limit=1000  # Adjust limit as needed
+            limit=1000
         )
         
-        if not meetings:
-            yield {
-                "error": "No accessible meetings found",
-                "service_content": {
-                    "context_source": "meeting",
-                    "error": "No accessible meetings found"
-                }
-            }
-            return
-            
         if meeting_ids:
-            # If specific meetings requested, filter to only accessible ones
+            # Filter to only accessible meetings
             accessible_meeting_ids = {str(m.meeting_id) for m in meetings}
             authorized_meeting_ids = [
                 mid for mid in meeting_ids 
@@ -319,25 +303,64 @@ class MeetingChatManager(ChatManager):
                 }
                 return
         else:
-            # Use all accessible meetings
             authorized_meeting_ids = [m.meeting_id for m in meetings]
             
-        # Create meeting context provider
+        # Get thread info and messages
+        messages = []
+        if thread_id:
+            thread = await self.thread_manager.get_thread(thread_id)
+            if not thread:
+                raise ValueError(f"Thread with id {thread_id} not found")
+            messages = thread.messages
+            thread_name = thread.thread_name
+        else:
+            thread_name = query
+
+        # Create context from meetings
         context_provider = MeetingListContextProvider(authorized_meeting_ids)
+        context = await context_provider.get_context(session=self.session)
         
-        # Use base chat method with meeting context
-        async for result in super().chat(
-            user_id=user_id,
-            query=query,
-            context_provider=context_provider,
-            thread_id=thread_id,
+        # Build message list maintaining Msg class structure
+        messages_context = [
+            system_msg(self.prompts.meeting_context),
+            *messages,
+            system_msg(f"Context: {context}"),
+            user_msg(query)
+        ]
+
+        # Generate response
+        output = ""
+        async for chunk in generic_call_(
+            messages=messages_context,
             model=model or self.model,
-            temperature=temperature,
-            session=self.session,
-            prompt=prompt
+            temperature=temperature or 0.7,
+            streaming=True
         ):
-            # Add context metadata
-            if 'service_content' in result:
-                result['service_content']['context_source'] = 'meeting'
-                result['service_content']['meeting_count'] = len(authorized_meeting_ids)
-            yield result
+            output += chunk
+            yield chunk
+
+        # Update thread
+        messages.append(user_msg(query))
+        messages.append(assistant_msg(output))
+        
+        if thread_id:
+            await self.thread_manager.upsert_thread(
+                user_id=user_id,
+                messages=messages,
+                thread_id=thread_id
+            )
+        else:
+            thread_id = await self.thread_manager.upsert_thread(
+                user_id=user_id,
+                thread_name=thread_name,
+                messages=messages
+            )
+
+        yield {
+            "thread_id": thread_id,
+            "service_content": {
+                "context_source": "meeting",
+                "meeting_count": len(authorized_meeting_ids),
+                "meeting_id": str(authorized_meeting_ids[0]) if len(authorized_meeting_ids) == 1 else None
+            }
+        }
