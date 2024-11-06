@@ -19,13 +19,14 @@ from qdrant_client.models import (
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from psql_helpers import get_session
 import pandas as pd
 
 
 from sentence_transformers import SentenceTransformer
 import numpy as np
 
-from psql_models import DiscussionPoint, Meeting, Speaker
+from psql_models import DiscussionPoint, Meeting, Speaker, UserMeeting
 from sqlalchemy import select
 
 import os
@@ -64,9 +65,9 @@ class QdrantSearchEngine:
         except Exception as e:
             print(f"Error dropping collection: {e}")
 
-    async def initialize(self):
+    async def create_collection(self):
         """Initialize collection with optimized search parameters"""
-        await self.client.recreate_collection(
+        await self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config=VectorParams(
                 size=self.vector_size,
@@ -705,3 +706,54 @@ class QdrantSearchEngine:
             return {
                 "error": f"Failed to get collection stats: {str(e)}"
             }
+
+    async def sample_user_discussions(self, user_id: str, session: AsyncSession = None, sample_size: int = 100) -> pd.DataFrame:
+        # Use context manager for session if not provided
+        async with (session or get_session()) as session:
+            # Get meeting IDs for user through UserMeeting table
+            query = select(UserMeeting.meeting_id).where(UserMeeting.user_id == user_id)
+            result = await session.execute(query)
+            meeting_ids = [str(row[0]) for row in result.fetchall()]
+            
+            if not meeting_ids:
+                return pd.DataFrame()
+
+            # Create filter for meeting_ids
+            scroll_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="meeting_id", 
+                        match=MatchAny(any=meeting_ids)
+                    )
+                ]
+            )
+
+            # Get all points for these meetings
+            response = await self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=scroll_filter,
+                limit=20000,
+                with_payload=True
+            )
+
+            if not response[0]:
+                return pd.DataFrame()
+
+            # Convert to DataFrame
+            df = pd.DataFrame([hit.payload for hit in response[0]])
+            
+            # Calculate recency weights
+            current_time = pd.Timestamp.now(tz='UTC')
+            df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed').dt.tz_localize('UTC')
+            time_diff = (current_time - df['timestamp']).dt.total_seconds()
+            recency_weights = 1 / (1 + time_diff)
+
+            # Take weighted sample
+            sample_size = min(sample_size, len(df))
+            sampled_df = df.sample(
+                n=sample_size,
+                weights=recency_weights,
+                random_state=42
+            )
+
+            return sampled_df.sort_values(by='timestamp', ascending=False)

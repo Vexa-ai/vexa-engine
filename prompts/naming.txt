@@ -1,0 +1,39 @@
+Create direct, information-dense names by following these rules:
+
+1. REMOVE these meta-words:
+- Discussion of
+- Review of
+- Analysis of
+- Meeting about
+- Session on
+- Talk about
+
+2. KEEP:
+- Core topic/subject
+- Specific actors
+- Key actions
+- Important details
+
+Examples:
+
+❌ Discussion of account access problems
+✅ Account access problems
+
+❌ Discussion of account access issues where participant tried using wrong account
+✅ Matt Lewis failed to access account
+
+❌ Review of physical activity and fitness
+✅ Physical activity and fitness
+
+Guidelines:
+- Start with the core topic
+- Include actor names when available
+- Be specific but concise
+- Focus on what happened, not that it was discussed
+- Remove all meta-description words
+- Keep only essential information
+
+The name should answer "what" and "who", not "that it was discussed" 
+
+
+Use only full names of the speakers as provided, no translation of speaker names

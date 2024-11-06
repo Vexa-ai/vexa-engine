@@ -1,5 +1,5 @@
-from psql_helpers import setup_database
+from psql_helpers import init_db
 import asyncio
 
 if __name__ == "__main__":
-    asyncio.run(setup_database()) 
+    asyncio.run(init_db()) 

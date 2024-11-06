@@ -189,7 +189,15 @@ class BaseCall(BaseModel):
         if model == 'turbo':
             model = "gpt-4o"
 
-        messages_dict = [msg.__dict__ for msg in messages]
+        # Fix message format for new OpenAI API
+        messages_dict = []
+        for msg in messages:
+            # Convert content to string if it's not already
+            content = str(msg.content) if isinstance(msg.content, (list, dict)) else msg.content
+            messages_dict.append({
+                'role': msg.role,
+                'content': content
+            })
         
         if use_cache or force_store:
             cache_key = generate_cache_key(messages_dict, model, temperature)
@@ -244,8 +252,15 @@ class BaseCall(BaseModel):
         if model == 'turbo':
             model = "gpt-4o"
 
-        messages_dict = [msg.__dict__ for msg in messages]
-        
+        # Fix message format for new OpenAI API
+        messages_dict = []
+        for msg in messages:
+            # Convert content to string if it's not already
+            content = str(msg.content) if isinstance(msg.content, (list, dict)) else msg.content
+            messages_dict.append({
+                'role': msg.role,
+                'content': content
+            })
 
         client = instructor.patch(AsyncOpenAI())
         

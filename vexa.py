@@ -7,7 +7,7 @@ import asyncio
 
 
 VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
-API_URL = os.getenv('API_URL', 'http://127.0.0.1:8766')
+API_URL = os.getenv('API_URL', 'http://127.0.0.1:8765')
 
 load_dotenv()
 
@@ -109,7 +109,7 @@ class VexaAPI:
         
         formatted_output = f"Meeting Metadata:\n"
         formatted_output += f"Start Date and Time: {start_datetime.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        formatted_output += "Speakers:\n"
+        formatted_output += "Speakers (Always  reference the names EXACTLY as provided with NO changes letter by letter):\n"
         for speaker, initials in speaker_initials.items():
             formatted_output += f"  {initials}: {speaker}\n"
         formatted_output += "\nMeeting Transcript:\n\n"

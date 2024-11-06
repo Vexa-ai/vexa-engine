@@ -1,0 +1,36 @@
+1 coding style: 
+- Ultra-compact code style
+- NO unnessessary empty gap lines,compact code
+- do not use docstrings
+- use comments to explain "why" behind the code in more complex functions
+
+
+2 if "example" is requested:
+- NO functions
+- only basic code
+    
+
+
+
+2 postgres session using functions:
+
+- use get_session factory from psql_helpers to deliver default session resulting in session parameter nullable
+
+
+example:
+    
+from psql_helper import get_session
+async def sample_user_discussions(self, user_id: str, session: AsyncSession = None, sample_size: int = 100) -> pd.DataFrame:
+
+    async with (session or get_session()) as session:
+        # Get meeting IDs for user through UserMeeting table
+        query = select(UserMeeting.meeting_id).where(UserMeeting.user_id == user_id
+
+
+  
+    
+3 jupyter notebooks:
+    use:    
+    %load_ext autoreload
+%autoreload 2
+

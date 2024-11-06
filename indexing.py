@@ -264,7 +264,6 @@ class Indexing:
                 self.redis.delete(self.current_meeting_key)
 
     async def index_meetings(self, num_meetings: int = 20):
-        num_meetings = 120 #temp
         await self.vexa.get_user_info()
         user_id = self.vexa.user_id
         indexing_lock_key = f"indexing:lock:{user_id}"

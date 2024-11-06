@@ -5,7 +5,8 @@ async def setup_qdrant():
     search_engine = QdrantSearchEngine()
 
     # Initialize new collection with proper schema
-    await search_engine.initialize()
+    await search_engine.drop_collection()
+    await search_engine.create_collection()
     
     print("Qdrant collection setup completed successfully")
 
