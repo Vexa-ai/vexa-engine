@@ -22,6 +22,7 @@ from psql_helpers import (
 )
 from sqlalchemy import func, select
 from vexa import VexaAPI
+from psql_models import Thread as ThreadModel
 
 from psql_models import Meeting,UserMeeting
 from sqlalchemy import and_
@@ -53,7 +54,7 @@ app = FastAPI()
 # Move this BEFORE any other middleware or app setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173"],  # Must be explicit
+    allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173", "http://localhost:5174"],  # Must be explicit
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -641,9 +642,9 @@ async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(ge
         if not await has_meeting_access(session, user_id, meeting_id):
             raise HTTPException(status_code=403, detail="No access to meeting")
         result = await session.execute(
-            select(Thread)
-            .where(and_(Thread.user_id == user_id, Thread.meeting_id == meeting_id))
-            .order_by(Thread.timestamp.desc())
+            select(ThreadModel)
+            .where(and_(ThreadModel.user_id == user_id, ThreadModel.meeting_id == meeting_id))
+            .order_by(ThreadModel.timestamp.desc())
         )
         return [{
             "thread_id": t.thread_id,

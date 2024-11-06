@@ -343,17 +343,22 @@ class MeetingChatManager(ChatManager):
         messages.append(user_msg(query))
         messages.append(assistant_msg(output))
         
+        # Update thread with meeting_id for single meeting chats
+        meeting_id = authorized_meeting_ids[0] if len(authorized_meeting_ids) == 1 else None
+        
         if thread_id:
             await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 messages=messages,
-                thread_id=thread_id
+                thread_id=thread_id,
+                meeting_id=meeting_id
             )
         else:
             thread_id = await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 thread_name=thread_name,
-                messages=messages
+                messages=messages,
+                meeting_id=meeting_id
             )
 
         yield {
