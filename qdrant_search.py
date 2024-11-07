@@ -485,6 +485,10 @@ class QdrantSearchEngine:
 
     async def calculate_sparse_similarity(self, query_text: str, content: str) -> float:
         try:
+            # Normalize and clean text
+            query_text = query_text.lower().strip()
+            content = content.lower().strip()
+            
             # Get sparse embeddings
             embeddings = list(self.sparse_model.embed([query_text, content]))
             if len(embeddings) != 2:
@@ -495,21 +499,40 @@ class QdrantSearchEngine:
             # Find common indices
             common_indices = np.intersect1d(query_emb.indices, content_emb.indices)
             if len(common_indices) == 0:
+                # Direct text matching fallback
+                if query_text in content:
+                    return 0.8  # High score for direct matches
                 return 0.0
                 
             # Get positions of common indices in both embeddings
             query_mask = np.isin(query_emb.indices, common_indices)
             content_mask = np.isin(content_emb.indices, common_indices)
             
-            # Use boolean masks instead of searchsorted
-            similarity = np.sum(query_emb.values[query_mask] * content_emb.values[content_mask])
+            # Calculate BM25-like score
+            k1 = 1.5
+            b = 0.75
+            avgdl = 20  # Adjust based on your average document length
             
-            # Normalize by document lengths
-            norm = np.sqrt(np.sum(query_emb.values**2) * np.sum(content_emb.values**2))
-            if norm > 0:
-                similarity /= norm
+            # Document length normalization
+            doc_len = len(content.split())
+            len_norm = (1 - b + b * doc_len / avgdl)
+            
+            # Calculate score with length normalization
+            score = 0
+            for q_val, c_val in zip(query_emb.values[query_mask], content_emb.values[content_mask]):
+                tf = c_val
+                tf_score = (tf * (k1 + 1)) / (tf + k1 * len_norm)
+                idf = q_val
+                score += tf_score * idf
                 
-            return float(similarity)
+            # Normalize final score
+            score = score / (1 + score)  # Squash to [0,1]
+            
+            # Boost score for exact matches
+            if query_text in content:
+                score = max(score, 0.8)
+                
+            return float(score)
         except Exception as e:
             print(f"Error in sparse similarity: {e}")
             return 0.0
