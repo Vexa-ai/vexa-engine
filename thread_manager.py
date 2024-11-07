@@ -13,9 +13,12 @@ class SearchAssistantThread(BaseModel):
     thread_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
     thread_name: str
-    messages: List[Dict]
-    meeting_id: Optional[UUID] = None  # Added meeting_id field
+    messages: List[Msg] = []
+    meeting_id: Optional[UUID] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        arbitrary_types_allowed = True
 
 class ThreadManager:
     def __init__(self):
@@ -86,12 +89,24 @@ class ThreadManager:
             thread = result.scalar_one_or_none()
             if not thread:
                 return None
+            
+            # Convert stored dict messages back to Msg objects
+            messages_dicts = json.loads(thread.messages)
+            messages = [
+                Msg(
+                    role=msg["role"],
+                    content=msg["content"],
+                    service_content=msg.get("service_content")
+                ) 
+                for msg in messages_dicts
+            ]
+            
             return SearchAssistantThread(
                 thread_id=thread.thread_id,
                 user_id=str(thread.user_id),
                 thread_name=thread.thread_name,
-                messages=json.loads(thread.messages),
-                meeting_id=thread.meeting_id,  # Added meeting_id
+                messages=messages,
+                meeting_id=thread.meeting_id,
                 timestamp=thread.timestamp
             )
 

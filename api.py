@@ -178,10 +178,10 @@ async def get_current_user(authorization: str = Header(...)):
 
 @app.post("/submit_token")
 async def submit_token(request: TokenRequest):
-    user_id, user_name = await token_manager.submit_token(request.token)
+    user_id, user_name, image = await token_manager.submit_token(request.token)
     if user_id is None or user_name is None:
         raise HTTPException(status_code=401, detail="Invalid token")
-    return {"user_id": user_id, "user_name": user_name}
+    return {"user_id": user_id, "user_name": user_name, "image": image}
 
 @app.get("/threads", response_model=List[Thread])
 async def get_threads(current_user: tuple = Depends(get_current_user)):

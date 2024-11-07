@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import joinedload
+from pytz import timezone
 
 class TokenData(BaseModel):
     token: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -18,27 +20,23 @@ class TokenManager:
     def __init__(self):
         self.session_factory = async_session
 
-    async def submit_token(self, token: str) -> Tuple[Optional[str], Optional[str]]:
+    async def submit_token(self, token: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
         try:
             # First check if token already exists and is valid
             async with async_session() as session:
                 result = await session.execute(
-                    select(UserToken).filter_by(token=token)
+                    select(UserToken)
+                    .options(joinedload(UserToken.user))
+                    .where(UserToken.token == token)
                 )
-                existing_token = result.scalar_one_or_none()
-                
-                if existing_token:
-                    # Update last_used_at and return existing user info
-                    existing_token.last_used_at = datetime.utcnow()
-                    await session.commit()
-                    return str(existing_token.user_id), existing_token.user_name
+                token_obj = result.scalar_one_or_none()
 
-            # If token doesn't exist, validate with Vexa API and create new record
+            # Get user info from Vexa API regardless of token existence
             vexa_api = VexaAPI(token=token)
             user_info = await vexa_api.get_user_info()
             
             async with async_session() as session:
-                # Create user if doesn't exist
+                # Create or update user
                 user = User(
                     id=user_info["id"],
                     email=user_info["email"],
@@ -52,21 +50,26 @@ class TokenManager:
                 merged_user = await session.merge(user)
                 await session.flush()
                 
-                # Create new token record
-                user_token = UserToken(
-                    token=token,
-                    user_id=merged_user.id,
-                    user_name=f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
-                    last_used_at=datetime.utcnow()
-                )
-                session.add(user_token)
-                await session.commit()
+                if token_obj:
+                    # Update existing token's last_used_at
+                    token_obj.last_used_at = datetime.now(timezone('utc'))
+                    await session.commit()
+                else:
+                    # Create new token record
+                    token_obj = UserToken(
+                        token=token,
+                        user_id=merged_user.id,
+                        user_name=f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
+                        last_used_at=datetime.now(timezone('utc'))
+                    )
+                    session.add(token_obj)
+                    await session.commit()
                 
-                return str(merged_user.id), user_token.user_name
+                return str(merged_user.id), token_obj.user_name, merged_user.image
                 
         except Exception as e:
             print(f"Error in submit_token: {e}")
-            return None, None
+            return None, None, None
 
     async def check_token(self, token: str) -> Tuple[str | None, str | None]:
         async with self.session_factory() as session:

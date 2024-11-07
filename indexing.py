@@ -335,6 +335,16 @@ class Indexing:
             "message": "All indexing queues have been reset"
         }
 
+    @classmethod
+    async def from_email(cls, email: str, session: AsyncSession = None) -> 'Indexing':
+        async with (session or get_session()) as session:
+            query = select(UserToken.token).join(User).where(User.email == email)
+            result = await session.execute(query)
+            token = result.scalar_one_or_none()
+            if not token:
+                raise ValueError(f"No token found for user with email: {email}")
+            return cls(token=token)
+
 async def get_indexing_stats(session: AsyncSession) -> pd.DataFrame:
     # Get users with their tokens and meeting counts
     users_query = (
