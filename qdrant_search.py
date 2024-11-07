@@ -1,4 +1,4 @@
-πimport uuid
+import uuid
 from typing import List, Dict, Any
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
@@ -33,6 +33,8 @@ import os
 
 import asyncio
 
+from fastembed import SparseTextEmbedding
+
 QDRANT_HOST = os.getenv('QDRANT_HOST', '127.0.0.1')
 QDRANT_PORT = os.getenv('QDRANT_PORT', '6333')
 
@@ -54,6 +56,8 @@ class QdrantSearchEngine:
             "summary": 0.7,     # Medium importance
             "details": 0.5      # Lower importance
         }
+
+        self.sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
 
     async def drop_collection(self):
         """Drop the collection if it exists"""
@@ -479,95 +483,120 @@ class QdrantSearchEngine:
         await self.sync_meeting_discussions(meeting_id, session)
         await self.sync_meeting_transcript(meeting_id, session)
 
-    async def search_transcripts(self, query_text: str, meeting_ids: List[str] = None, limit: int = 20, min_score: float = 0.3):
-        """
-        Search through meeting transcripts using semantic similarity
-        
-        Args:
-            query_text: str - The text to search for
-            meeting_ids: Optional[List[str]] - List of meeting IDs to search in. If None, searches all meetings
-            limit: int - Maximum number of results to return
-            min_score: float - Minimum similarity score threshold
-        """
+    async def calculate_sparse_similarity(self, query_text: str, content: str) -> float:
         try:
-            # Debug print
-            print(f"Searching for: {query_text}")
-            if meeting_ids:
-                print(f"Filtering for meetings: {meeting_ids}")
+            # Get sparse embeddings
+            embeddings = list(self.sparse_model.embed([query_text, content]))
+            if len(embeddings) != 2:
+                return 0.0
+                
+            query_emb, content_emb = embeddings
             
-            query_vector = await self.encode_text(query_text)
+            # Find common indices
+            common_indices = np.intersect1d(query_emb.indices, content_emb.indices)
+            if len(common_indices) == 0:
+                return 0.0
+                
+            # Get positions of common indices in both embeddings
+            query_mask = np.isin(query_emb.indices, common_indices)
+            content_mask = np.isin(content_emb.indices, common_indices)
             
-            # Create base filter for transcripts
-            must_conditions = [
-                FieldCondition(
-                    key="vector_type",
-                    match=MatchValue(value="transcript")
-                )
-            ]
+            # Use boolean masks instead of searchsorted
+            similarity = np.sum(query_emb.values[query_mask] * content_emb.values[content_mask])
             
-            # Add meeting filter if meeting_ids provided
-            if meeting_ids:
-                must_conditions.append(
-                    FieldCondition(
-                        key="meeting_id",
-                        match=MatchAny(any=meeting_ids)
-                    )
-                )
-            
-            search_filter = Filter(must=must_conditions)
-            
-            # Debug: Check if there are any transcript vectors
-            count = await self.client.count(
-                collection_name=self.collection_name,
-                count_filter=search_filter
-            )
-            print(f"Found {count.count} transcript vectors to search")
-            
-            # Perform vector search
-            results = await self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector.tolist(),
-                query_filter=search_filter,
-                limit=limit,
-                score_threshold=min_score,
-                search_params=SearchParams(
-                    hnsw_ef=128  # Increase search accuracy
-                ),
-                with_payload=True
-            )
-            
-            # Debug print
-            print(f"Search returned {len(results)} results")
-            
-            # Format results
-            formatted_results = []
-            for hit in results:
-                formatted_results.append({
-                    "content": hit.payload.get("content", ""),
-                    "speaker": hit.payload.get("speaker", ""),
-                    "timestamp": hit.payload.get("timestamp", ""),
-                    "similarity": hit.score,
-                    "meeting_id": hit.payload.get("meeting_id", ""),
-                    "indices": hit.payload.get("indices", [])
-                })
-            
-            df = pd.DataFrame(formatted_results)
-            
-            # Debug print
-            print(f"Created DataFrame with {len(df)} rows")
-            if not df.empty:
-                print("DataFrame columns:", df.columns.tolist())
-                print("Sample row:", df.iloc[0].to_dict())
-            
-            return df
-
+            # Normalize by document lengths
+            norm = np.sqrt(np.sum(query_emb.values**2) * np.sum(content_emb.values**2))
+            if norm > 0:
+                similarity /= norm
+                
+            return float(similarity)
         except Exception as e:
-            print(f"Error in search_transcripts: {e}")
-            # Return empty DataFrame in case of error
-            return pd.DataFrame(columns=[
-                "content", "speaker", "timestamp", 
-                "similarity", "meeting_id", "indices"
-            ])
+            print(f"Error in sparse similarity: {e}")
+            return 0.0
+
+    async def search_transcripts(
+        self, 
+        query_text: str, 
+        meeting_ids: List[str] = None, 
+        limit: int = 20, 
+        min_score: float = 0.3,
+        length_penalty: float = 1.,  # Penalty factor for short content
+        min_length: int = 1,        # Minimum length threshold
+        max_length: int = 25        # Maximum length for normalization
+    ):
+        # Base filter conditions
+        must_conditions = [
+            FieldCondition(key="vector_type", match=MatchValue(value="transcript"))
+        ]
+        if meeting_ids:
+            must_conditions.append(
+                FieldCondition(key="meeting_id", match=MatchAny(any=meeting_ids))
+            )
+
+        # 1. Vector search
+        query_vector = await self.encode_text(query_text)
+        vector_results = await self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_vector.tolist(),
+            query_filter=Filter(must=must_conditions),
+            limit=limit,
+            score_threshold=min_score,
+            search_params=SearchParams(hnsw_ef=128),
+            with_payload=True
+        )
+        
+        # 2. Get all meeting content
+        scroll_response = await self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=Filter(must=must_conditions),
+            limit=10000,
+            with_payload=True
+        )
+        all_chunks = scroll_response[0]
+
+        # 3. Combine and score results
+        vector_scores = {hit.payload['content']: hit.score for hit in vector_results}
+        
+        results = []
+        for chunk in all_chunks:
+            content = chunk.payload['content']
+            
+            # Get vector score if exists, else 0
+            vector_score = vector_scores.get(content, 0.0)
+            
+            # Apply length penalty to vector score
+            content_length = len(content)
+            if content_length < max_length:
+                # Normalized length score between 0 and 1
+                length_ratio = max(0, (content_length - min_length) / (max_length - min_length))
+                # Apply penalty to very short content
+                if content_length < min_length:
+                    vector_score *= (1 - length_penalty)
+                else:
+                    vector_score *= (1 - length_penalty * (1 - length_ratio))
+            
+            # Calculate BM25-like text similarity
+            text_score = await self.calculate_sparse_similarity(query_text, content)
+            
+            # Combined score (weighted combination)
+            final_score = max(vector_score, text_score)
+            
+            if final_score >= min_score:
+                results.append({
+                    "content": content,
+                    "speaker": chunk.payload.get("speaker", ""),
+                    "timestamp": chunk.payload.get("timestamp", ""),
+                    "similarity": final_score,
+                    "meeting_id": chunk.payload.get("meeting_id", ""),
+                    "indices": chunk.payload.get("indices", []),
+                    "vector_score": vector_score,
+                    "text_score": text_score,
+                    "length": content_length  # Added for debugging
+                })
+        
+        # Sort by score and limit results
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return pd.DataFrame(results[:limit])
 
     async def search_transcripts_with_context(self, 
                                             query_text: str, 
