@@ -22,21 +22,27 @@ class TokenManager:
 
     async def submit_token(self, token: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
         try:
-            # First check if token already exists and is valid
+            # First check if token exists and is valid
             async with async_session() as session:
                 result = await session.execute(
-                    select(UserToken)
-                    .options(joinedload(UserToken.user))
+                    select(UserToken, User)
+                    .join(User, UserToken.user_id == User.id)
                     .where(UserToken.token == token)
                 )
-                token_obj = result.scalar_one_or_none()
+                record = result.first()
+                
+                if record:
+                    token_obj, user = record
+                    user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+                    token_obj.last_used_at = datetime.now(timezone('utc'))
+                    await session.commit()
+                    return str(user.id), user_name, user.image
 
-            # Get user info from Vexa API regardless of token existence
+            # Token not found, validate with Vexa API
             vexa_api = VexaAPI(token=token)
             user_info = await vexa_api.get_user_info()
             
             async with async_session() as session:
-                # Create or update user
                 user = User(
                     id=user_info["id"],
                     email=user_info["email"],
@@ -45,25 +51,18 @@ class TokenManager:
                     last_name=user_info.get("last_name"),
                     image=user_info.get("image")
                 )
-                
-                # Merge user and await the operation
                 merged_user = await session.merge(user)
                 await session.flush()
                 
-                if token_obj:
-                    # Update existing token's last_used_at
-                    token_obj.last_used_at = datetime.now(timezone('utc'))
-                    await session.commit()
-                else:
-                    # Create new token record
-                    token_obj = UserToken(
-                        token=token,
-                        user_id=merged_user.id,
-                        user_name=f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
-                        last_used_at=datetime.now(timezone('utc'))
-                    )
-                    session.add(token_obj)
-                    await session.commit()
+                # Create new token record
+                token_obj = UserToken(
+                    token=token,
+                    user_id=merged_user.id,
+                    user_name=f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
+                    last_used_at=datetime.now(timezone('utc'))
+                )
+                session.add(token_obj)
+                await session.commit()
                 
                 return str(merged_user.id), token_obj.user_name, merged_user.image
                 

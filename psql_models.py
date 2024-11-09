@@ -243,5 +243,24 @@ class ShareLink(Base):
         ),
     )
 
+class UTMParams(Base):
+    __tablename__ = 'utm_params'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    utm_source = Column(String(255), nullable=True)
+    utm_medium = Column(String(255), nullable=True)
+    utm_campaign = Column(String(255), nullable=True)
+    utm_term = Column(String(255), nullable=True)
+    utm_content = Column(String(255), nullable=True)
+    ref = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    user = relationship('User', backref='utm_params')
+
+    __table_args__ = (
+        Index('idx_utm_params_user_id', 'user_id'),
+    )
+
 # The following code should be placed inside an async function to avoid the "async" not allowed outside of async function error.
 

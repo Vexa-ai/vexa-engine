@@ -39,3 +39,6 @@ tiktoken
 litellm
 pydantic[email]
 tabulate
+google-auth
+google-auth-oauthlib
+google-auth-httplib2

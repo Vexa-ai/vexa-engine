@@ -4,6 +4,15 @@ import os
 from datetime import datetime
 import pandas as pd
 import asyncio
+from google_client import GoogleClient, GoogleError
+from typing import Optional
+from pydantic import BaseModel
+from urllib.parse import urlparse, parse_qs
+from psql_models import User, UserToken, async_session, UTMParams
+from pytz import timezone
+from models import VexaAPIError
+import uuid
+from sqlalchemy import select
 
 
 VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
@@ -173,69 +182,172 @@ import os
 from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 
+#auth_url = f"{self.vexa_api_url}/api/v1/auth/default"
+#/api/v1/tools/meetings/active
 class VexaAuth:
     def __init__(self):
         self.base_url = API_URL
         self.vexa_api_url = VEXA_API_URL
         self.service_token = os.getenv('VEXA_SERVICE_TOKEN')
+        self.google_client = GoogleClient()
 
-    # async def get_user_token(self, email: str):
-    #     """
-    #     Get user token using service token and email
-    #     """
-    #     auth_url = f"{self.vexa_api_url}/api/v1/auth/default"
-        
-    #     # Prepare payload for Vexa auth
-    #     payload = {
-    #         "email": email,
-    #         "utm_source": "string",
-    #         "utm_medium": "string",
-    #         "utm_campaign": "string",
-    #         "utm_term": "string",
-    #         "utm_content": "string",
-    #         "username": "string",
-    #         "first_name": "string",
-    #         "last_name": "string"
-    #     }
-        
-    #     # Add service token to headers
-    #     headers = {
-    #         "Authorization": f"Bearer {self.service_token}"
-    #     }
-        
-    #     # Make request to get auth link
-    #     response = requests.post(auth_url, json=payload, headers=headers)
-        
-    #     if response.status_code != 200:
-    #         raise Exception(f"Failed to get auth link: {response.text}")
-        
-    #     # Extract token from auth link
-    #     auth_link = response.json()['link']
-    #     parsed_url = urlparse(auth_link)
-    #     params = parse_qs(parsed_url.query)
-    #     user_token = params.get('__vexa_token', [None])[0]
-        
-    #     if not user_token:
-    #         raise Exception("Could not extract user token from auth link")
-        
-    #     return user_token
+    async def get_active_meetings(self) -> list:
+        url = f"{self.vexa_api_url}/api/v1/tools/meetings/active"
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                response = await client.get(
+                    url, 
+                    headers={"Authorization": f"Bearer {self.service_token}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.ConnectError as e:
+            raise VexaAPIError(f"Connection failed to {url}: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise VexaAPIError(f"Unexpected error: {str(e)}")
 
-    # async def authenticate_user(self, email: str):
-    #     """
-    #     Complete authentication flow: get user token and submit it
-    #     """
-    #     # Get user token
-    #     user_token = await self.get_user_token(email)
+    async def get_user_token(self, email: str) -> str:
+        url = f"{self.vexa_api_url}/api/v1/tools/user/token/{email}"
+        params = {"service_token": self.service_token}
         
-    #     # Submit token to our API
-    #     submit_url = f"{self.base_url}/submit_token"
-    #     payload = {
-    #         "token": user_token
-    #     }
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+                return data["token"]
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                raise VexaAPIError(f"User with email {email} not found")
+            raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise VexaAPIError(f"Failed to get user token: {str(e)}")
+
+    async def get_default_auth_token(self, email: str, **kwargs) -> str:
+        url = f"{self.vexa_api_url}/api/v1/auth/default"
+        headers = {"Authorization": f"Bearer {self.service_token}"}
         
-    #     response = requests.post(submit_url, json=payload)
-        
-    #     if response.status_code != 200:
-    #         raise Exception(f"Failed to submit token: {response.text}")
-        
-    #     return response.json()
+        # Build payload from kwargs, excluding None values
+        payload = {
+            "email": email,
+            **{k: v for k, v in kwargs.items() if v is not None}
+        }
+            
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()["link"]
+        except httpx.HTTPStatusError as e:
+            raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise VexaAPIError(f"Failed to get default auth link: {str(e)}")
+
+    async def google_auth(self, token: str, utm_params: dict = None) -> dict:
+        try:
+            user_info = await self.google_client.get_user_info(token)
+            
+            async with async_session() as session:
+                try:
+                    existing_user = await session.execute(
+                        select(User).where(User.email == user_info.email)
+                    )
+                    user = existing_user.scalar_one_or_none()
+                    
+                    if user:
+                        # Update existing user info if needed
+                        if (user.username != user_info.name or 
+                            user.first_name != user_info.given_name or 
+                            user.last_name != user_info.family_name or 
+                            user.image != user_info.picture):
+                            
+                            user.username = user_info.name
+                            user.first_name = user_info.given_name
+                            user.last_name = user_info.family_name
+                            user.image = user_info.picture
+                            user.updated_timestamp = datetime.now(timezone('utc'))
+                    else:
+                        # Create new user
+                        user = User(
+                            id=uuid.uuid4(),
+                            email=user_info.email,
+                            username=user_info.name,
+                            first_name=user_info.given_name,
+                            last_name=user_info.family_name,
+                            image=user_info.picture,
+                            created_timestamp=datetime.now(timezone('utc')),
+                            updated_timestamp=datetime.now(timezone('utc'))
+                        )
+                        session.add(user)
+
+                    # Handle UTM params
+                    if utm_params:
+                        utm = UTMParams(
+                            id=uuid.uuid4(),
+                            user_id=user.id,
+                            **{k: v for k, v in utm_params.items() if v is not None},
+                            created_at=datetime.now(timezone('utc'))
+                        )
+                        session.add(utm)
+
+                    await session.flush()
+
+                    # Get auth token
+                    auth_link = await self.get_default_auth_token(
+                        email=user_info.email,
+                        username=user_info.name,
+                        first_name=user_info.given_name,
+                        last_name=user_info.family_name,
+                        image=user_info.picture,
+                        **utm_params if utm_params else {}
+                    )
+                    
+                    parsed_url = urlparse(auth_link)
+                    query_params = parse_qs(parsed_url.query)
+                    vexa_token = query_params.get('__vexa_token', [''])[0]
+
+                    # Check if token already exists
+                    existing_token = await session.execute(
+                        select(UserToken).where(UserToken.token == vexa_token)
+                    )
+                    token_obj = existing_token.scalar_one_or_none()
+                    
+                    user_name = f"{user_info.given_name or ''} {user_info.family_name or ''}".strip()
+                    
+                    if token_obj:
+                        # Update existing token
+                        token_obj.user_id = user.id
+                        token_obj.user_name = user_name
+                        token_obj.last_used_at = datetime.now(timezone('utc'))
+                    else:
+                        # Create new token
+                        token_obj = UserToken(
+                            token=vexa_token,
+                            user_id=user.id,
+                            user_name=user_name,
+                            created_at=datetime.now(timezone('utc')),
+                            last_used_at=datetime.now(timezone('utc'))
+                        )
+                        session.add(token_obj)
+                    
+                    await session.commit()
+                    
+                    return {
+                        "user_id": str(user.id),
+                        "user_name": user_name,
+                        "image": user.image,
+                        "token": vexa_token
+                    }
+                    
+                except Exception as db_error:
+                    await session.rollback()
+                    raise VexaAPIError(f"Database operation failed: {str(db_error)}")
+                
+        except GoogleError as e:
+            raise VexaAPIError(f"Google authentication failed: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise VexaAPIError(f"Authentication failed: {str(e)}")
