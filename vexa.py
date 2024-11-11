@@ -208,8 +208,14 @@ class VexaAuth:
         except Exception as e:
             raise VexaAPIError(f"Unexpected error: {str(e)}")
 
-    async def get_user_token(self, email: str) -> str:
-        url = f"{self.vexa_api_url}/api/v1/tools/user/token/{email}"
+    async def get_user_token(self, email: str = None, user_id: str = None) -> str:
+        if not email and not user_id:
+            raise VexaAPIError("Either email or user_id must be provided")
+        if email and user_id:
+            raise VexaAPIError("Provide either email or user_id, not both")
+        
+        url = f"{self.vexa_api_url}/api/v1/tools/user/token/"
+        url += f"id/{user_id}" if user_id else f"{email}"
         params = {"service_token": self.service_token}
         
         try:
@@ -220,7 +226,8 @@ class VexaAuth:
                 return data["token"]
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
-                raise VexaAPIError(f"User with email {email} not found")
+                identifier = user_id if user_id else email
+                raise VexaAPIError(f"User with {'user_id' if user_id else 'email'} {identifier} not found")
             raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
         except Exception as e:
             raise VexaAPIError(f"Failed to get user token: {str(e)}")
