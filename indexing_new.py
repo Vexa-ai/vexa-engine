@@ -19,6 +19,7 @@ from redis import Redis
 from sqlalchemy import func, and_,distinct
 from psql_models import UserToken, User
 from datetime import datetime, timezone
+import traceback
 
 
 logging.basicConfig(level=logging.INFO)
@@ -31,9 +32,10 @@ class RedisKeys:
     FAILED_SET = "failed_set"
     SEEN_USERS = "seen_users_set"
     LAST_CHECK = "last_active_check"
+    RETRY_ERRORS = "retry_errors"  # New key for storing retry errors
 
 class ActiveMeetingsMonitor:
-    def __init__(self, redis: Redis, vexa_auth: VexaAuth, check_interval: int = 60):
+    def __init__(self, redis: Redis, vexa_auth: VexaAuth, check_interval: int = 5):
         self.redis = redis
         self.vexa_auth = vexa_auth
         self.check_interval = check_interval
@@ -48,10 +50,20 @@ class ActiveMeetingsMonitor:
         try:
             # Get current active meetings
             active_meetings = await self.vexa_auth.get_active_meetings()
-            current_active_set = {
-                str(meeting['id'])
-                for meeting in active_meetings
-            }
+            current_active_set = set()
+            
+            # First process current active meetings and users
+            for meeting in active_meetings:
+                for session in meeting.get('sessions', []):
+                    if session.get('finish_timestamp') is None:  # Only process active sessions
+                        session_id = str(session['id'])
+                        current_active_set.add(session_id)
+                        self.redis.sadd(RedisKeys.ACTIVE_MEETINGS, session_id)
+                        
+                # Extract and store user IDs immediately for all meetings
+                for user_id in meeting.get('user_ids', []):
+                    self.redis.sadd(RedisKeys.SEEN_USERS, str(user_id))
+                    logger.debug(f"Added user {user_id} to seen users for meeting {meeting['id']}")
             
             # Get previously known active meetings
             previous_active = self.redis.smembers(RedisKeys.ACTIVE_MEETINGS)
@@ -68,18 +80,6 @@ class ActiveMeetingsMonitor:
                 
                 # Remove from active meetings set
                 self.redis.srem(RedisKeys.ACTIVE_MEETINGS, meeting_id)
-            
-            # Process current active meetings
-            for meeting in active_meetings:
-                for session in meeting.get('sessions', []):
-                    if session.get('finish_timestamp') is None:  # Only process active sessions
-                        session_id = str(session['id'])
-                        self.redis.sadd(RedisKeys.ACTIVE_MEETINGS, session_id)
-                        
-                        # Extract and store user IDs
-                        for user_id in meeting.get('user_ids', []):
-                            self.redis.sadd(RedisKeys.SEEN_USERS, str(user_id))
-                            logger.debug(f"Added user {user_id} to seen users for session {session_id}")
             
             # Update last check timestamp
             self.redis.set(RedisKeys.LAST_CHECK, datetime.now().isoformat())
@@ -103,7 +103,7 @@ class UserMeetingsScanner:
         self, 
         redis: Redis, 
         vexa_auth: VexaAuth, 
-        scan_interval: int = 300,
+        scan_interval: int = 5,
         meetings_per_user: int = 10,
         max_depth: int = 20  # New parameter for max historical meetings to check
     ):
@@ -279,7 +279,7 @@ class IndexingWorker:
         self, 
         redis: Redis, 
         max_concurrent: int = 3, 
-        process_interval: int = 10,
+        process_interval: int = 5,
         max_retries: int = 3,
         retry_delay: int = 300  # 5 minutes
     ):
@@ -481,21 +481,30 @@ class IndexingWorker:
 
         except Exception as e:
             logger.error(f"Error processing meeting {meeting_id}: {e}")
+            error_data = {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat(),
+                "traceback": traceback.format_exc()
+            }
             
             retry_count = self._get_retry_count(meeting_id)
             if retry_count >= self.max_retries:
-                # Move to failed set with error message
-                error_data = {
-                    "error": str(e),
-                    "timestamp": datetime.now().isoformat(),
-                    "retry_count": retry_count
-                }
+                # Move to failed set with detailed error info
+                error_data.update({
+                    "retry_count": retry_count,
+                    "final_failure": True
+                })
                 self.redis.hset(RedisKeys.FAILED_SET, meeting_id, json.dumps(error_data))
                 self.redis.zrem(RedisKeys.INDEXING_QUEUE, meeting_id)
                 logger.error(f"Meeting {meeting_id} failed permanently after {retry_count} retries")
             else:
-                # Increment retry counter and delay next attempt
+                # Store retry error and schedule next attempt
                 self._increment_retry_count(meeting_id)
+                error_data.update({
+                    "retry_count": retry_count + 1,
+                    "next_retry": datetime.now().timestamp() + self.retry_delay
+                })
+                self.redis.hset(RedisKeys.RETRY_ERRORS, meeting_id, json.dumps(error_data))
                 new_score = datetime.now().timestamp() + self.retry_delay
                 self.redis.zadd(RedisKeys.INDEXING_QUEUE, {meeting_id: new_score})
                 logger.warning(f"Scheduled retry {retry_count + 1} for meeting {meeting_id}")
@@ -523,8 +532,8 @@ class IndexingWorker:
         logger.info("Starting Indexing Worker")
         while True:
             try:
-                # Get next meeting from queue (oldest first)
-                next_meetings = self.redis.zrange(
+                # Get next meeting from queue (newest first)
+                next_meetings = self.redis.zrevrange(
                     RedisKeys.INDEXING_QUEUE, 
                     0, 
                     0, 
@@ -559,6 +568,7 @@ class QueueStats:
         failed_meetings: dict,
         seen_users: set,
         retry_counts: dict,
+        retry_errors: dict,
         last_check: str
     ):
         self.active_meetings = active_meetings
@@ -567,6 +577,7 @@ class QueueStats:
         self.failed_meetings = failed_meetings
         self.seen_users = seen_users
         self.retry_counts = retry_counts
+        self.retry_errors = retry_errors
         self.last_check = last_check
 
     def to_dict(self):
@@ -595,6 +606,7 @@ class QueueStats:
                 "items": list(self.seen_users)
             },
             "retry_counts": self.retry_counts,
+            "retry_errors": self.retry_errors,
             "last_active_check": self.last_check
         }
 
@@ -669,6 +681,12 @@ class IndexingPipeline:
             count = self.redis.get(key)
             retry_counts[meeting_id] = int(count)
         
+        # Get retry errors
+        retry_errors = {}
+        for meeting_id in self.redis.hkeys(RedisKeys.RETRY_ERRORS):
+            error_data = self.redis.hget(RedisKeys.RETRY_ERRORS, meeting_id)
+            retry_errors[meeting_id] = json.loads(error_data)
+        
         # Get last check timestamp
         last_check = self.redis.get(RedisKeys.LAST_CHECK)
 
@@ -679,6 +697,7 @@ class IndexingPipeline:
             failed_meetings=failed_meetings,
             seen_users=seen_users,
             retry_counts=retry_counts,
+            retry_errors=retry_errors,
             last_check=last_check
         )
 
