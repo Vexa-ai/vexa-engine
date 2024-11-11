@@ -97,6 +97,69 @@ class MeetingsScanner:
         vexa_api = VexaAPI(token=token)
         meetings = await vexa_api.get_meetings()
         
+        # Store meetings in database first
+        async with async_session() as session:
+            # Get user info for new tokens
+            user_info = await vexa_api.get_user_info()
+            
+            # Create or update user record
+            user = User(
+                id=user_id,
+                email=user_info.get('email', ''),
+                username=user_info.get('username', ''),
+                first_name=user_info.get('first_name', ''),
+                last_name=user_info.get('last_name', ''),
+                image=user_info.get('image', ''),
+                created_timestamp=datetime.now(timezone.utc)
+            )
+            await session.merge(user)
+            
+            # Create token record if doesn't exist
+            token_query = await session.execute(
+                select(UserToken).where(UserToken.user_id == user_id)
+            )
+            if not token_query.scalar_one_or_none():
+                user_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+                if not user_name:
+                    user_name = user_info.get('username', 'Unknown User')
+                
+                new_token = UserToken(
+                    token=token,
+                    user_id=user_id,
+                    user_name=user_name,
+                    created_at=datetime.now(timezone.utc),
+                    last_used_at=datetime.now(timezone.utc)
+                )
+                session.add(new_token)
+
+            # Store meetings in database
+            for meeting in meetings:
+                meeting_id = str(meeting['id'])
+                # Check if meeting exists
+                existing = await session.execute(
+                    select(Meeting).where(Meeting.meeting_id == meeting_id)
+                )
+                if not existing.scalar_one_or_none():
+                    start_time = datetime.fromisoformat(meeting.get('start_timestamp', '').replace('Z', '+00:00'))
+                    new_meeting = Meeting(
+                        meeting_id=meeting_id,
+                        timestamp=start_time.replace(tzinfo=None),
+                        meeting_name=meeting.get('title', '')
+                    )
+                    session.add(new_meeting)
+                    
+                    # Create owner UserMeeting record
+                    user_meeting = UserMeeting(
+                        meeting_id=meeting_id,
+                        user_id=user_id,
+                        access_level=AccessLevel.OWNER.value,
+                        is_owner=True,
+                        created_by=user_id
+                    )
+                    session.add(user_meeting)
+            
+            await session.commit()
+        
         # Process only finished meetings, sort by finish_timestamp descending
         finished_meetings = [
             meeting for meeting in meetings 
@@ -253,14 +316,54 @@ class IndexingWorker:
 
     async def _get_meeting_token(self, meeting_id: str) -> Optional[str]:
         async with async_session() as session:
-            # Try to get token through UserMeeting
-            result = await session.execute(
-                select(UserToken.token)
-                .join(UserMeeting, UserToken.user_id == UserMeeting.user_id)
-                .where(UserMeeting.meeting_id == meeting_id)
-                .limit(1)
-            )
-            return result.scalar_one_or_none()
+            # Get owner's token for the meeting
+            query = select(UserToken.token)\
+                .join(UserMeeting, UserToken.user_id == UserMeeting.user_id)\
+                .where(
+                    and_(
+                        UserMeeting.meeting_id == meeting_id,
+                        UserMeeting.is_owner == True
+                    )
+                )
+            result = await session.execute(query)
+            token = result.scalar_one_or_none()
+            
+            if not token:
+                # Get user_id from UserMeeting
+                user_query = select(UserMeeting.user_id)\
+                    .where(
+                        and_(
+                            UserMeeting.meeting_id == meeting_id,
+                            UserMeeting.is_owner == True
+                        )
+                    )
+                user_result = await session.execute(user_query)
+                user_id = user_result.scalar_one_or_none()
+                print(user_id)
+                if user_id:
+                    # Try to get token from vexa_auth
+                    token = await self.vexa_auth.get_user_token(user_id=user_id)
+                    if token:
+                        # Get user info using VexaAPI
+                        vexa = VexaAPI(token=token)
+                        user_info = await vexa.get_user_info()
+                        
+                        # Create token record
+                        user_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+                        if not user_name:
+                            user_name = user_info.get('username', 'Unknown User')
+                        
+                        new_token = UserToken(
+                            token=token,
+                            user_id=user_id,
+                            user_name=user_name,
+                            created_at=datetime.now(timezone.utc),
+                            last_used_at=datetime.now(timezone.utc)
+                        )
+                        session.add(new_token)
+                        await session.commit()
+        
+            return token
 
     def _cleanup_success(self, meeting_id: str):
         # Remove from all tracking sets/queues on success
@@ -293,30 +396,36 @@ class IndexingWorker:
     async def _get_or_create_meeting(self, meeting_id: UUID, transcript: list, 
                                    meeting_datetime: datetime, meeting_summary: dict, 
                                    user_id: UUID, session: AsyncSession) -> Meeting:
-        meeting = await session.execute(
-            select(Meeting).where(Meeting.meeting_id == meeting_id)
+        # Create meeting object with updated data
+        meeting = Meeting(
+            meeting_id=meeting_id,
+            meeting_name=meeting_summary.meeting_name,
+            meeting_summary=meeting_summary.summary,
+            transcript=transcript,
+            timestamp=meeting_datetime,
         )
-        meeting = meeting.scalar_one_or_none()
         
-        if not meeting:
-            meeting = Meeting(
-                meeting_id=meeting_id,
-                name=meeting_summary.get('name', 'Untitled Meeting'),
-                summary=meeting_summary.get('summary', ''),
-                transcript=transcript,
-                start_time=meeting_datetime,
-                created_timestamp=datetime.now(timezone.utc)
-            )
-            session.add(meeting)
-            
-            # Create UserMeeting record
+        # Merge will update if exists, create if not
+        meeting = await session.merge(meeting)
+        
+        # Check if UserMeeting record exists
+        user_meeting_exists = await session.execute(
+            select(exists().where(and_(
+                UserMeeting.meeting_id == meeting_id,
+                UserMeeting.user_id == user_id
+            )))
+        )
+        
+        if not user_meeting_exists.scalar():
             user_meeting = UserMeeting(
                 user_id=user_id,
                 meeting_id=meeting_id,
-                access_level=AccessLevel.OWNER
+                access_level=AccessLevel.OWNER.value,
+                is_owner=True,
+                created_by=user_id
             )
             session.add(user_meeting)
-            
+        
         return meeting
 
     async def _handle_speakers(self, speaker_names: list, session: AsyncSession) -> dict:
