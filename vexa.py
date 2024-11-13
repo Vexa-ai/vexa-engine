@@ -13,6 +13,8 @@ from pytz import timezone
 from models import VexaAPIError
 import uuid
 from sqlalchemy import select
+from typing import List, Tuple
+from uuid import UUID
 
 
 VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
@@ -358,3 +360,24 @@ class VexaAuth:
             raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
         except Exception as e:
             raise VexaAPIError(f"Authentication failed: {str(e)}")
+
+    async def get_speech_stats(self, after_time: Optional[datetime] = None) -> List[Tuple[UUID, UUID, datetime]]:
+        url = f"{self.vexa_api_url}/api/v1/tools/speech/stats"
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+                params = {}
+                if after_time:
+                    params["after_time"] = after_time.isoformat()
+                    
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers={"Authorization": f"Bearer {self.service_token}"}
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise VexaAPIError(f"Failed to get speech stats: {str(e)}")

@@ -69,6 +69,7 @@ class User(Base):
     image = Column(String(1024), nullable=True)
     created_timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_timestamp = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_indexed = Column(Boolean, default=False, nullable=False, server_default='false')
     
     # Relationships
     default_access_granted = relationship("DefaultAccess", foreign_keys="DefaultAccess.granted_user_id", back_populates="granted_user")
@@ -79,7 +80,6 @@ class UserToken(Base):
 
     token = Column(String, primary_key=True)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    user_name = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     last_used_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -98,6 +98,7 @@ class Meeting(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     meeting_name = Column(String(100), nullable=True)
     meeting_summary = Column(Text, nullable=True)
+    is_indexed = Column(Boolean, default=False, nullable=False, server_default='false')
 
     discussion_points = relationship('DiscussionPoint', back_populates='meeting')
     user_meetings = relationship('UserMeeting', back_populates='meeting')
