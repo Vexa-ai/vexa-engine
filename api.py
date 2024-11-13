@@ -439,24 +439,25 @@ async def get_meetings(
     
     try:
         async with async_session() as session:
-            # Build base query
+            # Build base query with outer joins
             query = (
                 select(
                     Meeting.meeting_id,
                     Meeting.meeting_name,
                     Meeting.timestamp,
+                    Meeting.is_indexed,
                     func.array_agg(distinct(Speaker.name)).label('speakers')
                 )
                 .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
-                .join(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
-                .join(Speaker, DiscussionPoint.speaker_id == Speaker.id)
+                .outerjoin(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
+                .outerjoin(Speaker, DiscussionPoint.speaker_id == Speaker.id)
                 .where(
                     and_(
                         UserMeeting.user_id == user_id,
                         UserMeeting.access_level != AccessLevel.REMOVED.value
                     )
                 )
-                .group_by(Meeting.meeting_id, Meeting.meeting_name, Meeting.timestamp)
+                .group_by(Meeting.meeting_id, Meeting.meeting_name, Meeting.timestamp, Meeting.is_indexed)
                 .order_by(Meeting.timestamp.desc())
             )
             
@@ -476,6 +477,7 @@ async def get_meetings(
                     "meeting_id": str(meeting.meeting_id),
                     "meeting_name": meeting.meeting_name,
                     "timestamp": meeting.timestamp.isoformat(),
+                    "is_indexed": meeting.is_indexed,
                     "speakers": meeting.speakers if meeting.speakers[0] is not None else []
                 }
                 for meeting in meetings
