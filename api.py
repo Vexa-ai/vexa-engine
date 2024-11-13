@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from search import SearchAssistant
 from token_manager import TokenManager
-from indexing import Indexing
+#from indexing import Indexing
 import asyncio
 from datetime import datetime
 import json
@@ -263,36 +263,36 @@ async def run_indexing_job(token: str, num_meetings: int):
     indexer = Indexing(token=token)
     await indexer.index_meetings(num_meetings=num_meetings)
 
-@app.post("/start_indexing")
-async def start_indexing(
-    request: IndexingRequest,
-    authorization: str = Header(...)
-):
-    token = authorization.split("Bearer ")[-1]
-    user_id, user_name = await token_manager.check_token(token)
+# @app.post("/start_indexing")
+# async def start_indexing(
+#     request: IndexingRequest,
+#     authorization: str = Header(...)
+# ):
+#     token = authorization.split("Bearer ")[-1]
+#     user_id, user_name = await token_manager.check_token(token)
     
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token")
+#     if not user_id:
+#         raise HTTPException(status_code=401, detail="Invalid token")
 
-    try:
-        # Create indexer instance
-        indexer = Indexing(token=token)
+#     try:
+#         # Create indexer instance
+#         indexer = Indexing(token=token)
         
-        # Check if indexing is already in progress
-        status = indexer.status
-        if status["is_indexing"]:
-            raise HTTPException(
-                status_code=409,
-                detail="Indexing already in progress for this user"
-            )
+#         # Check if indexing is already in progress
+#         status = indexer.status
+#         if status["is_indexing"]:
+#             raise HTTPException(
+#                 status_code=409,
+#                 detail="Indexing already in progress for this user"
+#             )
 
-        # # Start the indexing job as a background task using asyncio.create_task
-        # asyncio.create_task(
-        #     run_indexing_job(token=token, num_meetings=request.num_meetings or 200)
-        # )
-        return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+#         # # Start the indexing job as a background task using asyncio.create_task
+#         # asyncio.create_task(
+#         #     run_indexing_job(token=token, num_meetings=request.num_meetings or 200)
+#         # )
+#         return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
+#     except ValueError as e:
+#         raise HTTPException(status_code=409, detail=str(e))
 
 @app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
 @cache(expire=300)  # Cache for 5 minutes
@@ -324,22 +324,22 @@ async def get_meetings_processed(
         total_meetings=total_meetings_count
     )
 
-@app.get("/indexing_status")
-async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    indexer = Indexing(token=None)  # Token not needed for checking status
-    status = indexer.status
+# @app.get("/indexing_status")
+# async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
+#     user_id, _ = current_user
+#     indexer = Indexing(token=None)  # Token not needed for checking status
+#     status = indexer.status
     
-    # Check if any indexing is happening for this specific user
-    is_indexing = status["is_indexing"]
-    current_meeting = status["current_meeting"]
-    processing_meetings = status["processing_meetings"]
+#     # Check if any indexing is happening for this specific user
+#     is_indexing = status["is_indexing"]
+#     current_meeting = status["current_meeting"]
+#     processing_meetings = status["processing_meetings"]
     
-    return {
-        "is_indexing": is_indexing,
-        "current_meeting": current_meeting,
-        "processing_meetings": processing_meetings
-    }
+#     return {
+#         "is_indexing": is_indexing,
+#         "current_meeting": current_meeting,
+#         "processing_meetings": processing_meetings
+#     }
 
 @app.delete("/user/data")
 async def remove_user_data(current_user: tuple = Depends(get_current_user)):

@@ -58,13 +58,13 @@ class TokenManager:
                 token_obj = UserToken(
                     token=token,
                     user_id=merged_user.id,
-                    user_name=f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip(),
                     last_used_at=datetime.now(timezone('utc'))
                 )
                 session.add(token_obj)
                 await session.commit()
                 
-                return str(merged_user.id), token_obj.user_name, merged_user.image
+                user_name = f"{merged_user.first_name or ''} {merged_user.last_name or ''}".strip()
+                return str(merged_user.id), user_name, merged_user.image
                 
         except Exception as e:
             print(f"Error in submit_token: {e}")
@@ -73,14 +73,18 @@ class TokenManager:
     async def check_token(self, token: str) -> Tuple[str | None, str | None]:
         async with self.session_factory() as session:
             result = await session.execute(
-                select(UserToken).filter_by(token=token)
+                select(UserToken, User)
+                .join(User, UserToken.user_id == User.id)
+                .filter(UserToken.token == token)
             )
-            token_record = result.scalar_one_or_none()
+            record = result.first()
             
-            if token_record:
+            if record:
+                token_record, user = record
                 token_record.last_used_at = datetime.utcnow()
+                user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
                 await session.commit()
-                return str(token_record.user_id), token_record.user_name
+                return str(token_record.user_id), user_name
             
             return None, None
 

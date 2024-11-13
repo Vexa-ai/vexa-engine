@@ -45,6 +45,7 @@ class MeetingsMonitor:
     def __init__(self):
         self.vexa_auth = VexaAuth()
         self.redis = Redis(host='localhost', port=6379, db=0)
+        self.active_seconds = 30
     
 
     def _add_to_queue(self, meeting_id: str, score: float = None):
@@ -54,9 +55,9 @@ class MeetingsMonitor:
         logger.debug(f"Queued meeting {meeting_id}")
 
 
-    async def _queue_user_meetings(self, user_id: str, session, months: int = 3):
+    async def _queue_user_meetings(self, user_id: str, session, days: int = 30):
         # Create naive datetime for PostgreSQL
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=30 * months)).replace(tzinfo=None)
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
         stmt = select(Meeting.meeting_id).join(UserMeeting)\
             .where(and_(
                 UserMeeting.user_id == user_id,
@@ -68,11 +69,10 @@ class MeetingsMonitor:
             self._add_to_queue(str(meeting_id))
 
 
-    async def sync_meetings_queue(self, active_seconds: int = 300):
+    async def sync_meetings_queue(self):
         async with get_session() as session:
-            # Create naive datetimes for PostgreSQL
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            cutoff = (now - timedelta(seconds=active_seconds))
+            cutoff = (now - timedelta(seconds=self.active_seconds))
             hour_ago = (now - timedelta(hours=1))
             
             # Get meetings between 5min and 1hr old
@@ -92,14 +92,19 @@ class MeetingsMonitor:
                 .join(UserMeeting)\
                 .where(and_(
                     Meeting.timestamp > cutoff,
-                    Meeting.is_indexed == False,
-                    UserMeeting.is_owner == True
+                    Meeting.is_indexed == False
                 ))
             recent_meetings = await session.execute(stmt)
-            for _, user_id in recent_meetings:
+            
+            # Track active meetings in Redis
+            pipe = self.redis.pipeline()
+            pipe.delete(RedisKeys.ACTIVE_MEETINGS)
+            for meeting_id, user_id in recent_meetings:
+                pipe.zadd(RedisKeys.ACTIVE_MEETINGS, {str(meeting_id): now.timestamp()})
                 if not self.redis.sismember(RedisKeys.SEEN_USERS, str(user_id)):
                     await self._queue_user_meetings(str(user_id), session)
                     self.redis.sadd(RedisKeys.SEEN_USERS, str(user_id))
+            pipe.execute()
 
 
     async def _ensure_user_exists(self, user_id: str, session) -> None:
@@ -153,9 +158,9 @@ class MeetingsMonitor:
             return datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%SZ')
 
 
-    async def upsert_meetings(self, meetings_data: list, active_seconds: int = 300):
+    async def upsert_meetings(self, meetings_data: list):
         async with get_session() as session:
-            cutoff = datetime.utcnow() - timedelta(seconds=active_seconds)
+            cutoff = datetime.utcnow() - timedelta(seconds=self.active_seconds)
             
             for meeting_id, user_id, timestamp in meetings_data:
                 # Ensure user exists before creating meeting
@@ -284,18 +289,35 @@ class MeetingsMonitor:
             for mid in self.redis.smembers(RedisKeys.PROCESSING_SET)
         ]
         
+        # Get active meetings
+        active_meetings = self.redis.zrange(
+            RedisKeys.ACTIVE_MEETINGS,
+            0,
+            -1,
+            withscores=True
+        )
+        active_formatted = [
+            {
+                'meeting_id': mid.decode() if isinstance(mid, bytes) else mid,
+                'started_at': datetime.fromtimestamp(score).isoformat()
+            }
+            for mid, score in active_meetings
+        ]
+        
         return {
             'stats': {
                 'queue_size': queue_size,
                 'processing': processing_count,
                 'failed': failed_count,
                 'seen_users': seen_users,
+                'active_meetings': len(active_formatted),
                 'timestamp': datetime.now().isoformat()
             },
             'ready_to_process': ready_formatted,
             'delayed_retry': delayed_formatted,
             'currently_processing': processing,
-            'recent_failures': failures
+            'recent_failures': failures,
+            'active_meetings': active_formatted
         }
 
     @log_execution
@@ -309,6 +331,7 @@ class MeetingsMonitor:
         print(f"Processing: {status['stats']['processing']}")
         print(f"Failed: {status['stats']['failed']}")
         print(f"Seen Users: {status['stats']['seen_users']}")
+        print(f"Active Meetings: {status['stats']['active_meetings']}")
         
         print("\n=== Ready to Process ===")
         for meeting in status['ready_to_process']:
@@ -330,3 +353,40 @@ class MeetingsMonitor:
                 print(f"Error: {error['error']}")
                 print(f"Retries: {error['retry_count']}")
                 print(f"Last Attempt: {error['last_attempt']}")
+        
+        print("\n=== Active Meetings ===")
+        for meeting in status['active_meetings']:
+            print(f"Meeting {meeting['meeting_id']} - started at {meeting['started_at']}")
+
+    def flush_queues(self):
+        """Flush all Redis queues and sets used for indexing"""
+        keys_to_flush = [
+            RedisKeys.INDEXING_QUEUE,    # Main queue
+            RedisKeys.PROCESSING_SET,    # Currently processing
+            RedisKeys.FAILED_SET,        # Failed meetings
+            RedisKeys.SEEN_USERS,        # Tracked users
+            RedisKeys.RETRY_ERRORS,      # Error tracking
+            RedisKeys.LAST_CHECK         # Last check timestamp
+        ]
+        
+        for key in keys_to_flush:
+            self.redis.delete(key)
+            logger.info(f"Flushed Redis key: {key}")
+        
+        logger.info("All indexing queues flushed")
+
+    def flush_failed_meetings(self):
+        """Flush only failed meetings and retry-related Redis keys"""
+        keys_to_flush = [
+            RedisKeys.FAILED_SET,        # Failed meetings
+            RedisKeys.RETRY_ERRORS       # Error tracking
+        ]
+        
+        for key in keys_to_flush:
+            self.redis.delete(key)
+            logger.info(f"Flushed Redis key: {key}")
+        
+        # Remove any delayed retries from the indexing queue
+        now = datetime.now().timestamp()
+        self.redis.zremrangebyscore(RedisKeys.INDEXING_QUEUE, now, '+inf')
+        logger.info("Cleared delayed retries from indexing queue")

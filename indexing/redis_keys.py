@@ -11,4 +11,7 @@ class RedisKeys:
     RETRY_ERRORS = "retry_errors"
     
     # Monitoring
-    LAST_CHECK = "last_active_check" 
+    LAST_CHECK = "last_active_check"
+    
+    # Active meetings
+    ACTIVE_MEETINGS = "active_meetings"  # Sorted set of currently active meetings

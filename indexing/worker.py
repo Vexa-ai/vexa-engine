@@ -132,7 +132,7 @@ class IndexingWorker:
                     )
                 )
             result = await session.execute(query)
-            return result.scalar_one_or_none()
+            return result.scalars().first()  #TODO 1
            
 
     def _cleanup_success(self, meeting_id: str):
