@@ -102,7 +102,8 @@ class Meeting(Base):
 
     discussion_points = relationship('DiscussionPoint', back_populates='meeting')
     user_meetings = relationship('UserMeeting', back_populates='meeting')
-    
+    speakers = relationship('Speaker', secondary=meeting_speaker_association, back_populates='meetings')
+
 class UserMeeting(Base):
     __tablename__ = 'user_meetings'
 
@@ -138,6 +139,7 @@ class Speaker(Base):
     name = Column(String(100), nullable=False, unique=True)
     
     discussion_points = relationship('DiscussionPoint', back_populates='speaker')
+    meetings = relationship('Meeting', secondary=meeting_speaker_association, back_populates='speakers')
 
 
 class DiscussionPoint(Base):

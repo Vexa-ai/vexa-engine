@@ -2,7 +2,7 @@ TODO:
 
 - should all meetings in api, should indexed status on frontend
 - upsert with trasncript (later should be doing with cache)
-- 
+
 
 
 

@@ -53,6 +53,8 @@ from vexa import VexaAuth
 
 import httpx
 
+from datetime import datetime, timezone
+
 app = FastAPI()
 
 # Move this BEFORE any other middleware or app setup
@@ -509,16 +511,13 @@ async def get_meetings(
 @app.get("/meeting/{meeting_id}/details")
 async def get_meeting_details(
     meeting_id: UUID = Path(..., description="The UUID of the meeting"),
-    current_user: tuple = Depends(get_current_user)
+    current_user: tuple = Depends(get_current_user),
+    authorization: str = Header(...)
 ):
-    """
-    Get detailed information about a specific meeting including transcript,
-    summary, speakers, and metadata.
-    """
     user_id, _ = current_user
+    token = authorization.split("Bearer ")[-1]
     
-    async with async_session() as session:
-        # Build query with all necessary joins
+    async with get_session() as session:
         query = (
             select(Meeting, UserMeeting)
             .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
@@ -535,29 +534,50 @@ async def get_meeting_details(
         row = result.first()
         
         if not row:
-            raise HTTPException(
-                status_code=404,
-                detail="Meeting not found or access denied"
-            )
+            raise HTTPException(status_code=404, detail="Meeting not found or access denied")
             
         meeting, user_meeting = row
         
-        # Get speakers for this meeting
-        speakers_query = (
-            select(Speaker.name)
-            .join(DiscussionPoint, Speaker.id == DiscussionPoint.speaker_id)
-            .where(DiscussionPoint.meeting_id == meeting_id)
-            .distinct()
-        )
-        speakers_result = await session.execute(speakers_query)
-        speakers = [speaker[0] for speaker in speakers_result.fetchall()]
+        # Check if transcript is missing and fetch from Vexa API
+        if not meeting.transcript:
+            vexa_api = VexaAPI(token=token)
+            transcription = await vexa_api.get_transcription(meeting_session_id=str(meeting_id))
+            
+            if not transcription:
+                raise HTTPException(status_code=404, detail="Meeting not found in Vexa API")
+            
+            df, _, start_datetime, speakers, transcript = transcription
+            
+            # Convert timezone-aware datetime to naive UTC for database
+            utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
+            
+            # Update meeting with transcript and start time
+            meeting.transcript = str(transcript)
+            meeting.timestamp = utc_timestamp
+            
+            # Save new speakers
+            for speaker_name in speakers:
+                if speaker_name and speaker_name != 'TBD':
+                    speaker_query = select(Speaker).where(Speaker.name == speaker_name)
+                    existing_speaker = await session.execute(speaker_query)
+                    if not existing_speaker.scalar_one_or_none():
+                        speaker = Speaker(name=speaker_name)
+                        session.add(speaker)
+            
+            await session.commit()
+            await session.refresh(meeting)
+        
+        # Get current speakers from transcript
+        transcript_data = eval(meeting.transcript)
+        speakers = list(set(segment.get('speaker') for segment in transcript_data 
+                          if segment.get('speaker') and segment.get('speaker') != 'TBD'))
         
         # Build response
         response = {
             "meeting_id": meeting.meeting_id,
             "timestamp": meeting.timestamp,
             "meeting_name": meeting.meeting_name,
-            "transcript": json.dumps(eval(meeting.transcript)),
+            "transcript": json.dumps(transcript_data),
             "meeting_summary": meeting.meeting_summary,
             "speakers": speakers,
             "access_level": user_meeting.access_level,
