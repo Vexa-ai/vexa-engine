@@ -38,7 +38,7 @@ from fastapi_cache.backends.redis import RedisBackend
 import redis
 import os
 
-from psql_models import Speaker, DiscussionPoint, Meeting, UserMeeting, AccessLevel
+from psql_models import Speaker, DiscussionPoint, Meeting, UserMeeting, AccessLevel,meeting_speaker_association
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -451,8 +451,8 @@ async def get_meetings(
                     func.array_agg(distinct(Speaker.name)).label('speakers')
                 )
                 .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
-                .outerjoin(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
-                .outerjoin(Speaker, DiscussionPoint.speaker_id == Speaker.id)
+                .outerjoin(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
+                .outerjoin(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
                 .where(
                     and_(
                         UserMeeting.user_id == user_id,
@@ -538,46 +538,53 @@ async def get_meeting_details(
             
         meeting, user_meeting = row
         
-        # Check if transcript is missing and fetch from Vexa API
-        if not meeting.transcript:
-            vexa_api = VexaAPI(token=token)
-            transcription = await vexa_api.get_transcription(meeting_session_id=str(meeting_id))
-            
-            if not transcription:
-                raise HTTPException(status_code=404, detail="Meeting not found in Vexa API")
-            
-            df, _, start_datetime, speakers, transcript = transcription
-            
-            # Convert timezone-aware datetime to naive UTC for database
-            utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
-            
-            # Update meeting with transcript and start time
-            meeting.transcript = str(transcript)
-            meeting.timestamp = utc_timestamp
-            
-            # Save new speakers
-            for speaker_name in speakers:
-                if speaker_name and speaker_name != 'TBD':
-                    speaker_query = select(Speaker).where(Speaker.name == speaker_name)
-                    existing_speaker = await session.execute(speaker_query)
-                    if not existing_speaker.scalar_one_or_none():
-                        speaker = Speaker(name=speaker_name)
-                        session.add(speaker)
-            
-            await session.commit()
-            await session.refresh(meeting)
+        # Initialize transcript_data and speakers as None
+        transcript_data = None
+        speakers = []
         
-        # Get current speakers from transcript
-        transcript_data = eval(meeting.transcript)
-        speakers = list(set(segment.get('speaker') for segment in transcript_data 
-                          if segment.get('speaker') and segment.get('speaker') != 'TBD'))
+        # Try to get transcript from Vexa if not in database
+        if not meeting.transcript:
+            try:
+                vexa_api = VexaAPI(token=token)
+                transcription = await vexa_api.get_transcription(meeting_session_id=str(meeting_id))
+                
+                if transcription:
+                    df, _, start_datetime, speakers, transcript = transcription
+                    
+                    # Convert timezone-aware datetime to naive UTC
+                    utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
+                    
+                    meeting.transcript = str(transcript)
+                    meeting.timestamp = utc_timestamp
+                    
+                    # Save new speakers
+                    for speaker_name in speakers:
+                        if speaker_name and speaker_name != 'TBD':
+                            speaker_query = select(Speaker).where(Speaker.name == speaker_name)
+                            existing_speaker = await session.execute(speaker_query)
+                            if not existing_speaker.scalar_one_or_none():
+                                speaker = Speaker(name=speaker_name)
+                                session.add(speaker)
+                    
+                    await session.commit()
+                    await session.refresh(meeting)
+                    transcript_data = eval(meeting.transcript)
+                    speakers = list(set(segment.get('speaker') for segment in transcript_data 
+                                if segment.get('speaker') and segment.get('speaker') != 'TBD'))
+            except Exception as e:
+                logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
+        else:
+            # Get transcript data from existing meeting record
+            transcript_data = eval(meeting.transcript)
+            speakers = list(set(segment.get('speaker') for segment in transcript_data 
+                        if segment.get('speaker') and segment.get('speaker') != 'TBD'))
         
         # Build response
         response = {
             "meeting_id": meeting.meeting_id,
             "timestamp": meeting.timestamp,
             "meeting_name": meeting.meeting_name,
-            "transcript": json.dumps(transcript_data),
+            "transcript": json.dumps(transcript_data) if transcript_data else [],
             "meeting_summary": meeting.meeting_summary,
             "speakers": speakers,
             "access_level": user_meeting.access_level,
