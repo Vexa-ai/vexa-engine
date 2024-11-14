@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 import json
 from .redis_keys import RedisKeys
+from asyncio import TaskGroup
 
 class ProcessingError(Exception):
     pass
@@ -26,6 +27,7 @@ class IndexingWorker:
         self.retry_delay = retry_delay
         self.max_retries = 3
         self.qdrant = QdrantSearchEngine()
+        self.max_concurrent = max_concurrent
 
     async def _process_meeting_data(self, formatted_input: str, df: pd.DataFrame) -> tuple:
         # Extract meeting data using AI models
@@ -226,39 +228,43 @@ class IndexingWorker:
         while True:
             try:
                 now = datetime.now().timestamp()
-                # Get meetings ready for processing using zrangebyscore instead
+                # Get multiple meetings ready for processing
                 next_meetings = self.redis.zrangebyscore(
                     RedisKeys.INDEXING_QUEUE,
-                    '-inf',  # min score
-                    now,    # max score
+                    '-inf',
+                    now,
                     start=0,
-                    num=1,
+                    num=self.max_concurrent,  # Get up to max_concurrent meetings
                     withscores=True
                 )
                 
                 if next_meetings:
-                    meeting_id, score = next_meetings[0]
-                    meeting_id = meeting_id.decode() if isinstance(meeting_id, bytes) else meeting_id
-                    
-                    # Skip if already processing
-                    if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
-                        await asyncio.sleep(1)
-                        continue
-                    
-                    async with self.semaphore:
-                        try:
-                            # Mark as processing
-                            self.redis.sadd(RedisKeys.PROCESSING_SET, meeting_id)
-                            await self._process_meeting(meeting_id)
-                            # Clean up on success
-                            self._cleanup_success(meeting_id)
-                        except Exception as e:
-                            await self._handle_error(meeting_id, e)
-                        finally:
-                            # Always remove from processing set
-                            self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)
+                    async with TaskGroup() as tg:
+                        for meeting_bytes, score in next_meetings:
+                            meeting_id = meeting_bytes.decode() if isinstance(meeting_bytes, bytes) else meeting_bytes
+                            
+                            # Skip if already processing
+                            if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
+                                continue
+                            
+                            # Create task for each meeting
+                            tg.create_task(self._process_meeting_safe(meeting_id))
                 
                 await asyncio.sleep(1)
             except Exception as e:
                 print(f"Worker loop error: {e}")
                 await asyncio.sleep(5)
+
+    async def _process_meeting_safe(self, meeting_id: str):
+        async with self.semaphore:
+            try:
+                # Mark as processing
+                self.redis.sadd(RedisKeys.PROCESSING_SET, meeting_id)
+                await self._process_meeting(meeting_id)
+                # Clean up on success
+                self._cleanup_success(meeting_id)
+            except Exception as e:
+                await self._handle_error(meeting_id, e)
+            finally:
+                # Always remove from processing set
+                self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)

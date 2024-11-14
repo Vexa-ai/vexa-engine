@@ -98,9 +98,14 @@ class VexaAPI:
         if not transcript:
             return
         
+        # Replace 'TBD' with empty string in transcript data
+        for entry in transcript:
+            if entry['speaker'] == 'TBD':
+                entry['speaker'] = ''
+        
         start_time = transcript[0]['timestamp']
         start_datetime = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-        speakers = list(set(entry['speaker'] for entry in transcript if entry['speaker'] != 'TBD'))
+        speakers = list(set(entry['speaker'] for entry in transcript if entry['speaker']))
         
         speaker_initials = {}
         for speaker in speakers:
@@ -149,6 +154,25 @@ class VexaAPI:
             return self.user_info
         else:
             error_message = f"Failed to retrieve user information. Status code: {response.status_code}"
+            if response.content:
+                try:
+                    error_details = response.json()
+                    error_message += f"\nError details: {error_details}"
+                except ValueError:
+                    error_message += f"\nError details: {response.text}"
+            raise VexaAPIError(error_message)
+
+    async def get_meeting_speakers(self, meeting_session_id: UUID) -> dict:
+        url = f"{self.base_url}/api/v1/calls/{meeting_session_id}/speakers"
+        params = {"token": self.token}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params)
+            
+        if response.status_code == 200:
+            return response.json()
+        else:
+            error_message = f"Failed to retrieve speakers. Status code: {response.status_code}"
             if response.content:
                 try:
                     error_details = response.json()

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, and_, func
-from psql_models import User, Meeting, UserMeeting, UserToken
+from psql_models import User, Meeting, UserMeeting, UserToken, Speaker, meeting_speaker_association
 from psql_helpers import get_session
 from vexa import VexaAuth, VexaAPI
 from redis import Redis
@@ -162,13 +162,14 @@ class MeetingsMonitor:
         async with get_session() as session:
             cutoff = datetime.utcnow() - timedelta(seconds=self.active_seconds)
             
-            for meeting_id, user_id, timestamp in meetings_data:
+            for meeting_id, user_id, timestamp, speakers in meetings_data:
                 # Ensure user exists before creating meeting
                 await self._ensure_user_exists(user_id, session)
                 
                 # Parse timestamp
                 meeting_time = self._parse_timestamp(timestamp)
-                meeting_name = f"call_{timestamp}"
+                # Format: "Call - Jan 15, 2024 at 14:30"
+                meeting_name = f"{meeting_time.strftime('%H:%M')}"
                 
                 # Check if meeting exists
                 stmt = select(Meeting).where(Meeting.meeting_id == meeting_id)
@@ -215,8 +216,34 @@ class MeetingsMonitor:
                         access_level='search'
                     )
                     session.add(user_meeting)
-            
-            await session.commit()
+                
+                # Handle speakers
+                for speaker_name in speakers:
+                    # Get or create speaker
+                    stmt = select(Speaker).where(Speaker.name == speaker_name)
+                    speaker = await session.scalar(stmt)
+                    if not speaker:
+                        speaker = Speaker(name=speaker_name)
+                        session.add(speaker)
+                        await session.flush()  # To get speaker.id
+                    
+                    # Associate speaker with meeting if not already associated
+                    stmt = select(meeting_speaker_association).where(
+                        and_(
+                            meeting_speaker_association.c.meeting_id == meeting.id,
+                            meeting_speaker_association.c.speaker_id == speaker.id
+                        )
+                    )
+                    existing = await session.scalar(stmt)
+                    if not existing:
+                        await session.execute(
+                            meeting_speaker_association.insert().values(
+                                meeting_id=meeting.id,
+                                speaker_id=speaker.id
+                            )
+                        )
+                
+                await session.commit()
 
     async def _get_stored_max_timestamp(self, session) -> datetime:
         stmt = select(func.max(Meeting.timestamp))
