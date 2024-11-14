@@ -222,8 +222,8 @@ class MeetingNameAndSummary(BaseCall):
                       Create a direct text representation and meeting name based on the discussion points, transcript, and historical context.
                       For the text: Start immediately with content, no introductory phrases.
                       For the meeting name: Create a dense, explanatory name (max 50 chars) that captures the main purpose.
-                      Include and highlight ALL the POINTS and important keywords. Write exclusively in the language in input"""),
-            user_msg(f"""Points. Include and highlight ALL the POINTS:
+                      Include and highlight ALL the POINTS and important keywords with **...** markdown syntax. Write exclusively in the language in input"""),
+            user_msg(f"""Points. Include and highlight ALL the POINTS  with **...** markdown syntax:
                         {summary_input}
 
                         {context_str}
