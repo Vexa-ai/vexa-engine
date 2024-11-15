@@ -13,6 +13,12 @@ from .redis_keys import RedisKeys
 
 logger = logging.getLogger(__name__)
 
+import os
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = os.getenv('REDIS_PORT', '6379')
+
+
+
 def log_execution(func):
     if asyncio.iscoroutinefunction(func):
         @wraps(func)
@@ -44,7 +50,7 @@ def log_execution(func):
 class MeetingsMonitor:
     def __init__(self):
         self.vexa_auth = VexaAuth()
-        self.redis = Redis(host='localhost', port=6379, db=0)
+        self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         self.active_seconds = 30
     
 

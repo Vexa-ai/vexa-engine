@@ -42,3 +42,9 @@ tabulate
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
+fastembed
+fastapi
+uvicorn[standard]
+python-multipart
+fastapi-cache2 
+

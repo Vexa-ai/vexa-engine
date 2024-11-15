@@ -359,7 +359,6 @@ class VexaAuth:
                         token_obj = UserToken(
                             token=vexa_token,
                             user_id=user.id,
-                            user_name=user_name,
                             created_at=datetime.now(timezone('utc')),
                             last_used_at=datetime.now(timezone('utc'))
                         )

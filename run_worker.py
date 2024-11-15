@@ -3,13 +3,19 @@ from redis import Redis
 import asyncio
 import logging
 
+
+import os
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = os.getenv('REDIS_PORT', '6379')
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
 async def main():
-    redis = Redis(host='localhost', port=6379, db=0)
+    redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
     worker = IndexingWorker(redis, max_concurrent=3)
     
     try:

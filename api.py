@@ -29,7 +29,7 @@ from sqlalchemy import and_
 from pydantic import BaseModel, EmailStr
 from uuid import UUID
 from psql_models import AccessLevel
-from pyinstrument import Profiler
+#from pyinstrument import Profiler
 from fastapi import FastAPI, Request
 from functools import lru_cache
 from fastapi_cache import FastAPICache
@@ -133,23 +133,16 @@ async def startup_event():
 
 # Add logging configuration after the imports and before app initialization
 def setup_logger():
-    # Create logger
     logger = logging.getLogger('vexa_api')
     logger.setLevel(logging.DEBUG)
 
-    # Create handlers
+    # Create console handler with formatter
     console_handler = logging.StreamHandler(sys.stdout)
-    file_handler = RotatingFileHandler('api.log', maxBytes=10485760, backupCount=5)  # 10MB per file, keep 5 files
-
-    # Create formatters and add it to handlers
-    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(log_format)
-    file_handler.setFormatter(log_format)
-
-    # Add handlers to the logger
+    console_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    )
+    
     logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-
     return logger
 
 logger = setup_logger()

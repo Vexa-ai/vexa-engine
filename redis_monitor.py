@@ -1,11 +1,14 @@
 from redis import Redis
 import time
+import os
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = os.getenv('REDIS_PORT', '6379')
 
 class RedisMonitor:
     def __init__(self):
         self.redis = Redis(
-            host='localhost',
-            port=6379,
+            host=REDIS_HOST,
+            port=REDIS_PORT,
             decode_responses=True
         )
         self.processing_key = 'meetings:processing'

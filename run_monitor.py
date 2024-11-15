@@ -3,6 +3,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -16,7 +18,7 @@ async def monitor_loop():
             await monitor.sync_meetings()
             await monitor.sync_meetings_queue()
             await monitor.print_queue_status()
-            await asyncio.sleep(30)  # Check every 30 seconds
+            await asyncio.sleep(5)  # Check every 30 seconds
         except KeyboardInterrupt:
             logging.info("Monitor shutdown requested")
             break
