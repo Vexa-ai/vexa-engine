@@ -9,7 +9,6 @@ qdrant-client
 
 # ML/Embeddings
 sentence-transformers
-torch
 huggingface-hub
 
 # API Framework
