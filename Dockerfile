@@ -50,3 +50,8 @@ EXPOSE 8765
 
 # Start the FastAPI application
 #CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8765", "--reload"]
+
+# Add to your existing Dockerfile
+RUN apt-get update && apt-get install -y supervisor
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+CMD ["/usr/bin/supervisord"]
