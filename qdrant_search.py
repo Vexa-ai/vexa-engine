@@ -23,7 +23,7 @@ from psql_helpers import get_session
 import pandas as pd
 
 
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding,SparseTextEmbedding
 import numpy as np
 
 from psql_models import DiscussionPoint, Meeting, Speaker, UserMeeting
@@ -33,7 +33,6 @@ import os
 
 import asyncio
 
-from fastembed import SparseTextEmbedding
 
 QDRANT_HOST = os.getenv('QDRANT_HOST', '127.0.0.1')
 QDRANT_PORT = os.getenv('QDRANT_PORT', '6333')
@@ -45,7 +44,7 @@ class QdrantSearchEngine:
         # Initialize with async client
         self.client = AsyncQdrantClient(QDRANT_HOST, port=QDRANT_PORT)
         # Change to multilingual model
-        self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2', device='cuda:3')
+        self.model = TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2') #, device='cuda:3'
         self.collection_name = "discussion_points"
         # Update vector size for new model
         self.vector_size = 384  # Verify this matches the new model's output size
@@ -207,8 +206,9 @@ class QdrantSearchEngine:
                 print(f"Note: {e} for field {field_name}")
 
     async def encode_text(self, text):
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.model.encode, text)
+        # FastEmbed expects a list of texts and returns an iterator of embeddings
+        embeddings = list(self.model.embed([text]))
+        return embeddings[0] if embeddings else None
 
     async def search(self, query_text: str, meeting_ids: List[str], limit: int = 10, min_score: float = 0.7):
         """Enhanced hybrid search combining vector similarity with text matching"""
@@ -366,13 +366,27 @@ class QdrantSearchEngine:
         result = await session.execute(query)
         rows = result.fetchall()
         
+        # Prepare texts for batch embedding
+        texts_to_embed = []
+        for dp, _, speaker in rows:
+            texts_to_embed.extend([
+                dp.topic_name or "",
+                dp.summary or "",
+                dp.details or "",
+                speaker.name
+            ])
+        
+        # Batch embed all texts at once
+        all_embeddings = list(self.model.embed(texts_to_embed))
+        
         points = []
-        for dp, meeting, speaker in rows:
-            # Generate vectors for each field
-            topic_vector = await self.encode_text(dp.topic_name if dp.topic_name else "")
-            summary_vector = await self.encode_text(dp.summary if dp.summary else "")
-            details_vector = await self.encode_text(dp.details if dp.details else "")
-            speaker_vector = await self.encode_text(speaker.name)
+        for idx, (dp, meeting, speaker) in enumerate(rows):
+            # Get corresponding embeddings (4 per row: topic, summary, details, speaker)
+            base_idx = idx * 4
+            topic_vector = all_embeddings[base_idx]
+            summary_vector = all_embeddings[base_idx + 1]
+            details_vector = all_embeddings[base_idx + 2]
+            speaker_vector = all_embeddings[base_idx + 3]
             
             discussion_id = str(uuid.uuid4())
             
