@@ -61,7 +61,7 @@ class MeetingsMonitor:
         logger.debug(f"Queued meeting {meeting_id}")
 
 
-    async def _queue_user_meetings(self, user_id: str, session, days: int = 30):
+    async def _queue_user_meetings(self, user_id: str, session, days: int = 3000):
         # Create naive datetime for PostgreSQL
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
         stmt = select(Meeting.meeting_id).join(UserMeeting)\
