@@ -7,10 +7,6 @@ psycopg2-binary
 # Vector Database
 qdrant-client
 
-# ML/Embeddings
-sentence-transformers
-huggingface-hub
-
 # API Framework
 fastapi
 uvicorn[standard]
