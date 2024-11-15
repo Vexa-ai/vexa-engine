@@ -17,3 +17,4 @@ __pycache__/
 # Specific pycache files
 *.cpython-311.pyc
 
+.env
