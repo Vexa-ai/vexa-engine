@@ -531,12 +531,11 @@ async def get_meeting_details(
             
         meeting, user_meeting = row
         
-        # Initialize transcript_data and speakers as None
         transcript_data = None
         speakers = []
         
-        # Try to get transcript from Vexa if not in database
-        if not meeting.transcript:
+        # Try to get transcript from Vexa if not indexed or no transcript
+        if not meeting.is_indexed or not meeting.transcript:
             try:
                 vexa_api = VexaAPI(token=token)
                 transcription = await vexa_api.get_transcription(meeting_session_id=str(meeting_id))
@@ -581,7 +580,8 @@ async def get_meeting_details(
             "meeting_summary": meeting.meeting_summary,
             "speakers": speakers,
             "access_level": user_meeting.access_level,
-            "is_owner": user_meeting.is_owner
+            "is_owner": user_meeting.is_owner,
+            "is_indexed": meeting.is_indexed
         }
         
         return response
