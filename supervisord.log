@@ -1,0 +1,8 @@
+2024-11-15 13:24:03,591 INFO Set uid to user 1000 succeeded
+2024-11-15 13:24:03,592 INFO supervisord started with pid 1
+2024-11-15 13:24:04,594 INFO spawned: 'api' with pid 7
+2024-11-15 13:24:04,596 INFO spawned: 'monitor' with pid 8
+2024-11-15 13:24:04,597 INFO spawned: 'worker' with pid 9
+2024-11-15 13:24:05,702 INFO success: api entered RUNNING state, process has stayed up for > than 1 seconds (startsecs)
+2024-11-15 13:24:05,702 INFO success: monitor entered RUNNING state, process has stayed up for > than 1 seconds (startsecs)
+2024-11-15 13:24:05,703 INFO success: worker entered RUNNING state, process has stayed up for > than 1 seconds (startsecs)
