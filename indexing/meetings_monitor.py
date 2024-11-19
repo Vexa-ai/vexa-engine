@@ -51,7 +51,7 @@ class MeetingsMonitor:
     def __init__(self):
         self.vexa_auth = VexaAuth()
         self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-        self.active_seconds = 30
+        self.active_seconds = 60
     
 
     def _add_to_queue(self, meeting_id: str, score: float = None):
@@ -78,22 +78,20 @@ class MeetingsMonitor:
     async def sync_meetings_queue(self):
         async with get_session() as session:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            cutoff = (now - timedelta(seconds=self.active_seconds))
-            hour_ago = (now - timedelta(hours=1))
+            days_30 = (now - timedelta(days=30))
             
-            # Get meetings between 5min and 1hr old
-            stmt = select(Meeting.meeting_id, UserMeeting.user_id)\
-                .join(UserMeeting)\
+            # Get all unindexed meetings from last 30 days
+            stmt = select(Meeting.meeting_id)\
                 .where(and_(
-                    Meeting.timestamp.between(hour_ago, cutoff),
-                    Meeting.is_indexed == False,
-                    UserMeeting.is_owner == True
+                    Meeting.timestamp >= days_30,
+                    Meeting.is_indexed == False
                 ))
-            older_meetings = await session.execute(stmt)
-            for meeting_id, _ in older_meetings:
+            meetings = await session.execute(stmt)
+            for (meeting_id,) in meetings:
                 self._add_to_queue(str(meeting_id))
             
-            # Handle recent meetings and their users
+            # Track active meetings in Redis
+            cutoff = (now - timedelta(seconds=self.active_seconds))
             stmt = select(Meeting.meeting_id, UserMeeting.user_id)\
                 .join(UserMeeting)\
                 .where(and_(
@@ -102,7 +100,7 @@ class MeetingsMonitor:
                 ))
             recent_meetings = await session.execute(stmt)
             
-            # Track active meetings in Redis
+            # Update active meetings in Redis
             pipe = self.redis.pipeline()
             pipe.delete(RedisKeys.ACTIVE_MEETINGS)
             for meeting_id, user_id in recent_meetings:
@@ -168,12 +166,12 @@ class MeetingsMonitor:
         async with get_session() as session:
             cutoff = datetime.utcnow() - timedelta(seconds=self.active_seconds)
             
-            for meeting_id, user_id, timestamp, speakers in meetings_data:
+            for meeting_id, start_timestamp, user_id, timestamp, speakers in meetings_data:
                 # Ensure user exists before creating meeting
                 await self._ensure_user_exists(user_id, session)
                 
                 # Parse timestamp
-                meeting_time = self._parse_timestamp(timestamp)
+                meeting_time = self._parse_timestamp(start_timestamp)
                 # Format: "Call - Jan 15, 2024 at 14:30"
                 meeting_name = f"{meeting_time.strftime('%H:%M')}"
                 

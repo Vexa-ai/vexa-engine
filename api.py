@@ -471,7 +471,7 @@ async def get_meetings(
                 {
                     "meeting_id": str(meeting.meeting_id),
                     "meeting_name": meeting.meeting_name,
-                    "timestamp": meeting.timestamp.isoformat(),
+                    "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
                     "is_indexed": meeting.is_indexed,
                     "speakers": meeting.speakers if meeting.speakers[0] is not None else []
                 }

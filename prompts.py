@@ -2,7 +2,7 @@ import os
 
 class Prompts:
     def __init__(self):
-        self.prompts_dir = "prompts"
+        self.prompts_dir = "/app/prompts"
         self._load_prompts()
 
     def _load_prompts(self):

@@ -4,7 +4,8 @@ from datetime import datetime
 
 import pandas as pd
 from core import BaseCall, system_msg, user_msg
-from prompts import prompts
+from prompts import Prompts
+prompts = Prompts()
 
 
 class Entity(BaseModel):

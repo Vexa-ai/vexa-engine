@@ -16,6 +16,7 @@ from uuid import UUID
 import json
 from .redis_keys import RedisKeys
 from asyncio import TaskGroup
+from collections import deque
 
 class ProcessingError(Exception):
     pass
@@ -225,32 +226,50 @@ class IndexingWorker:
         return speakers
     
     async def run(self):
+        processing_tasks = set()
+        pending_meetings = deque()
+        
         while True:
             try:
-                now = datetime.now().timestamp()
-                # Get multiple meetings ready for processing
-                next_meetings = self.redis.zrangebyscore(
-                    RedisKeys.INDEXING_QUEUE,
-                    '-inf',
-                    now,
-                    start=0,
-                    num=self.max_concurrent,  # Get up to max_concurrent meetings
-                    withscores=True
-                )
+                # Fill pending_meetings if empty
+                if not pending_meetings:
+                    now = datetime.now().timestamp()
+                    next_meetings = self.redis.zrevrangebyscore(
+                        RedisKeys.INDEXING_QUEUE,
+                        now, '-inf',
+                        start=0,
+                        num=self.max_concurrent * 2
+                    )
+                    pending_meetings.extend(
+                        m.decode() if isinstance(m, bytes) else m 
+                        for m in next_meetings
+                    )
                 
-                if next_meetings:
-                    async with TaskGroup() as tg:
-                        for meeting_bytes, score in next_meetings:
-                            meeting_id = meeting_bytes.decode() if isinstance(meeting_bytes, bytes) else meeting_bytes
-                            
-                            # Skip if already processing
-                            if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
-                                continue
-                            
-                            # Create task for each meeting
-                            tg.create_task(self._process_meeting_safe(meeting_id))
+                # Start new tasks if we're below max_concurrent
+                while len(processing_tasks) < self.max_concurrent and pending_meetings:
+                    meeting_id = pending_meetings.popleft()
+                    
+                    # Skip if already processing
+                    if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
+                        continue
+                        
+                    # Create and track new task
+                    task = asyncio.create_task(self._process_meeting_safe(meeting_id))
+                    processing_tasks.add(task)
+                    task.add_done_callback(processing_tasks.discard)
                 
-                await asyncio.sleep(1)
+                # Wait a bit if we have no work or are at capacity
+                if not pending_meetings and not processing_tasks:
+                    await asyncio.sleep(1)
+                    continue
+                    
+                # Wait for at least one task to complete if we're at capacity
+                if len(processing_tasks) >= self.max_concurrent:
+                    await asyncio.wait(
+                        processing_tasks,
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                
             except Exception as e:
                 print(f"Worker loop error: {e}")
                 await asyncio.sleep(5)
@@ -268,3 +287,16 @@ class IndexingWorker:
             finally:
                 # Always remove from processing set
                 self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)
+                
+                
+    # async def _process_meeting_safe(self, meeting_id: str):
+    #     async with self.semaphore:
+
+    #         # Mark as processing
+    #         self.redis.sadd(RedisKeys.PROCESSING_SET, meeting_id)
+    #         await self._process_meeting(meeting_id)
+    #         # Clean up on success
+    #         self._cleanup_success(meeting_id)
+
+    #         # Always remove from processing set
+    #         self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)
