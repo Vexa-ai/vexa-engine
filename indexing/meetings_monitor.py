@@ -75,15 +75,15 @@ class MeetingsMonitor:
             self._add_to_queue(str(meeting_id))
 
 
-    async def sync_meetings_queue(self):
+    async def sync_meetings_queue(self,last_days:int=30):
         async with get_session() as session:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            days_30 = (now - timedelta(days=30))
+            last_days = (now - timedelta(days=last_days))
             
             # Get all unindexed meetings from last 30 days
             stmt = select(Meeting.meeting_id)\
                 .where(and_(
-                    Meeting.timestamp >= days_30,
+                    Meeting.timestamp >= last_days,
                     Meeting.is_indexed == False
                 ))
             meetings = await session.execute(stmt)

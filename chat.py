@@ -6,7 +6,7 @@ import re
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from psql_models import Meeting
+from psql_models import Meeting, DiscussionPoint
 
 from core import system_msg, user_msg, assistant_msg, generic_call_, Msg
 from prompts import Prompts
@@ -122,6 +122,55 @@ class MeetingListContextProvider(BaseContextProvider):
             context_parts.append(f"Transcript:\n{meeting.transcript}\n")
             if meeting.meeting_summary:
                 context_parts.append(f"Summary:\n{meeting.meeting_summary}\n")
+            context_parts.append("-" * 80 + "\n")
+            
+        return "\n".join(context_parts)
+
+
+class MeetingSummaryContextProvider(BaseContextProvider):
+    def __init__(self, meeting_ids: List[UUID], include_discussion_points: bool = True):
+        self.meeting_ids = meeting_ids
+        self.include_discussion_points = include_discussion_points
+        
+    async def get_context(self, session: AsyncSession, **kwargs) -> str:
+        # Query meetings with their summaries
+        meetings_query = (
+            select(Meeting)
+            .where(Meeting.meeting_id.in_(self.meeting_ids))
+            .order_by(Meeting.timestamp.desc())
+        )
+        result = await session.execute(meetings_query)
+        meetings = result.scalars().all()
+        
+        # Get discussion points if needed
+        discussion_points = {}
+        if self.include_discussion_points:
+            dp_query = (
+                select(DiscussionPoint)
+                .where(DiscussionPoint.meeting_id.in_(self.meeting_ids))
+                .order_by(DiscussionPoint.summary_index)
+            )
+            dp_result = await session.execute(dp_query)
+            for dp in dp_result.scalars():
+                if dp.meeting_id not in discussion_points:
+                    discussion_points[dp.meeting_id] = []
+                discussion_points[dp.meeting_id].append(dp)
+        
+        # Format context
+        context_parts = []
+        for meeting in meetings:
+            context_parts.append(f"Meeting: {meeting.meeting_name}")
+            context_parts.append(f"Date: {meeting.timestamp}")
+            if meeting.meeting_summary:
+                context_parts.append(f"Summary:\n{meeting.meeting_summary}\n")
+            
+            # Add discussion points if available
+            if meeting.meeting_id in discussion_points:
+                context_parts.append("Discussion Points:")
+                for dp in discussion_points[meeting.meeting_id]:
+                    context_parts.append(f"- {dp.topic_name}: {dp.summary}")
+                context_parts.append("")
+                
             context_parts.append("-" * 80 + "\n")
             
         return "\n".join(context_parts)
@@ -264,10 +313,11 @@ class SearchChatManager(ChatManager):
             
             
 class MeetingChatManager(ChatManager):
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, context_provider: Optional[BaseContextProvider] = None):
         super().__init__()
         self.session = session
         self.model = "gpt-4o-mini"
+        self.context_provider = context_provider
 
     async def chat(
         self,
@@ -286,7 +336,6 @@ class MeetingChatManager(ChatManager):
         )
         
         if meeting_ids:
-            # Filter to only accessible meetings
             accessible_meeting_ids = {str(m.meeting_id) for m in meetings}
             authorized_meeting_ids = [
                 mid for mid in meeting_ids 
@@ -305,6 +354,9 @@ class MeetingChatManager(ChatManager):
         else:
             authorized_meeting_ids = [m.meeting_id for m in meetings]
             
+        # Use provided context provider or create default MeetingContextProvider
+        context_provider = self.context_provider or MeetingContextProvider()
+        
         # Get thread info and messages
         messages = []
         if thread_id:
@@ -316,9 +368,8 @@ class MeetingChatManager(ChatManager):
         else:
             thread_name = query
 
-        # Create context from meetings
-        context_provider = MeetingListContextProvider(authorized_meeting_ids)
-        context = await context_provider.get_context(session=self.session)
+        # Get context using the provider
+        context = await context_provider.get_context(session=self.session, meeting_id=authorized_meeting_ids[0])
         
         # Build message list maintaining Msg class structure
         messages_context = [

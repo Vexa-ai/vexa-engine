@@ -16,7 +16,7 @@ async def monitor_loop():
     while True:
         try:
             await monitor.sync_meetings()
-            await monitor.sync_meetings_queue()
+            await monitor.sync_meetings_queue(last_days=60)
             await monitor.print_queue_status()
             await asyncio.sleep(5)  # Check every 30 seconds
         except KeyboardInterrupt:

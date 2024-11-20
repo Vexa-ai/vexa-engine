@@ -37,6 +37,7 @@ from fastapi_cache.decorator import cache
 from fastapi_cache.backends.redis import RedisBackend
 import redis
 import os
+from sqlalchemy import desc
 
 from psql_models import Speaker, DiscussionPoint, Meeting, UserMeeting, AccessLevel,meeting_speaker_association
 
@@ -54,6 +55,7 @@ from vexa import VexaAuth
 import httpx
 
 from datetime import datetime, timezone
+from chat import MeetingSummaryContextProvider
 
 app = FastAPI()
 
@@ -254,9 +256,9 @@ async def get_meeting_timestamps(current_user: tuple = Depends(get_current_user)
         last_meeting=last_meeting
     )
 
-async def run_indexing_job(token: str, num_meetings: int):
-    indexer = Indexing(token=token)
-    await indexer.index_meetings(num_meetings=num_meetings)
+# async def run_indexing_job(token: str, num_meetings: int):
+#     indexer = Indexing(token=token)
+#     await indexer.index_meetings(num_meetings=num_meetings)
 
 # @app.post("/start_indexing")
 # async def start_indexing(
@@ -760,6 +762,199 @@ async def google_auth(request: GoogleAuthRequest):
                 detail="Authentication timing error. Please try again."
             )
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/speakers")
+async def get_speakers(current_user: tuple = Depends(get_current_user)):
+    user_id, _ = current_user
+    
+    try:
+        async with async_session() as session:
+            # Query to get speakers and their latest meeting timestamps
+            query = (
+                select(
+                    Speaker.name,
+                    func.max(Meeting.timestamp).label('last_seen'),
+                    func.count(distinct(Meeting.meeting_id)).label('meeting_count')
+                )
+                .join(meeting_speaker_association, Speaker.id == meeting_speaker_association.c.speaker_id)
+                .join(Meeting, Meeting.id == meeting_speaker_association.c.meeting_id)
+                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                .where(
+                    and_(
+                        UserMeeting.user_id == user_id,
+                        UserMeeting.access_level != AccessLevel.REMOVED.value,
+                        Speaker.name != 'TBD',
+                        Speaker.name != None
+                    )
+                )
+                .group_by(Speaker.name)
+                .order_by(desc('last_seen'))
+            )
+            
+            result = await session.execute(query)
+            speakers = [
+                {
+                    "name": row.name,
+                    "last_seen": row.last_seen.isoformat(),
+                    "meeting_count": row.meeting_count
+                }
+                for row in result
+            ]
+            
+            return {"speakers": speakers}
+            
+    except Exception as e:
+        logger.error(f"Error getting speakers: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SpeakerMeetingsRequest(BaseModel):
+    speakers: List[str]
+    limit: Optional[int] = 50
+    offset: Optional[int] = 0
+
+@app.post("/meetings/by-speakers")
+async def get_meetings_by_speakers(
+    request: SpeakerMeetingsRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    logger.info(f"Getting meetings for speakers: {request.speakers}")
+    
+    try:
+        async with async_session() as session:
+            # Subquery to get all meeting IDs where any of the requested speakers participated
+            meeting_ids_subquery = (
+                select(Meeting.id)
+                .join(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
+                .join(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
+                .where(Speaker.name.in_(request.speakers))
+                .distinct()
+                .scalar_subquery()
+            )
+
+            # Main query using the subquery
+            query = (
+                select(
+                    Meeting.meeting_id,
+                    Meeting.meeting_name,
+                    Meeting.timestamp,
+                    Meeting.is_indexed,
+                    Meeting.meeting_summary,
+                    UserMeeting.access_level,
+                    UserMeeting.is_owner,
+                    func.array_agg(distinct(Speaker.name)).label('speakers')
+                )
+                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                .join(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
+                .join(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
+                .where(
+                    and_(
+                        UserMeeting.user_id == user_id,
+                        UserMeeting.access_level != AccessLevel.REMOVED.value,
+                        Meeting.id.in_(meeting_ids_subquery)
+                    )
+                )
+                .group_by(
+                    Meeting.meeting_id,
+                    Meeting.meeting_name,
+                    Meeting.timestamp,
+                    Meeting.is_indexed,
+                    Meeting.meeting_summary,
+                    UserMeeting.access_level,
+                    UserMeeting.is_owner
+                )
+                .order_by(Meeting.timestamp.desc())
+            )
+            
+            if request.limit:
+                query = query.limit(request.limit)
+            if request.offset:
+                query = query.offset(request.offset)
+
+            result = await session.execute(query)
+            meetings = result.all()
+            
+            meetings_list = [
+                {
+                    "meeting_id": str(meeting.meeting_id),
+                    "meeting_name": meeting.meeting_name,
+                    "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
+                    "is_indexed": meeting.is_indexed,
+                    "meeting_summary": meeting.meeting_summary,
+                    "access_level": meeting.access_level,
+                    "is_owner": meeting.is_owner,
+                    "speakers": meeting.speakers if meeting.speakers[0] is not None else []
+                }
+                for meeting in meetings
+            ]
+            
+            # Count query using the same subquery logic
+            count_query = (
+                select(func.count(distinct(Meeting.meeting_id)))
+                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                .where(
+                    and_(
+                        UserMeeting.user_id == user_id,
+                        UserMeeting.access_level != AccessLevel.REMOVED.value,
+                        Meeting.id.in_(meeting_ids_subquery)
+                    )
+                )
+            )
+            
+            total_count = await session.execute(count_query)
+            total = total_count.scalar() or 0
+            
+            return {
+                "total": total,
+                "meetings": meetings_list
+            }
+            
+    except Exception as e:
+        logger.error(f"Error getting meetings by speakers: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class MeetingSummaryChatRequest(BaseModel):
+    query: str
+    meeting_ids: List[UUID]
+    include_discussion_points: Optional[bool] = True
+    thread_id: Optional[str] = None
+    model: Optional[str] = None
+    temperature: Optional[float] = 0.7
+
+@app.post("/chat/meeting/summary")
+async def meeting_summary_chat(
+    request: MeetingSummaryChatRequest, 
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    try:
+        async with get_session() as session:
+            summary_provider = MeetingSummaryContextProvider(
+                meeting_ids=request.meeting_ids,
+                include_discussion_points=request.include_discussion_points
+            )
+            chat_manager = MeetingChatManager(session, context_provider=summary_provider)
+            
+            async def stream_response():
+                async for item in chat_manager.chat(
+                    user_id=user_id,
+                    query=request.query,
+                    meeting_ids=request.meeting_ids,
+                    thread_id=request.thread_id,
+                    model=request.model,
+                    temperature=request.temperature
+                ):
+                    if isinstance(item, dict):
+                        yield f"data: {json.dumps(item)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
+                yield "data: {\"type\": \"done\"}\n\n"
+
+            return StreamingResponse(stream_response(), media_type="text/event-stream")
+    except ValueError as e:
+        if "Thread with id" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        raise
 
 if __name__ == "__main__":
     import uvicorn
