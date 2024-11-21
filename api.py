@@ -429,22 +429,29 @@ async def get_meetings(
     authorization: str = Header(None),
     offset: int = 0,
     limit: int = None,
+    include_summary: bool = False,
     current_user: tuple = Depends(get_current_user)
 ):
-    logger.info(f"Getting meetings with offset={offset}, limit={limit}")
+    logger.info(f"Getting meetings with offset={offset}, limit={limit}, include_summary={include_summary}")
     user_id, _ = current_user
     
     try:
         async with async_session() as session:
             # Build base query with outer joins
+            select_columns = [
+                Meeting.meeting_id,
+                Meeting.meeting_name,
+                Meeting.timestamp,
+                Meeting.is_indexed,
+                func.array_agg(distinct(Speaker.name)).label('speakers')
+            ]
+            
+            # Add meeting_summary to select columns if requested
+            if include_summary:
+                select_columns.append(Meeting.meeting_summary)
+            
             query = (
-                select(
-                    Meeting.meeting_id,
-                    Meeting.meeting_name,
-                    Meeting.timestamp,
-                    Meeting.is_indexed,
-                    func.array_agg(distinct(Speaker.name)).label('speakers')
-                )
+                select(*select_columns)
                 .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
                 .outerjoin(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
                 .outerjoin(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
@@ -454,17 +461,16 @@ async def get_meetings(
                         UserMeeting.access_level != AccessLevel.REMOVED.value
                     )
                 )
-                .group_by(Meeting.meeting_id, Meeting.meeting_name, Meeting.timestamp, Meeting.is_indexed)
+                .group_by(Meeting.meeting_id, Meeting.meeting_name, Meeting.timestamp, Meeting.is_indexed, 
+                         *([] if not include_summary else [Meeting.meeting_summary]))
                 .order_by(Meeting.timestamp.desc())
             )
             
-            # Add limit and offset if provided
             if limit is not None:
                 query = query.limit(limit)
             if offset:
                 query = query.offset(offset)
 
-            # Execute query
             result = await session.execute(query)
             meetings = result.all()
             
@@ -475,7 +481,8 @@ async def get_meetings(
                     "meeting_name": meeting.meeting_name,
                     "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
                     "is_indexed": meeting.is_indexed,
-                    "speakers": meeting.speakers if meeting.speakers[0] is not None else []
+                    "speakers": meeting.speakers if meeting.speakers[0] is not None else [],
+                    **({"meeting_summary": meeting.meeting_summary} if include_summary else {})
                 }
                 for meeting in meetings
             ]

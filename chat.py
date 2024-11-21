@@ -231,8 +231,8 @@ class ChatManager:
         context_msg = system_msg(f"Context: {context}")
         messages_context = [
             system_msg(prompt or self.prompts.search2),
-            *messages,
             context_msg,
+            *messages,
             user_msg(f'User request: {query}')
         ]
 
@@ -361,6 +361,7 @@ class MeetingChatManager(ChatManager):
         messages = []
         if thread_id:
             thread = await self.thread_manager.get_thread(thread_id)
+            print(thread)
             if not thread:
                 raise ValueError(f"Thread with id {thread_id} not found")
             messages = thread.messages
@@ -374,8 +375,8 @@ class MeetingChatManager(ChatManager):
         # Build message list maintaining Msg class structure
         messages_context = [
             system_msg(self.prompts.meeting_context),
-            *messages,
             system_msg(f"Context: {context}"),
+            *messages,
             user_msg(query)
         ]
 
@@ -420,3 +421,5 @@ class MeetingChatManager(ChatManager):
                 "meeting_id": str(authorized_meeting_ids[0]) if len(authorized_meeting_ids) == 1 else None
             }
         }
+        
+        self.messages = messages
