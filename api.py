@@ -521,8 +521,17 @@ async def get_meeting_details(
     
     async with get_session() as session:
         query = (
-            select(Meeting, UserMeeting)
+            select(Meeting, UserMeeting, func.array_agg(func.json_build_object(
+                'id', DiscussionPoint.id,
+                'summary', DiscussionPoint.summary,
+                'details', DiscussionPoint.details,
+                'referenced_text', DiscussionPoint.referenced_text,
+                'speaker_id', DiscussionPoint.speaker_id,
+                'topic_name', DiscussionPoint.topic_name,
+                'topic_type', DiscussionPoint.topic_type
+            )).label('discussion_points'))
             .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+            .outerjoin(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
             .where(
                 and_(
                     Meeting.meeting_id == meeting_id,
@@ -530,6 +539,7 @@ async def get_meeting_details(
                     UserMeeting.access_level != AccessLevel.REMOVED.value
                 )
             )
+            .group_by(Meeting.id, UserMeeting.id)
         )
         
         result = await session.execute(query)
@@ -538,7 +548,7 @@ async def get_meeting_details(
         if not row:
             raise HTTPException(status_code=404, detail="Meeting not found or access denied")
             
-        meeting, user_meeting = row
+        meeting, user_meeting, discussion_points = row
         
         transcript_data = None
         speakers = []
@@ -590,7 +600,8 @@ async def get_meeting_details(
             "speakers": speakers,
             "access_level": user_meeting.access_level,
             "is_owner": user_meeting.is_owner,
-            "is_indexed": meeting.is_indexed
+            "is_indexed": meeting.is_indexed,
+            "discussion_points": [dp for dp in discussion_points if dp is not None]
         }
         
         return response
