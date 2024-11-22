@@ -256,88 +256,6 @@ async def get_meeting_timestamps(current_user: tuple = Depends(get_current_user)
         last_meeting=last_meeting
     )
 
-# async def run_indexing_job(token: str, num_meetings: int):
-#     indexer = Indexing(token=token)
-#     await indexer.index_meetings(num_meetings=num_meetings)
-
-# @app.post("/start_indexing")
-# async def start_indexing(
-#     request: IndexingRequest,
-#     authorization: str = Header(...)
-# ):
-#     token = authorization.split("Bearer ")[-1]
-#     user_id, user_name = await token_manager.check_token(token)
-    
-#     if not user_id:
-#         raise HTTPException(status_code=401, detail="Invalid token")
-
-#     try:
-#         # Create indexer instance
-#         indexer = Indexing(token=token)
-        
-#         # Check if indexing is already in progress
-#         status = indexer.status
-#         if status["is_indexing"]:
-#             raise HTTPException(
-#                 status_code=409,
-#                 detail="Indexing already in progress for this user"
-#             )
-
-#         # # Start the indexing job as a background task using asyncio.create_task
-#         # asyncio.create_task(
-#         #     run_indexing_job(token=token, num_meetings=request.num_meetings or 200)
-#         # )
-#         return {"message": f"Indexing job started for {request.num_meetings or 200} meetings"}
-#     except ValueError as e:
-#         raise HTTPException(status_code=409, detail=str(e))
-
-@app.get("/meetings_processed", response_model=MeetingsProcessedResponse)
-@cache(expire=300)  # Cache for 5 minutes
-async def get_meetings_processed(
-    authorization: str = Header(...),
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, _ = current_user
-    token = authorization.split("Bearer ")[-1]
-    
-    # Get total meetings from Vexa
-    vexa_api = VexaAPI(token=token)
-    total_meetings = await vexa_api.get_meetings(include_total=True, limit=1)
-    total_meetings_count = total_meetings[1] if isinstance(total_meetings, tuple) else 0
-    
-    # Get processed meetings count from database
-    async with async_session() as session:
-        query = select(func.count()).select_from(Meeting)\
-            .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)\
-            .where(and_(
-                UserMeeting.user_id == user_id,
-                UserMeeting.is_owner == True
-            ))
-        result = await session.execute(query)
-        meetings_processed = result.scalar() or 0
-        
-    return MeetingsProcessedResponse(
-        meetings_processed=meetings_processed,
-        total_meetings=total_meetings_count
-    )
-
-# @app.get("/indexing_status")
-# async def get_indexing_status(current_user: tuple = Depends(get_current_user)):
-#     user_id, _ = current_user
-#     indexer = Indexing(token=None)  # Token not needed for checking status
-#     status = indexer.status
-    
-#     # Check if any indexing is happening for this specific user
-#     is_indexing = status["is_indexing"]
-#     current_meeting = status["current_meeting"]
-#     processing_meetings = status["processing_meetings"]
-    
-#     return {
-#         "is_indexing": is_indexing,
-#         "current_meeting": current_meeting,
-#         "processing_meetings": processing_meetings
-#     }
-
 @app.delete("/user/data")
 async def remove_user_data(current_user: tuple = Depends(get_current_user)):
     user_id, user_name = current_user
@@ -393,18 +311,6 @@ async def accept_new_share_link(
         )
         
     return {"message": "Share link accepted successfully"}
-
-# if DEV:
-#     @app.middleware("http")
-#     async def profiler_middleware(request: Request, call_next):
-
-#         profiler = Profiler()
-#         profiler.start()
-#         response = await call_next(request)
-#         profiler.stop()
-#         print(profiler.output_text(unicode=True, color=True))
-#         return response
-#         return await call_next(request)
 
 @app.get("/meeting/{meeting_id}")
 async def get_transcript(
