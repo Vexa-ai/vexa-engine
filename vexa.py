@@ -22,6 +22,13 @@ API_URL = os.getenv('API_URL', 'http://127.0.0.1:8765')
 
 load_dotenv()
 
+class SessionSpeakerStats(BaseModel):
+    meeting_session_id: UUID
+    start_timestamp: datetime
+    user_id: UUID
+    last_finish: datetime
+    speakers: List[str] 
+
 class VexaAPI:
     def __init__(self, token=os.getenv('VEXA_TOKEN')):
         self.token = token
@@ -383,8 +390,11 @@ class VexaAuth:
             raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
         except Exception as e:
             raise VexaAPIError(f"Authentication failed: {str(e)}")
+        
+ 
 
-    async def get_speech_stats(self, after_time: Optional[datetime] = None) -> List[Tuple[UUID, UUID, datetime]]:
+
+    async def get_speech_stats(self, after_time: Optional[datetime] = None) -> List[SessionSpeakerStats]:
         url = f"{self.vexa_api_url}/api/v1/tools/sessions/stats"
         
         try:
@@ -399,8 +409,10 @@ class VexaAuth:
                     headers={"Authorization": f"Bearer {self.service_token}"}
                 )
                 response.raise_for_status()
-                return response.json()
+                # Parse response data into SessionSpeakerStats objects
+                return [SessionSpeakerStats(**item) for item in response.json()]
         except httpx.HTTPStatusError as e:
             raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
         except Exception as e:
             raise VexaAPIError(f"Failed to get speech stats: {str(e)}")
+

@@ -99,6 +99,7 @@ class Meeting(Base):
     meeting_name = Column(String(100), nullable=True)
     meeting_summary = Column(Text, nullable=True)
     is_indexed = Column(Boolean, default=False, nullable=False, server_default='false')
+    last_update = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     discussion_points = relationship('DiscussionPoint', back_populates='meeting')
     user_meetings = relationship('UserMeeting', back_populates='meeting')

@@ -62,13 +62,16 @@ class MeetingsMonitor:
         logger.debug(f"Queued meeting {meeting_id}")
 
 
-    async def _queue_user_meetings(self, user_id: str, session, days: int = 3000):
+    async def _queue_user_meetings(self, user_id: str, session, days: int = 30):
         # Create naive datetime for PostgreSQL
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).replace(tzinfo=None)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cutoff = (now - timedelta(days=days)).replace(tzinfo=None)
+        active_cutoff = (now - timedelta(seconds=self.active_seconds))
         stmt = select(Meeting.meeting_id).join(UserMeeting)\
             .where(and_(
                 UserMeeting.user_id == user_id,
                 Meeting.timestamp >= cutoff,
+                Meeting.timestamp <= active_cutoff,  # Only queue non-active meetings
                 Meeting.is_indexed == False
             ))
         meetings = await session.execute(stmt)
@@ -80,11 +83,13 @@ class MeetingsMonitor:
         async with get_session() as session:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             last_days = (now - timedelta(days=last_days))
+            cutoff = (now - timedelta(seconds=self.active_seconds))
             
-            # Get all unindexed meetings from last 30 days
+            # Get all non-active unindexed meetings
             stmt = select(Meeting.meeting_id)\
                 .where(and_(
                     Meeting.timestamp >= last_days,
+                    Meeting.timestamp <= cutoff,  # Add cutoff for non-active meetings
                     Meeting.is_indexed == False
                 ))
             meetings = await session.execute(stmt)
@@ -92,7 +97,6 @@ class MeetingsMonitor:
                 self._add_to_queue(str(meeting_id))
             
             # Track active meetings in Redis
-            cutoff = (now - timedelta(seconds=self.active_seconds))
             stmt = select(Meeting.meeting_id, UserMeeting.user_id)\
                 .join(UserMeeting)\
                 .where(and_(
@@ -155,8 +159,11 @@ class MeetingsMonitor:
                 await session.flush()
 
 
-    def _parse_timestamp(self, timestamp: str) -> datetime:
-        # Handle both formats: with and without microseconds
+    def _parse_timestamp(self, timestamp) -> datetime:
+        # If already datetime, just return it
+        if isinstance(timestamp, datetime):
+            return timestamp
+        # Otherwise parse string
         try:
             return datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S.%fZ')
         except ValueError:
@@ -165,43 +172,56 @@ class MeetingsMonitor:
 
     async def upsert_meetings(self, meetings_data: list):
         async with get_session() as session:
-            cutoff = datetime.utcnow() - timedelta(seconds=self.active_seconds)
+            cutoff = datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(seconds=self.active_seconds)
             
             for meeting in meetings_data:
-                meeting_id = UUID(meeting['meeting_session_id'])
-                user_id = UUID(meeting['user_id'])
-                # Ensure user exists before creating meeting
-                await self._ensure_user_exists(user_id, session)
+                meeting_id = meeting.meeting_session_id
+                user_id = meeting.user_id
+                await self._ensure_user_exists(str(user_id), session)
                 
-                # Parse timestamp
-                meeting_time = self._parse_timestamp(meeting['start_timestamp'])
+                # Parse timestamp and ensure timezone awareness
+                meeting_time = self._parse_timestamp(meeting.start_timestamp).replace(tzinfo=None)
+                last_update = self._parse_timestamp(meeting.last_finish).replace(tzinfo=None)
                 meeting_name = f"{meeting_time.strftime('%H:%M')}"
+                cutoff = cutoff.replace(tzinfo=None)
                 
                 # Check if meeting exists
                 stmt = select(Meeting).where(Meeting.meeting_id == meeting_id)
                 existing_meeting = await session.scalar(stmt)
                 
-                if meeting_time > cutoff:
-                    # Active meeting - update or create
+                if last_update > cutoff:
+                    # Active meeting - just upsert, no queuing
                     if not existing_meeting:
                         existing_meeting = Meeting(
                             meeting_id=meeting_id,
                             timestamp=meeting_time,
-                            meeting_name=meeting_name
+                            meeting_name=meeting_name,
+                            last_update=last_update  # Store last update time
                         )
                         session.add(existing_meeting)
                     else:
                         existing_meeting.timestamp = meeting_time
                         existing_meeting.meeting_name = meeting_name
+                        existing_meeting.last_update = last_update  # Update last update time
                 else:
-                    # Inactive meeting - only create if doesn't exist
+                    # Inactive meeting
                     if not existing_meeting:
+                        # New inactive meeting - create and queue
                         existing_meeting = Meeting(
                             meeting_id=meeting_id,
                             timestamp=meeting_time,
-                            meeting_name=meeting_name
+                            meeting_name=meeting_name,
+                            last_update=last_update
                         )
                         session.add(existing_meeting)
+                        self._add_to_queue(str(meeting_id))  # Queue only new inactive meetings
+                    else:
+                        # Check if it was previously active
+                        active_score = self.redis.zscore(RedisKeys.ACTIVE_MEETINGS, str(meeting_id))
+                        if active_score is not None:
+                            # Was active, update last_update time
+                            existing_meeting.last_update = last_update
+                            self._add_to_queue(str(meeting_id))  # Queue for indexing as it's now inactive
                 
                 # Handle UserMeeting association
                 stmt = select(UserMeeting).where(
@@ -224,16 +244,14 @@ class MeetingsMonitor:
                     session.add(user_meeting)
                 
                 # Handle speakers
-                for speaker_name in meeting['speakers']:
-                    # Get or create speaker
+                for speaker_name in meeting.speakers:
                     stmt = select(Speaker).where(Speaker.name == speaker_name)
                     speaker = await session.scalar(stmt)
                     if not speaker:
                         speaker = Speaker(name=speaker_name)
                         session.add(speaker)
-                        await session.flush()  # To get speaker.id
+                        await session.flush()
                     
-                    # Associate speaker with meeting if not already associated
                     stmt = select(meeting_speaker_association).where(
                         and_(
                             meeting_speaker_association.c.meeting_id == existing_meeting.id,
@@ -252,7 +270,7 @@ class MeetingsMonitor:
                 await session.commit()
 
     async def _get_stored_max_timestamp(self, session) -> datetime:
-        stmt = select(func.max(Meeting.timestamp))
+        stmt = select(func.max(Meeting.last_update))
         result = await session.scalar(stmt)
         return result
     
@@ -260,7 +278,7 @@ class MeetingsMonitor:
     async def sync_meetings(self):
         async with get_session() as session:
             max_timestamp = await self._get_stored_max_timestamp(session)
-            meetings = await self.vexa_auth.get_speech_stats(max_timestamp)
+            meetings = await self.vexa_auth.get_speech_stats(max_timestamp-timedelta(hours=3))
             await self.upsert_meetings(meetings)
 
     def get_queue_status(self) -> dict:
