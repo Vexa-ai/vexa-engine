@@ -16,15 +16,15 @@ async def monitor_loop():
     while True:
         try:
             await monitor.sync_meetings()
-            await monitor.sync_meetings_queue(last_days=60)
+            await monitor.sync_meetings_queue(last_days=30)
             await monitor.print_queue_status()
-            await asyncio.sleep(5)  # Check every 30 seconds
+            await asyncio.sleep(15)  # Check every 30 seconds
         except KeyboardInterrupt:
             logging.info("Monitor shutdown requested")
             break
         except Exception as e:
             logging.error(f"Monitor error: {e}")
-            await asyncio.sleep(5)  # Brief pause on error
+            await asyncio.sleep(60)  # Brief pause on error
 
 if __name__ == "__main__":
     asyncio.run(monitor_loop()) 

@@ -385,7 +385,7 @@ class VexaAuth:
             raise VexaAPIError(f"Authentication failed: {str(e)}")
 
     async def get_speech_stats(self, after_time: Optional[datetime] = None) -> List[Tuple[UUID, UUID, datetime]]:
-        url = f"{self.vexa_api_url}/api/v1/tools/speech/stats"
+        url = f"{self.vexa_api_url}/api/v1/tools/sessions/stats"
         
         try:
             async with httpx.AsyncClient(timeout=30.0, verify=False) as client:

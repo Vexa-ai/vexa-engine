@@ -14,6 +14,7 @@ from .redis_keys import RedisKeys
 logger = logging.getLogger(__name__)
 
 import os
+from uuid import UUID
 REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
 REDIS_PORT = os.getenv('REDIS_PORT', '6379')
 
@@ -51,7 +52,7 @@ class MeetingsMonitor:
     def __init__(self):
         self.vexa_auth = VexaAuth()
         self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-        self.active_seconds = 60
+        self.active_seconds = 60 *30
     
 
     def _add_to_queue(self, meeting_id: str, score: float = None):
@@ -166,40 +167,41 @@ class MeetingsMonitor:
         async with get_session() as session:
             cutoff = datetime.utcnow() - timedelta(seconds=self.active_seconds)
             
-            for meeting_id, start_timestamp, user_id, timestamp, speakers in meetings_data:
+            for meeting in meetings_data:
+                meeting_id = UUID(meeting['meeting_session_id'])
+                user_id = UUID(meeting['user_id'])
                 # Ensure user exists before creating meeting
                 await self._ensure_user_exists(user_id, session)
                 
                 # Parse timestamp
-                meeting_time = self._parse_timestamp(start_timestamp)
-                # Format: "Call - Jan 15, 2024 at 14:30"
+                meeting_time = self._parse_timestamp(meeting['start_timestamp'])
                 meeting_name = f"{meeting_time.strftime('%H:%M')}"
                 
                 # Check if meeting exists
                 stmt = select(Meeting).where(Meeting.meeting_id == meeting_id)
-                meeting = await session.scalar(stmt)
+                existing_meeting = await session.scalar(stmt)
                 
                 if meeting_time > cutoff:
                     # Active meeting - update or create
-                    if not meeting:
-                        meeting = Meeting(
+                    if not existing_meeting:
+                        existing_meeting = Meeting(
                             meeting_id=meeting_id,
                             timestamp=meeting_time,
                             meeting_name=meeting_name
                         )
-                        session.add(meeting)
+                        session.add(existing_meeting)
                     else:
-                        meeting.timestamp = meeting_time
-                        meeting.meeting_name = meeting_name
+                        existing_meeting.timestamp = meeting_time
+                        existing_meeting.meeting_name = meeting_name
                 else:
                     # Inactive meeting - only create if doesn't exist
-                    if not meeting:
-                        meeting = Meeting(
+                    if not existing_meeting:
+                        existing_meeting = Meeting(
                             meeting_id=meeting_id,
                             timestamp=meeting_time,
                             meeting_name=meeting_name
                         )
-                        session.add(meeting)
+                        session.add(existing_meeting)
                 
                 # Handle UserMeeting association
                 stmt = select(UserMeeting).where(
@@ -222,7 +224,7 @@ class MeetingsMonitor:
                     session.add(user_meeting)
                 
                 # Handle speakers
-                for speaker_name in speakers:
+                for speaker_name in meeting['speakers']:
                     # Get or create speaker
                     stmt = select(Speaker).where(Speaker.name == speaker_name)
                     speaker = await session.scalar(stmt)
@@ -234,7 +236,7 @@ class MeetingsMonitor:
                     # Associate speaker with meeting if not already associated
                     stmt = select(meeting_speaker_association).where(
                         and_(
-                            meeting_speaker_association.c.meeting_id == meeting.id,
+                            meeting_speaker_association.c.meeting_id == existing_meeting.id,
                             meeting_speaker_association.c.speaker_id == speaker.id
                         )
                     )
@@ -242,7 +244,7 @@ class MeetingsMonitor:
                     if not existing:
                         await session.execute(
                             meeting_speaker_association.insert().values(
-                                meeting_id=meeting.id,
+                                meeting_id=existing_meeting.id,
                                 speaker_id=speaker.id
                             )
                         )

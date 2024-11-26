@@ -231,8 +231,8 @@ class IndexingWorker:
         
         while True:
             try:
-                # Fill pending_meetings if empty
-                if not pending_meetings:
+                # Refill pending_meetings if below threshold
+                if len(pending_meetings) < self.max_concurrent:
                     now = datetime.now().timestamp()
                     next_meetings = self.redis.zrevrangebyscore(
                         RedisKeys.INDEXING_QUEUE,
@@ -241,8 +241,9 @@ class IndexingWorker:
                         num=self.max_concurrent * 2
                     )
                     pending_meetings.extend(
-                        m.decode() if isinstance(m, bytes) else m 
-                        for m in next_meetings
+                        (m.decode() if isinstance(m, bytes) else m)
+                        for m in next_meetings 
+                        if (m.decode() if isinstance(m, bytes) else m) not in pending_meetings
                     )
                 
                 # Start new tasks if we're below max_concurrent
@@ -258,7 +259,7 @@ class IndexingWorker:
                     processing_tasks.add(task)
                     task.add_done_callback(processing_tasks.discard)
                 
-                # Wait a bit if we have no work or are at capacity
+                # Wait a bit if we have no work
                 if not pending_meetings and not processing_tasks:
                     await asyncio.sleep(1)
                     continue

@@ -16,7 +16,7 @@ logging.basicConfig(
 
 async def main():
     redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    worker = IndexingWorker(redis, max_concurrent=20)
+    worker = IndexingWorker(redis, max_concurrent=3)
     
     try:
         await worker.run()
