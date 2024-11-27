@@ -57,6 +57,9 @@ import httpx
 from datetime import datetime, timezone
 from chat import MeetingSummaryContextProvider
 
+from prompts import Prompts
+prompts = Prompts()
+
 app = FastAPI()
 
 # Move this BEFORE any other middleware or app setup
@@ -611,33 +614,6 @@ class MeetingChatRequest(BaseModel):
     model: Optional[str] = None
     temperature: Optional[float] = None
 
-@app.post("/chat/meeting")
-async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    try:
-        async with get_session() as session:
-            meeting_chat_manager = MeetingChatManager(session)
-            
-            async def stream_response():
-                async for item in meeting_chat_manager.chat(
-                    user_id=user_id,
-                    query=request.query,
-                    meeting_ids=request.meeting_ids,
-                    thread_id=request.thread_id,
-                    model=request.model,
-                    temperature=request.temperature
-                ):
-                    if isinstance(item, dict):
-                        yield f"data: {json.dumps(item)}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
-                yield "data: {\"type\": \"done\"}\n\n"
-
-            return StreamingResponse(stream_response(), media_type="text/event-stream")
-    except ValueError as e:
-        if "Thread with id" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        raise
 
 class GoogleAuthRequest(BaseModel):
     utm_source: Optional[str] = None
@@ -866,7 +842,38 @@ async def meeting_summary_chat(
                     meeting_ids=request.meeting_ids,
                     thread_id=request.thread_id,
                     model=request.model,
-                    temperature=request.temperature
+                    temperature=request.temperature,
+                    prompt=prompts.multiple_meetings_2711
+                ):
+                    if isinstance(item, dict):
+                        yield f"data: {json.dumps(item)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
+                yield "data: {\"type\": \"done\"}\n\n"
+
+            return StreamingResponse(stream_response(), media_type="text/event-stream")
+    except ValueError as e:
+        if "Thread with id" in str(e):
+            raise HTTPException(status_code=404, detail=str(e))
+        raise
+    
+
+@app.post("/chat/meeting")
+async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depends(get_current_user)):
+    user_id, _ = current_user
+    try:
+        async with get_session() as session:
+            meeting_chat_manager = MeetingChatManager(session)
+            
+            async def stream_response():
+                async for item in meeting_chat_manager.chat(
+                    user_id=user_id,
+                    query=request.query,
+                    meeting_ids=request.meeting_ids,
+                    thread_id=request.thread_id,
+                    model=request.model,
+                    temperature=request.temperature,
+                    prompt=prompts.single_meeting_2711
                 ):
                     if isinstance(item, dict):
                         yield f"data: {json.dumps(item)}\n\n"

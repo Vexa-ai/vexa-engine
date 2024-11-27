@@ -357,6 +357,7 @@ class MeetingChatManager(ChatManager):
         thread_id: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
+        prompt: str = Prompts().meeting_context,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         # Get accessible meetings for user
         meetings, _ = await get_accessible_meetings(
@@ -404,7 +405,7 @@ class MeetingChatManager(ChatManager):
         
         # Build message list maintaining Msg class structure
         messages_context = [
-            system_msg(self.prompts.meeting_context),
+            system_msg(prompt),
             system_msg(f"Context: {context}"),
             *messages,
             user_msg(query)
