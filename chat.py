@@ -17,6 +17,7 @@ from search import SearchAssistant
 from pydantic_models import ParsedSearchRequest
 import pandas as pd
 import numpy as np
+from core import count_tokens
 
 
 class ChatResult(BaseModel):
@@ -29,13 +30,39 @@ class ChatResult(BaseModel):
 
 class BaseContextProvider:
     """Base class for different context providers"""
+    def __init__(self, max_tokens: int = 16000):
+        self.max_tokens = max_tokens
+        
+    def _truncate_context(self, context: str, model: str = "gpt-4o-mini") -> str:
+        tokens = count_tokens(context, model)
+        if tokens <= self.max_tokens:
+            return context
+            
+        # Truncate by paragraphs until under limit
+        paragraphs = context.split('\n\n')
+        result = []
+        current_tokens = 0
+        
+        for p in paragraphs:
+            p_tokens = count_tokens(p, model)
+            if current_tokens + p_tokens > self.max_tokens:
+                break
+            result.append(p)
+            current_tokens += p_tokens
+            
+        return '\n\n'.join(result)
+        
     async def get_context(self, **kwargs) -> str:
+        context = await self._get_raw_context(**kwargs)
+        return self._truncate_context(context)
+        
+    async def _get_raw_context(self, **kwargs) -> str:
         raise NotImplementedError()
 
 
 class MeetingContextProvider(BaseContextProvider):
     """Provides context from meeting transcripts"""
-    async def get_context(self, session: AsyncSession, meeting_id: UUID, **kwargs) -> str:
+    async def _get_raw_context(self, session: AsyncSession, meeting_id: UUID, **kwargs) -> str:
         meeting = await get_meeting_by_id(session, meeting_id)
         if not meeting:
             return "No meeting found"
@@ -44,10 +71,11 @@ class MeetingContextProvider(BaseContextProvider):
 
 class SearchContextProvider(BaseContextProvider):
     """Provides context from search results"""
-    def __init__(self, search_assistant: SearchAssistant):
+    def __init__(self, search_assistant: SearchAssistant, max_tokens: int = 16000):
+        super().__init__(max_tokens=max_tokens)
         self.search_assistant = search_assistant
 
-    async def get_context(self, user_id: str, query: str, **kwargs) -> str:
+    async def _get_raw_context(self, user_id: str, query: str, **kwargs) -> str:
         # Parse search queries
         r = await ParsedSearchRequest.parse_request(query)
         queries = [q.query for q in r.search_queries]
@@ -100,10 +128,11 @@ class SearchContextProvider(BaseContextProvider):
 
 
 class MeetingListContextProvider(BaseContextProvider):
-    def __init__(self, meeting_ids: List[UUID]):
+    def __init__(self, meeting_ids: List[UUID], max_tokens: int = 16000):
+        super().__init__(max_tokens=max_tokens)
         self.meeting_ids = meeting_ids
         
-    async def get_context(self, session: AsyncSession, **kwargs) -> str:
+    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
         # Query meetings and their transcripts
         meetings_query = (
             select(Meeting)
@@ -128,11 +157,12 @@ class MeetingListContextProvider(BaseContextProvider):
 
 
 class MeetingSummaryContextProvider(BaseContextProvider):
-    def __init__(self, meeting_ids: List[UUID], include_discussion_points: bool = True):
+    def __init__(self, meeting_ids: List[UUID], include_discussion_points: bool = True, max_tokens: int = 16000):
+        super().__init__(max_tokens=max_tokens)
         self.meeting_ids = meeting_ids
         self.include_discussion_points = include_discussion_points
         
-    async def get_context(self, session: AsyncSession, **kwargs) -> str:
+    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
         # Query meetings with their summaries
         meetings_query = (
             select(Meeting)
