@@ -36,6 +36,9 @@ class ThreadManager:
         thread_id: Optional[str] = None,
         meeting_id: Optional[UUID] = None
     ) -> str:
+        # Truncate thread_name if it's longer than 125 characters
+        truncated_thread_name = (thread_name or "")[:125] if thread_name else ""
+        
         # Convert Msg objects to dicts for storage
         messages_dicts = [{
             "role": msg.role,
@@ -47,14 +50,14 @@ class ThreadManager:
             thread = SearchAssistantThread(
                 thread_id=thread_id,
                 user_id=user_id,
-                thread_name=thread_name or "",
+                thread_name=truncated_thread_name,
                 messages=messages_dicts,
                 meeting_id=meeting_id
             )
         else:
             thread = SearchAssistantThread(
                 user_id=user_id,
-                thread_name=thread_name or "",
+                thread_name=truncated_thread_name,
                 messages=messages_dicts,
                 meeting_id=meeting_id
             )
@@ -72,7 +75,7 @@ class ThreadManager:
                 db_thread = Thread(
                     thread_id=thread.thread_id,
                     user_id=UUID(user_id),
-                    thread_name=thread.thread_name,
+                    thread_name=truncated_thread_name,
                     messages=messages_json,
                     meeting_id=meeting_id
                 )
