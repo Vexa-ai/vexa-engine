@@ -863,7 +863,8 @@ async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depend
     user_id, _ = current_user
     try:
         async with get_session() as session:
-            meeting_chat_manager = MeetingChatManager(session)
+            context_provider = MeetingSummaryContextProvider(request.meeting_ids, include_discussion_points=True)
+            meeting_chat_manager = MeetingChatManager(session, context_provider=context_provider)
             
             async def stream_response():
                 async for item in meeting_chat_manager.chat(
