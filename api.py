@@ -387,7 +387,7 @@ async def get_meetings(
                     "meeting_name": meeting.meeting_name,
                     "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
                     "is_indexed": meeting.is_indexed,
-                    "speakers": meeting.speakers if meeting.speakers[0] is not None else [],
+                    "speakers": [s for s in meeting.speakers if s and s != 'TBD'],
                     **({"meeting_summary": meeting.meeting_summary} if include_summary else {})
                 }
                 for meeting in meetings
@@ -807,7 +807,7 @@ async def get_meetings_by_speakers(
                     "meeting_summary": meeting.meeting_summary,
                     "access_level": meeting.access_level,
                     "is_owner": meeting.is_owner,
-                    "speakers": meeting.speakers if meeting.speakers[0] is not None else []
+                    "speakers": [s for s in meeting.speakers if s and s != 'TBD']
                 }
                 for meeting in meetings
             ]
