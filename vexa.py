@@ -25,9 +25,10 @@ load_dotenv()
 class SessionSpeakerStats(BaseModel):
     meeting_session_id: UUID
     start_timestamp: datetime
+    updated_timestamp: datetime
     user_id: UUID
-    last_finish: datetime
-    speakers: List[str] 
+    last_finish: Optional[datetime]
+    speakers: List[str]
 
 class VexaAPI:
     def __init__(self, token=os.getenv('VEXA_TOKEN')):

@@ -117,24 +117,16 @@ class MeetingsMonitor:
 
 
     async def _ensure_user_exists(self, user_id: str, session) -> None:
-        # Check if user exists
-        stmt = select(User).where(User.id == user_id)
-        user = await session.scalar(stmt)
+        # Get token and user info first
+        token_stmt = select(UserToken.token).where(UserToken.user_id == user_id)
+        token = await session.scalar(token_stmt) or await self.vexa_auth.get_user_token(user_id=user_id)
         
-        if not user:
-            # Check for existing token first
-            token_stmt = select(UserToken.token).where(UserToken.user_id == user_id)
-            token = await session.scalar(token_stmt)
-            
-            if not token:
-                # Get new token if none exists
-                token = await self.vexa_auth.get_user_token(user_id=user_id)
-            
-            if token:
-                vexa = VexaAPI(token=token)
-                user_info = await vexa.get_user_info()
-                
-                # Create new user
+        if token:
+            vexa = VexaAPI(token=token)
+            user_info = await vexa.get_user_info()
+            # Check by email since it's our unique constraint
+            user = await session.scalar(select(User).where(User.email == user_info.get('email')))
+            if not user:
                 user = User(
                     id=user_id,
                     email=user_info.get('email', ''),
@@ -147,16 +139,13 @@ class MeetingsMonitor:
                 )
                 session.add(user)
                 
-                # Create token record if it's new
                 if not await session.scalar(token_stmt):
-                    token_record = UserToken(
+                    session.add(UserToken(
                         token=token,
                         user_id=user_id,
                         created_at=datetime.now(timezone.utc)
-                    )
-                    session.add(token_record)
-                
-                await session.flush()
+                    ))
+                await session.commit()
 
 
     def _parse_timestamp(self, timestamp) -> datetime:
@@ -177,9 +166,16 @@ class MeetingsMonitor:
             for meeting in meetings_data:
                 meeting_id = meeting.meeting_session_id
                 user_id = meeting.user_id
-                await self._ensure_user_exists(str(user_id), session)
                 
-                # Parse timestamp and ensure timezone awareness
+                # Ensure user exists and is committed before proceeding
+                await self._ensure_user_exists(str(user_id), session)
+                # Verify user was created
+                user = await session.scalar(select(User).where(User.id == user_id))
+                if not user:
+                    logger.error(f"Failed to create user {user_id}")
+                    continue
+                
+                # Rest of the meeting processing
                 meeting_time = self._parse_timestamp(meeting.start_timestamp).replace(tzinfo=None)
                 last_update = self._parse_timestamp(meeting.last_finish).replace(tzinfo=None)
                 meeting_name = f"{meeting_time.strftime('%H:%M')}"
@@ -277,9 +273,25 @@ class MeetingsMonitor:
 
     async def sync_meetings(self):
         async with get_session() as session:
-            max_timestamp = await self._get_stored_max_timestamp(session)
-            meetings = await self.vexa_auth.get_speech_stats(max_timestamp-timedelta(hours=3))
-            await self.upsert_meetings(meetings)
+            cursor = await self._get_stored_max_timestamp(session)
+            if cursor:
+                cursor = cursor - timedelta(minutes=5)  # Small overlap to ensure no records are missed
+            
+            while True:
+                meetings = await self.vexa_auth.get_speech_stats(
+                    after_time=cursor,
+                )
+                
+                if not meetings:
+                    break
+                    
+                await self.upsert_meetings(meetings)
+                
+                if len(meetings) < 1000:
+                    break
+                    
+                # Update cursor to last updated_timestamp we've seen
+                cursor = max(m.updated_timestamp for m in meetings)
 
     def get_queue_status(self) -> dict:
         now = datetime.now().timestamp()
