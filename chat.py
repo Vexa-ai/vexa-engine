@@ -18,6 +18,10 @@ from pydantic_models import ParsedSearchRequest
 import pandas as pd
 import numpy as np
 from core import count_tokens
+from vexa import VexaAPI
+
+from psql_helpers import get_meeting_token
+
 
 
 class ChatResult(BaseModel):
@@ -62,11 +66,20 @@ class BaseContextProvider:
 
 class MeetingContextProvider(BaseContextProvider):
     """Provides context from meeting transcripts"""
-    async def _get_raw_context(self, session: AsyncSession, meeting_id: UUID, **kwargs) -> str:
-        meeting = await get_meeting_by_id(session, meeting_id)
-        if not meeting:
+    def __init__(self, meeting_ids, max_tokens: int = 16000):
+        super().__init__(max_tokens)
+        self.meeting_id = meeting_ids[0]
+
+    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
+        token = await get_meeting_token(self.meeting_id, session)
+        vexa_api = VexaAPI(token=token)
+        user_id = (await vexa_api.get_user_info())['id']
+        transcription = await vexa_api.get_transcription(meeting_session_id=self.meeting_id, use_index=True)
+        if not transcription:
             return "No meeting found"
-        return meeting.transcript
+        df, formatted_input, start_time, _, transcript = transcription
+        
+        return formatted_input
 
 
 class SearchContextProvider(BaseContextProvider):
@@ -401,7 +414,8 @@ class MeetingChatManager(ChatManager):
             thread_name = query
 
         # Get context using the provider
-        context = await context_provider.get_context(session=self.session, meeting_id=authorized_meeting_ids[0])
+        meeting_id = meetings[0].meeting_id if hasattr(meetings[0], 'meeting_id') else meetings[0]
+        context = await context_provider.get_context(session=self.session, meeting_id=meeting_id)
         
         # Build message list maintaining Msg class structure
         messages_context = [

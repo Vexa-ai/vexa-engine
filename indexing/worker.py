@@ -17,12 +17,13 @@ import json
 from .redis_keys import RedisKeys
 from asyncio import TaskGroup
 from collections import deque
+from psql_helpers import get_meeting_token
 
 class ProcessingError(Exception):
     pass
 
 class IndexingWorker:
-    def __init__(self, redis: Redis, max_concurrent: int = 3, retry_delay: int = 300):
+    def __init__(self, redis: Redis, max_concurrent: int = 10, retry_delay: int = 300):
         self.redis = redis
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.retry_delay = retry_delay
@@ -124,19 +125,7 @@ class IndexingWorker:
             raise ProcessingError(f"Meeting processing failed: {str(e)}")
 
     async def _get_meeting_token(self, meeting_id: str) -> Optional[str]:
-        async with async_session() as session:
-            # Get owner's token for the meeting
-            query = select(UserToken.token)\
-                .join(UserMeeting, UserToken.user_id == UserMeeting.user_id)\
-                .where(
-                    and_(
-                        UserMeeting.meeting_id == meeting_id,
-                        UserMeeting.is_owner == True
-                    )
-                )
-            result = await session.execute(query)
-            return result.scalars().first()  #TODO 1
-           
+        return await get_meeting_token(meeting_id)
 
     def _cleanup_success(self, meeting_id: str):
         # Remove from all tracking sets/queues on success

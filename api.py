@@ -20,11 +20,12 @@ from psql_helpers import (
     has_meeting_access,
     get_meeting_by_id,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update,insert
 from vexa import VexaAPI
 from psql_models import Thread as ThreadModel
 
 from psql_models import Meeting,UserMeeting
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy import and_
 from pydantic import BaseModel, EmailStr
 from uuid import UUID
@@ -55,7 +56,7 @@ from vexa import VexaAuth
 import httpx
 
 from datetime import datetime, timezone
-from chat import MeetingSummaryContextProvider
+from chat import MeetingSummaryContextProvider,MeetingContextProvider
 
 from prompts import Prompts
 prompts = Prompts()
@@ -474,17 +475,35 @@ async def get_meeting_details(
                     # Convert timezone-aware datetime to naive UTC
                     utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
                     
-                    meeting.transcript = str(transcript)
-                    meeting.timestamp = utc_timestamp
+                    # Update meeting record with transcript and timestamp
+                    await session.execute(
+                        update(Meeting)
+                        .where(Meeting.meeting_id == meeting_id)
+                        .values(
+                            transcript=str(transcript),
+                            timestamp=utc_timestamp
+                        )
+                    )
                     
-                    # Save new speakers
+                    # Save new speakers and associate with meeting
                     for speaker_name in speakers:
                         if speaker_name and speaker_name != 'TBD':
                             speaker_query = select(Speaker).where(Speaker.name == speaker_name)
                             existing_speaker = await session.execute(speaker_query)
-                            if not existing_speaker.scalar_one_or_none():
+                            speaker = existing_speaker.scalar_one_or_none()
+                            
+                            if not speaker:
                                 speaker = Speaker(name=speaker_name)
                                 session.add(speaker)
+                                await session.flush()  # Get the ID of the new speaker
+                            
+                            # Associate speaker with meeting if not already associated
+                            await session.execute(
+                                pg_insert(meeting_speaker_association).values(
+                                    meeting_id=meeting.id,
+                                    speaker_id=speaker.id
+                                ).on_conflict_do_nothing()
+                            )
                     
                     await session.commit()
                     await session.refresh(meeting)
@@ -863,7 +882,7 @@ async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depend
     user_id, _ = current_user
     try:
         async with get_session() as session:
-            context_provider = MeetingSummaryContextProvider(request.meeting_ids, include_discussion_points=True)
+            context_provider = MeetingContextProvider(request.meeting_ids)
             meeting_chat_manager = MeetingChatManager(session, context_provider=context_provider)
             
             async def stream_response():

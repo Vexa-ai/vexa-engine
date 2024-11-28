@@ -203,9 +203,10 @@ Remember: Your queries will be used to find actual conversations where people di
         return await cls.call(messages)
     
 
+
 class MeetingNameAndSummary(BaseCall):
     language: str = Field(..., description="Detected language code of the input text (e.g. 'en')")
-    meeting_name: str = Field(..., description="Concise meeting name")
+    meeting_name: str = Field(..., description=prompts.naming)
     summary: str = Field(..., description="Meeting summary")
 
     @classmethod
@@ -219,10 +220,10 @@ class MeetingNameAndSummary(BaseCall):
             """
 
         output = await cls.call([
-            system_msg(f"""{prompts.naming}
+            system_msg(f"""
                       Create a direct text representation and meeting name based on the discussion points, transcript, and historical context.
                       For the text: Start immediately with content, no introductory phrases.
-                      For the meeting name: Create a dense, explanatory name (max 50 chars) that captures the main purpose.
+                      For the meeting name: {prompts.naming}.
                       Include and highlight ALL the POINTS and important keywords with **...** markdown syntax. Write exclusively in the language in input"""),
             user_msg(f"""Points. Include and highlight ALL the POINTS  with **...** markdown syntax:
                         {summary_input}

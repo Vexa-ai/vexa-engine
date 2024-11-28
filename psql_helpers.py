@@ -22,7 +22,7 @@ from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, For
 
 #docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
 
-from psql_models import Base, Meeting, Speaker, User, DiscussionPoint, AccessLevel, UserMeeting, DefaultAccess,engine,async_session,DATABASE_URL,ShareLink
+from psql_models import Base, Meeting, Speaker, User, DiscussionPoint, AccessLevel, UserMeeting, DefaultAccess,engine,async_session,DATABASE_URL,ShareLink,UserToken
 
 import secrets
 
@@ -814,3 +814,20 @@ async def has_meeting_access(session: AsyncSession, user_id: UUID, meeting_id: U
         ))
     )
     return result.scalar_one_or_none() is not None
+
+async def get_meeting_token(meeting_id: UUID | str, session: AsyncSession = None) -> Optional[str]:
+    # Convert string to UUID if needed
+    if isinstance(meeting_id, str):
+        meeting_id = UUID(meeting_id)
+    
+    async with (session or get_session()) as session:
+        query = select(UserToken.token)\
+            .join(UserMeeting, UserToken.user_id == UserMeeting.user_id)\
+            .where(
+                and_(
+                    UserMeeting.meeting_id == meeting_id,
+                    UserMeeting.is_owner == True
+                )
+            )
+        result = await session.execute(query)
+        return result.scalars().first()
