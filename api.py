@@ -907,6 +907,56 @@ async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depend
             raise HTTPException(status_code=404, detail=str(e))
         raise
 
+from indexing.redis_keys import RedisKeys
+from redis import Redis
+from datetime import datetime
+
+# Add this near other Redis initialization
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT)
+
+class IndexMeetingRequest(BaseModel):
+    meeting_id: UUID
+
+@app.post("/meetings/{meeting_id}/index")
+async def index_meeting(
+    meeting_id: UUID,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    meeting_id_str = str(meeting_id)
+    
+    try:
+        async with get_session() as session:
+            if not await has_meeting_access(session, user_id, meeting_id):
+                raise HTTPException(status_code=403, detail="No access to meeting")
+            
+            # Check if meeting is already being processed
+            if redis_client.sismember(RedisKeys.PROCESSING_SET, meeting_id_str):
+                return {"status": "already_processing", "message": "Meeting is already being processed"}
+            
+            # Check if meeting is already in queue
+            if redis_client.zscore(RedisKeys.INDEXING_QUEUE, meeting_id_str) is not None:
+                return {"status": "already_queued", "message": "Meeting is already in indexing queue"}
+            
+            # Check if meeting is in failed state
+            failed_info = redis_client.hget(RedisKeys.FAILED_SET, meeting_id_str)
+            if failed_info:
+                redis_client.hdel(RedisKeys.FAILED_SET, meeting_id_str)
+            
+            # Add to indexing queue with current timestamp
+            redis_client.zadd(RedisKeys.INDEXING_QUEUE, {meeting_id_str: datetime.now().timestamp()})
+            
+            return {
+                "status": "queued",
+                "message": "Meeting has been queued for indexing"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error queuing meeting for indexing: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)
