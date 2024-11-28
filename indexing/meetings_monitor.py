@@ -79,22 +79,30 @@ class MeetingsMonitor:
             self._add_to_queue(str(meeting_id))
 
 
-    async def sync_meetings_queue(self,last_days:int=30):
+    async def sync_meetings_queue(self, last_days:int=30):
         async with get_session() as session:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
             last_days = (now - timedelta(days=last_days))
             cutoff = (now - timedelta(seconds=self.active_seconds))
             
-            # Get all non-active unindexed meetings
+            # Get all non-active unindexed meetings that aren't in failed set
+            failed_meetings = set(
+                m.decode() if isinstance(m, bytes) else m 
+                for m in self.redis.hkeys(RedisKeys.FAILED_SET)
+            )
+            
             stmt = select(Meeting.meeting_id)\
                 .where(and_(
                     Meeting.timestamp >= last_days,
-                    Meeting.timestamp <= cutoff,  # Add cutoff for non-active meetings
+                    Meeting.timestamp <= cutoff,
                     Meeting.is_indexed == False
                 ))
             meetings = await session.execute(stmt)
+            
+            # Skip failed meetings when queueing
             for (meeting_id,) in meetings:
-                self._add_to_queue(str(meeting_id))
+                if str(meeting_id) not in failed_meetings:
+                    self._add_to_queue(str(meeting_id))
             
             # Track active meetings in Redis
             stmt = select(Meeting.meeting_id, UserMeeting.user_id)\
