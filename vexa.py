@@ -140,7 +140,7 @@ class VexaAPI:
         
         for _, row in df.iterrows():
             time_or_index = row['index'] if use_index else row['formatted_time']
-            formatted_output += f"{row['initials']} ({time_or_index}): {row['content']}\n"
+            formatted_output += f"({time_or_index}): {row['content']}\n"
         
         df['chunk_number'] = assign_chunk_numbers(df)
         return df, formatted_output, start_datetime, speakers,transcript
