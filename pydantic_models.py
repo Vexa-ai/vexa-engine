@@ -237,3 +237,23 @@ Generate a direct summary and concise meeting name.""")
         ], model=model, use_cache=use_cache, force_store=force_store)
 
         return output
+#### fir dummy data creation
+class DummyTranscriptEntry(BaseModel):
+    speaker: str = Field(..., description="Speaker name from the meeting attendees")
+    timestamp: datetime = Field(..., description="Timestamp of the entry during the meeting")
+    content: str = Field(..., description="Content of what was said")
+
+class DummyTranscript(BaseCall):
+    entries: List[DummyTranscriptEntry] = Field(
+        ..., 
+        description="List of transcript entries, minimum 30 entries, with timestamps starting from meeting date and incrementing realistically (2-3 minutes between entries), speakers should be from attendees list"
+    )
+    meeting_date: datetime = Field(
+        ..., 
+        description="Meeting date parsed from the input text"
+    )
+    speakers: List[str] = Field(
+        ..., 
+        description="List of all speakers who participated in the meeting, extracted from attendees list"
+    )
+    

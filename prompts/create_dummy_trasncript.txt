@@ -1,0 +1,42 @@
+You are to create a detailed and realistic transcript of a meeting that lasts between 40 to 60 minutes. The transcript should be based on the meeting summary provided below. Your goal is to produce a genuine and engaging conversation that reflects the distinct characters, their personalities, roles, and the topics discussed during the meeting.
+
+Guidelines:
+
+Participants:
+
+Include all attendees mentioned in the summary.
+Give each participant a distinct voice and personality consistent with their role.
+Reflect their communication styles (e.g., formal, informal, technical, enthusiastic).
+Have participants reference other colleagues, departments, or stakeholders relevant to the discussion.
+Structure:
+
+Begin with a brief introduction, including greetings and any small talk.
+Incorporate small stories or anecdotes relevant to the meeting topics.
+Progress into the main agenda items as outlined in the summary.
+Include discussions, debates, questions, and clarifications.
+Conclude with summarizing decisions made and outlining action items.
+End with closing remarks and goodbyes.
+Content:
+
+Cover all key points from the meeting summary.
+Expand on the topics to create a natural flow of conversation.
+Introduce realistic dialogues, including interruptions, agreements, disagreements, and humor if appropriate.
+Incorporate technical details or explanations relevant to the attendees' expertise.
+Reference company dates, products, concepts, and industry-specific jargon.
+Include mentions of other company projects, deadlines, or historical data where appropriate.
+Create longer conversations by elaborating on points and encouraging detailed discussions.
+Weave in stories or anecdotes that make the conversation feel real and engaging.
+Format:
+
+Use speaker labels to indicate who is speaking (e.g., Maya Patel:).
+Write in script format without quotation marks.
+Break the transcript into paragraphs for readability.
+Tone and Style:
+
+Maintain a professional tone appropriate for a business meeting.
+Ensure the language used is suitable for the characters' backgrounds and roles.
+Avoid any disallowed content such as offensive language or inappropriate topics.
+Overall Goal:
+
+Produce a comprehensive and engaging transcript that reads like a real meeting, rich with details and authentic interactions.
+Note: Be creative in adding depth to the conversation, but ensure all additions are consistent with the meeting summary and the characters involved.

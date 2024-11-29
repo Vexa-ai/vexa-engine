@@ -831,3 +831,27 @@ async def get_meeting_token(meeting_id: UUID | str, session: AsyncSession = None
             )
         result = await session.execute(query)
         return result.scalars().first()
+
+async def get_token_by_email(email: str, session: AsyncSession = None) -> Optional[tuple[str, dict]]:
+    async with (session or get_session()) as session:
+        query = select(UserToken, User)\
+            .join(User, UserToken.user_id == User.id)\
+            .where(User.email == email)\
+            .order_by(UserToken.last_used_at.desc())\
+            .limit(1)
+        
+        result = await session.execute(query)
+        row = result.first()
+        if not row:
+            return None
+        
+        token, user = row
+        user_data = {
+            'id': user.id,
+            'email': user.email,
+            'username': user.username,
+            'first_name': user.first_name,
+            'last_name': user.last_name,
+            'image': user.image
+        }
+        return token.token, user_data
