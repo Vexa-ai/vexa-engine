@@ -180,22 +180,22 @@ class ParsedSearchRequest(BaseCall):
         messages = [
             system_msg("""You are a search query parser that helps find relevant information in meeting transcripts.
 
-Your role in the system:
-1. User makes a natural language request
-2. You break it down into search queries
-3. These queries will be sent to a search engine that looks through meeting transcripts
-4. The search results will be used to construct a response to the user
+                    Your role in the system:
+                    1. User makes a natural language request
+                    2. You break it down into search queries
+                    3. These queries will be sent to a search engine that looks through meeting transcripts
+                    4. The search results will be used to construct a response to the user
 
-Guidelines for creating effective search queries:
-- Create queries that will find relevant discussions in meetings
-- Focus on key terms that people would actually say in conversations
-- Break complex requests into simple searchable concepts
-- Include different variations of important terms
-- Keep queries concise but meaningful
-- Think about what words would appear in relevant meeting discussions
+                    Guidelines for creating effective search queries:
+                    - Create queries that will find relevant discussions in meetings
+                    - Focus on key terms that people would actually say in conversations
+                    - Break complex requests into simple searchable concepts
+                    - Include different variations of important terms
+                    - Keep queries concise but meaningful
+                    - Think about what words would appear in relevant meeting discussions
 
-Remember: Your queries will be used to find actual conversations where people discussed these topics."""),
-            
+                    Remember: Your queries will be used to find actual conversations where people discussed these topics."""),
+                                
             user_msg(f"What search queries would find relevant meeting discussions to answer this request: {spoken_request}")
         ]
         

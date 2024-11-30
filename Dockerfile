@@ -15,7 +15,7 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Setup supervisor
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+#COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Start with root user explicitly
 USER root
@@ -30,4 +30,4 @@ RUN mkdir -p /var/log/supervisor /var/run && \
 # USER appuser
 
 # Command to run supervisor
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+#CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

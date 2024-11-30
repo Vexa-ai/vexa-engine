@@ -88,7 +88,7 @@ class SearchContextProvider(BaseContextProvider):
         super().__init__(max_tokens=max_tokens)
         self.search_assistant = search_assistant
 
-    async def _get_raw_context(self, user_id: str, query: str, **kwargs) -> str:
+    async def get_context(self, user_id: str, query: str, **kwargs) -> str:
         # Parse search queries
         r = await ParsedSearchRequest.parse_request(query)
         queries = [q.query for q in r.search_queries]
@@ -269,7 +269,11 @@ class ChatManager:
             messages = []
             thread_name = query[:50]
 
-        context = await context_provider.get_context(**context_kwargs)
+        context = await context_provider.get_context(
+            user_id=user_id,
+            query=query,
+            **context_kwargs
+        )
         
         context_msg = system_msg(f"Context: {context}")
         messages_context = [

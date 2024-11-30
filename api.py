@@ -858,30 +858,47 @@ async def meeting_summary_chat(
 ):
     user_id, _ = current_user
     try:
-        async with get_session() as session:
-            summary_provider = MeetingSummaryContextProvider(
-                meeting_ids=request.meeting_ids,
-                include_discussion_points=request.include_discussion_points
-            )
-            chat_manager = MeetingChatManager(session, context_provider=summary_provider)
-            
+        # If more than 10 meetings, use SearchChatManager
+        if len(request.meeting_ids) > 20:
             async def stream_response():
-                async for item in chat_manager.chat(
-                    user_id=user_id,
+                async for item in search_assistant.chat(
                     query=request.query,
-                    meeting_ids=request.meeting_ids,
                     thread_id=request.thread_id,
                     model=request.model,
                     temperature=request.temperature,
-                    prompt=prompts.multiple_meetings_2711
+                    user_id=user_id
                 ):
                     if isinstance(item, dict):
                         yield f"data: {json.dumps(item)}\n\n"
                     else:
                         yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
                 yield "data: {\"type\": \"done\"}\n\n"
+        else:
+            # Original logic for ≤ 10 meetings
+            async with get_session() as session:
+                summary_provider = MeetingSummaryContextProvider(
+                    meeting_ids=request.meeting_ids,
+                    include_discussion_points=request.include_discussion_points
+                )
+                chat_manager = MeetingChatManager(session, context_provider=summary_provider)
+                
+                async def stream_response():
+                    async for item in chat_manager.chat(
+                        user_id=user_id,
+                        query=request.query,
+                        meeting_ids=request.meeting_ids,
+                        thread_id=request.thread_id,
+                        model=request.model,
+                        temperature=request.temperature,
+                        prompt=prompts.multiple_meetings_2711
+                    ):
+                        if isinstance(item, dict):
+                            yield f"data: {json.dumps(item)}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
+                    yield "data: {\"type\": \"done\"}\n\n"
 
-            return StreamingResponse(stream_response(), media_type="text/event-stream")
+        return StreamingResponse(stream_response(), media_type="text/event-stream")
     except ValueError as e:
         if "Thread with id" in str(e):
             raise HTTPException(status_code=404, detail=str(e))
