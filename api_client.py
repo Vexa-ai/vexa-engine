@@ -3,140 +3,130 @@ import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Generator
 from vexa import VexaAPI
+from psql_helpers import get_token_by_email
 
-BASE_URL = "http://localhost:8765"
-vexa = VexaAPI()
-headers = {"Authorization": f"Bearer {vexa.token}", "Content-Type": "application/json"}
+class APIClient:
+    def __init__(self, email: Optional[str] = None, base_url: str = "http://localhost:8765"):
+        self.base_url = base_url
+        self.email = email
+        self.headers = {"Content-Type": "application/json"}
+        self._initialized = False
 
-def submit_token(token: str) -> Dict:
-    response = requests.post(f"{BASE_URL}/submit_token", json={"token": token})
-    result = response.json()
-    print(f"User ID: {result.get('user_id')}\nUser Name: {result.get('user_name')}\nImage URL: {result.get('image')}")
-    return result
+    @classmethod
+    async def create(cls, email: Optional[str] = None, base_url: str = "http://localhost:8765") -> 'APIClient':
+        client = cls(base_url=base_url)
+        if email:
+            await client.set_email(email)
+        return client
 
-def chat(query: str, thread_id: Optional[str] = None, model: str = "gpt-4o-mini", temperature: float = 0.7) -> Dict:
-    response = requests.post(f"{BASE_URL}/chat", headers=headers, json={
-        "query": query, "thread_id": thread_id, "model": model, "temperature": temperature}, stream=True)
-    final_response = None
-    for line in response.iter_lines():
-        if line:
-            try:
-                data = json.loads(line.decode('utf-8').replace('data: ', ''))
-                if data.get('type') == 'stream': print(data.get('content', ''), end='', flush=True)
-                elif data.get('type') == 'done': break
-                else: final_response = data
-            except json.JSONDecodeError: continue
-    return final_response or {"error": "No response received"}
+    async def set_email(self, email: str) -> None:
+        self.email = email
+        token, _ = await get_token_by_email(email)
+        self.token = token
+        self.headers["Authorization"] = f"Bearer {token}"
+        self.headers["X-User-Email"] = email
+        self._initialized = True
 
-def global_search(query: str, limit: int = 200, min_score: float = 0.4) -> Dict:
-    """
-    Global search across all accessible meetings and their content.
-    Returns ranked results with relevance scores in meetings list format.
-    
-    Args:
-        query: Search query string
-        limit: Maximum number of results (default: 200)
-        min_score: Minimum relevance score threshold (default: 0.4)
-        
-    Returns:
-        Dict with format:
-        {
-            "total": int,
-            "meetings": [
-                {
-                    "meeting_id": str,
-                    "meeting_name": str,
-                    "timestamp": str,
-                    "is_indexed": bool,
-                    "meeting_summary": str,
-                    "relevance_score": float,
-                    "speakers": List[str]
-                },
-                ...
-            ]
-        }
-    """
-    response = requests.post(
-        f"{BASE_URL}/search/global", 
-        headers=headers,
-        json={
-            "query": query,
-            "limit": limit,
-            "min_score": min_score
-        }
-    )
-    
-    if response.status_code != 200:
-        raise Exception(f"Search failed: {response.text}")
-        
-    return response.json()
+    async def _ensure_initialized(self):
+        if not self._initialized and self.email:
+            await self.set_email(self.email)
 
-def search_transcripts(query: str, meeting_ids: Optional[List[str]] = None, min_score: float = 0.8) -> Dict:
-    return requests.post(f"{BASE_URL}/search/transcripts", headers=headers,
-        json={"query": query, "meeting_ids": meeting_ids, "min_score": min_score}).json()
+    async def get_meetings(self, offset: int = 0, limit: int = 50) -> Dict:
+        await self._ensure_initialized()
+        return requests.get(f"{self.base_url}/meetings/all", headers=self.headers, 
+            params={"offset": offset, "limit": limit}).json()
 
-def get_meetings(offset: int = 0, limit: int = 50) -> Dict:
-    return requests.get(f"{BASE_URL}/meetings/all", headers=headers, 
-        params={"offset": offset, "limit": limit}).json()
+    def submit_token(self, token: str) -> Dict:
+        response = requests.post(f"{self.base_url}/submit_token", json={"token": token})
+        result = response.json()
+        print(f"User ID: {result.get('user_id')}\nUser Name: {result.get('user_name')}\nImage URL: {result.get('image')}")
+        return result
 
-def get_meeting_details(meeting_id: str) -> Dict:
-    return requests.get(f"{BASE_URL}/meeting/{meeting_id}/details", headers=headers).json()
+    def chat(self, query: str, thread_id: Optional[str] = None, model: str = "gpt-4o-mini", temperature: float = 0.7) -> Dict:
+        response = requests.post(f"{self.base_url}/chat", headers=self.headers, json={
+            "query": query, "thread_id": thread_id, "model": model, "temperature": temperature}, stream=True)
+        final_response = None
+        for line in response.iter_lines():
+            if line:
+                try:
+                    data = json.loads(line.decode('utf-8').replace('data: ', ''))
+                    if data.get('type') == 'stream': print(data.get('content', ''), end='', flush=True)
+                    elif data.get('type') == 'done': break
+                    else: final_response = data
+                except json.JSONDecodeError: continue
+        return final_response or {"error": "No response received"}
 
-def create_share_link(target_email: str, access_level: str = "READ", expiration_hours: int = 24, include_existing: bool = True) -> Dict:
-    return requests.post(f"{BASE_URL}/share-links", headers=headers, json={
-        "access_level": access_level, "target_email": target_email,
-        "expiration_hours": expiration_hours, "include_existing_meetings": include_existing}).json()
+    def global_search(self, query: str, limit: int = 200, min_score: float = 0.4) -> Dict:
+        response = requests.post(f"{self.base_url}/search/global", headers=self.headers,
+            json={"query": query, "limit": limit, "min_score": min_score})
+        if response.status_code != 200:
+            raise Exception(f"Search failed: {response.text}")
+        return response.json()
 
-def accept_share_link(token: str, accepting_email: str) -> Dict:
-    return requests.post(f"{BASE_URL}/share-links/accept", headers=headers,
-        json={"token": token, "accepting_email": accepting_email}).json()
+    def search_transcripts(self, query: str, meeting_ids: Optional[List[str]] = None, min_score: float = 0.8) -> Dict:
+        return requests.post(f"{self.base_url}/search/transcripts", headers=self.headers,
+            json={"query": query, "meeting_ids": meeting_ids, "min_score": min_score}).json()
 
-def start_indexing(num_meetings: int = 200) -> Dict:
-    return requests.post(f"{BASE_URL}/start_indexing", headers=headers,
-        json={"num_meetings": num_meetings}).json()
+    async def get_meeting_details(self, meeting_id: str) -> Dict:
+        await self._ensure_initialized()
+        return requests.get(f"{self.base_url}/meeting/{meeting_id}/details", headers=self.headers).json()
 
-def get_indexing_status() -> Dict:
-    return requests.get(f"{BASE_URL}/indexing_status", headers=headers).json()
+    def create_share_link(self, target_email: str, access_level: str = "READ", expiration_hours: int = 24, include_existing: bool = True) -> Dict:
+        return requests.post(f"{self.base_url}/share-links", headers=self.headers, json={
+            "access_level": access_level, "target_email": target_email,
+            "expiration_hours": expiration_hours, "include_existing_meetings": include_existing}).json()
 
-def get_threads(meeting_id: Optional[str] = None) -> Dict:
-    if meeting_id: return requests.get(f"{BASE_URL}/threads/{meeting_id}", headers=headers).json()
-    return requests.get(f"{BASE_URL}/threads", headers=headers).json()
+    def accept_share_link(self, token: str, accepting_email: str) -> Dict:
+        return requests.post(f"{self.base_url}/share-links/accept", headers=self.headers,
+            json={"token": token, "accepting_email": accepting_email}).json()
 
-def delete_thread(thread_id: str) -> Dict:
-    return requests.delete(f"{BASE_URL}/thread/{thread_id}", headers=headers).json()
+    def start_indexing(self, num_meetings: int = 200) -> Dict:
+        return requests.post(f"{self.base_url}/start_indexing", headers=self.headers,
+            json={"num_meetings": num_meetings}).json()
 
-def chat_meeting(query: str, meeting_ids: List[str], thread_id: Optional[str] = None, 
-                model: str = "gpt-4o-mini", temperature: float = 0.7) -> Dict:
-    response = requests.post(f"{BASE_URL}/chat/meeting", headers=headers, json={
-        "query": query, "meeting_ids": meeting_ids, "thread_id": thread_id,
-        "model": model, "temperature": temperature}, stream=True)
-    final_response = None
-    for line in response.iter_lines():
-        if line:
-            try:
-                data = json.loads(line.decode('utf-8').replace('data: ', ''))
-                if data.get('type') == 'stream': print(data.get('content', ''), end='', flush=True)
-                elif data.get('type') == 'done': break
-                else: final_response = data
-            except json.JSONDecodeError: continue
-    return final_response or {"error": "No response received"}
+    def get_indexing_status(self) -> Dict:
+        return requests.get(f"{self.base_url}/indexing_status", headers=self.headers).json()
 
-def get_meetings_by_speakers(speakers: List[str], limit: int = 50, offset: int = 0) -> Dict:
-    return requests.post(f"{BASE_URL}/meetings/by-speakers", headers=headers,
-        json={"speakers": speakers, "limit": limit, "offset": offset}).json()
+    def get_threads(self, meeting_id: Optional[str] = None) -> Dict:
+        if meeting_id: 
+            return requests.get(f"{self.base_url}/threads/{meeting_id}", headers=self.headers).json()
+        return requests.get(f"{self.base_url}/threads", headers=self.headers).json()
 
-def chat_meeting_summary(query: str, meeting_ids: List[str], include_discussion_points: bool = True,
-                        thread_id: Optional[str] = None, model: str = "gpt-4o-mini", temperature: float = 0.7) -> Dict:
-    response = requests.post(f"{BASE_URL}/chat/meeting/summary", headers=headers, json={
-        "query": query, "meeting_ids": meeting_ids, "include_discussion_points": include_discussion_points,
-        "thread_id": thread_id, "model": model, "temperature": temperature}, stream=True)
-    final_response = None
-    for line in response.iter_lines():
-        if line:
-            try:
-                data = json.loads(line.decode('utf-8').replace('data: ', ''))
-                if data.get('type') == 'stream': print(data.get('content', ''), end='', flush=True)
-                elif data.get('type') == 'done': break
-                else: final_response = data
-            except json.JSONDecodeError: continue
-    return final_response or {"error": "No response received"} 
+    def delete_thread(self, thread_id: str) -> Dict:
+        return requests.delete(f"{self.base_url}/thread/{thread_id}", headers=self.headers).json()
+
+    def chat_meeting(self, query: str, meeting_ids: List[str], thread_id: Optional[str] = None, 
+                    model: str = "gpt-4o-mini", temperature: float = 0.7) -> Dict:
+        response = requests.post(f"{self.base_url}/chat/meeting", headers=self.headers, json={
+            "query": query, "meeting_ids": meeting_ids, "thread_id": thread_id,
+            "model": model, "temperature": temperature}, stream=True)
+        final_response = None
+        for line in response.iter_lines():
+            if line:
+                try:
+                    data = json.loads(line.decode('utf-8').replace('data: ', ''))
+                    if data.get('type') == 'stream': print(data.get('content', ''), end='', flush=True)
+                    elif data.get('type') == 'done': break
+                    else: final_response = data
+                except json.JSONDecodeError: continue
+        return final_response or {"error": "No response received"}
+
+    def get_meetings_by_speakers(self, speakers: List[str], limit: int = 50, offset: int = 0) -> Dict:
+        return requests.post(f"{self.base_url}/meetings/by-speakers", headers=self.headers,
+            json={"speakers": speakers, "limit": limit, "offset": offset}).json()
+
+    def chat_meeting_summary(self, query: str, meeting_ids: List[str], include_discussion_points: bool = True,
+                           thread_id: Optional[str] = None, model: str = "gpt-4o-mini", temperature: float = 0.7) -> Dict:
+        response = requests.post(f"{self.base_url}/chat/meeting/summary", headers=self.headers, json={
+            "query": query, "meeting_ids": meeting_ids, "include_discussion_points": include_discussion_points,
+            "thread_id": thread_id, "model": model, "temperature": temperature}, stream=True)
+        final_response = None
+        for line in response.iter_lines():
+            if line:
+                try:
+                    data = json.loads(line.decode('utf-8').replace('data: ', ''))
+                    if data.get('type') == 'stream': print(data.get('content', ''), end='', flush=True)
+                    elif data.get('type') == 'done': break
+                    else: final_response = data
+                except json.JSONDecodeError: continue
+        return final_response or {"error": "No response received"} 
