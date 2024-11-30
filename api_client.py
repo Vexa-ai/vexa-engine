@@ -1,4 +1,3 @@
-
 import requests
 import json
 from datetime import datetime
@@ -30,8 +29,47 @@ def chat(query: str, thread_id: Optional[str] = None, model: str = "gpt-4o-mini"
     return final_response or {"error": "No response received"}
 
 def global_search(query: str, limit: int = 200, min_score: float = 0.4) -> Dict:
-    return requests.post(f"{BASE_URL}/search/global", headers=headers, 
-        json={"query": query, "limit": limit, "min_score": min_score}).json()
+    """
+    Global search across all accessible meetings and their content.
+    Returns ranked results with relevance scores in meetings list format.
+    
+    Args:
+        query: Search query string
+        limit: Maximum number of results (default: 200)
+        min_score: Minimum relevance score threshold (default: 0.4)
+        
+    Returns:
+        Dict with format:
+        {
+            "total": int,
+            "meetings": [
+                {
+                    "meeting_id": str,
+                    "meeting_name": str,
+                    "timestamp": str,
+                    "is_indexed": bool,
+                    "meeting_summary": str,
+                    "relevance_score": float,
+                    "speakers": List[str]
+                },
+                ...
+            ]
+        }
+    """
+    response = requests.post(
+        f"{BASE_URL}/search/global", 
+        headers=headers,
+        json={
+            "query": query,
+            "limit": limit,
+            "min_score": min_score
+        }
+    )
+    
+    if response.status_code != 200:
+        raise Exception(f"Search failed: {response.text}")
+        
+    return response.json()
 
 def search_transcripts(query: str, meeting_ids: Optional[List[str]] = None, min_score: float = 0.8) -> Dict:
     return requests.post(f"{BASE_URL}/search/transcripts", headers=headers,

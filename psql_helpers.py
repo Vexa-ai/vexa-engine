@@ -19,6 +19,8 @@ from sqlalchemy import and_
 from enum import Enum
 from sqlalchemy import Index, UniqueConstraint, CheckConstraint
 from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, ForeignKey
+from sqlalchemy import distinct
+from psql_models import meeting_speaker_association
 
 #docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
 
@@ -855,3 +857,87 @@ async def get_token_by_email(email: str, session: AsyncSession = None) -> Option
             'image': user.image
         }
         return token.token, user_data
+
+async def get_meetings_by_ids(
+    meeting_ids: List[UUID | str], 
+    user_id: UUID | str,
+    session: AsyncSession = None
+) -> dict:
+    """Get meetings by list of meeting IDs with associated data
+    
+    Args:
+        meeting_ids: List of meeting UUIDs or strings
+        user_id: User UUID or string
+        session: Optional AsyncSession
+        
+    Returns:
+        Dict with total count and list of meeting data
+    """
+    # Convert string IDs to UUID if needed
+    if isinstance(user_id, str):
+        user_id = UUID(user_id)
+    meeting_ids = [UUID(mid) if isinstance(mid, str) else mid for mid in meeting_ids]
+    
+    async with (session or get_session()) as session:
+        # Build query for meetings with speakers
+        query = (
+            select(
+                Meeting.meeting_id,
+                Meeting.meeting_name, 
+                Meeting.timestamp,
+                Meeting.is_indexed,
+                Meeting.meeting_summary,
+                UserMeeting.access_level,
+                UserMeeting.is_owner,
+                func.array_agg(distinct(Speaker.name)).label('speakers')
+            )
+            .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+            .join(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
+            .join(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
+            .where(
+                and_(
+                    UserMeeting.user_id == user_id,
+                    UserMeeting.access_level != AccessLevel.REMOVED.value,
+                    Meeting.meeting_id.in_(meeting_ids)
+                )
+            )
+            .group_by(
+                Meeting.meeting_id,
+                Meeting.meeting_name,
+                Meeting.timestamp,
+                Meeting.is_indexed,
+                Meeting.meeting_summary,
+                UserMeeting.access_level,
+                UserMeeting.is_owner
+            )
+        )
+
+        result = await session.execute(query)
+        meetings = result.all()
+        
+        # Create a mapping of meeting_id to meeting data
+        meetings_dict = {
+            str(meeting.meeting_id): {
+                "meeting_id": str(meeting.meeting_id),
+                "meeting_name": meeting.meeting_name,
+                "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
+                "is_indexed": meeting.is_indexed,
+                "meeting_summary": meeting.meeting_summary,
+                "access_level": meeting.access_level,
+                "is_owner": meeting.is_owner,
+                "speakers": [s for s in meeting.speakers if s and s != 'TBD']
+            }
+            for meeting in meetings
+        }
+        
+        # Maintain input order
+        meetings_list = [
+            meetings_dict[str(mid)]
+            for mid in meeting_ids
+            if str(mid) in meetings_dict
+        ]
+        
+        return {
+            "total": len(meetings_list),
+            "meetings": meetings_list
+        }

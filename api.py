@@ -53,7 +53,11 @@ from chat import MeetingChatManager
 
 from vexa import VexaAuth
 
+import pandas as pd
+
 import httpx
+
+
 
 from datetime import datetime, timezone
 from chat import MeetingSummaryContextProvider,MeetingContextProvider
@@ -460,10 +464,18 @@ async def get_meeting_details(
             
         meeting, user_meeting, discussion_points = row
         
+        # Convert discussion points to pandas DataFrame and deduplicate
+        if discussion_points and discussion_points[0] is not None:
+            import pandas as pd
+            df = pd.DataFrame(discussion_points)
+            df = df.drop_duplicates(subset=['topic_name']).to_dict('records')
+            discussion_points = df
+        else:
+            discussion_points = []
+
         transcript_data = None
         speakers = []
         
-        # Try to get transcript from Vexa if not indexed or no transcript
         if not meeting.is_indexed or not meeting.transcript:
             try:
                 vexa_api = VexaAPI(token=token)
@@ -471,11 +483,8 @@ async def get_meeting_details(
                 
                 if transcription:
                     df, _, start_datetime, speakers, transcript = transcription
-                    
-                    # Convert timezone-aware datetime to naive UTC
                     utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
                     
-                    # Update meeting record with transcript and timestamp
                     await session.execute(
                         update(Meeting)
                         .where(Meeting.meeting_id == meeting_id)
@@ -485,7 +494,6 @@ async def get_meeting_details(
                         )
                     )
                     
-                    # Save new speakers and associate with meeting
                     for speaker_name in speakers:
                         if speaker_name and speaker_name != 'TBD':
                             speaker_query = select(Speaker).where(Speaker.name == speaker_name)
@@ -495,9 +503,8 @@ async def get_meeting_details(
                             if not speaker:
                                 speaker = Speaker(name=speaker_name)
                                 session.add(speaker)
-                                await session.flush()  # Get the ID of the new speaker
+                                await session.flush()
                             
-                            # Associate speaker with meeting if not already associated
                             await session.execute(
                                 pg_insert(meeting_speaker_association).values(
                                     meeting_id=meeting.id,
@@ -513,12 +520,10 @@ async def get_meeting_details(
             except Exception as e:
                 logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
         else:
-            # Get transcript data from existing meeting record
             transcript_data = eval(meeting.transcript)
             speakers = list(set(segment.get('speaker') for segment in transcript_data 
                         if segment.get('speaker') and segment.get('speaker') != 'TBD'))
         
-        # Build response
         response = {
             "meeting_id": meeting.meeting_id,
             "timestamp": meeting.timestamp,
@@ -529,7 +534,7 @@ async def get_meeting_details(
             "access_level": user_meeting.access_level,
             "is_owner": user_meeting.is_owner,
             "is_indexed": meeting.is_indexed,
-            "discussion_points": [dp for dp in discussion_points if dp is not None]
+            "discussion_points": discussion_points
         }
         
         return response
@@ -575,36 +580,42 @@ class GlobalSearchRequest(BaseModel):
     query: str
     limit: Optional[int] = 200
     min_score: Optional[float] = 0.4
+    
+from psql_helpers import get_meetings_by_ids
 
 @app.post("/search/global")
 async def global_search(
     request: GlobalSearchRequest,
     current_user: tuple = Depends(get_current_user)
 ):
-    """
-    Global search across all accessible meetings and their content.
-    Returns ranked results with relevance scores.
-    """
     user_id, _ = current_user
     
     try:
+        # Get search results just to obtain meeting IDs
         results = await search_assistant.search(
             query=request.query,
             user_id=user_id,
-            limit=request.limit,
+            limit=200,
             min_score=request.min_score
         )
         
-        results = results.drop(columns=['vector_scores','exact_matches']).drop_duplicates(subset = ['topic_name','speaker_name','summary','details','meeting_id'])
+        if results.empty:
+            return {
+                "total": 0,
+                "meetings": []
+            }
         
-        # Convert DataFrame to list of dictionaries
-        results_list = results.to_dict(orient='records') if not results.empty else []
+        # Extract unique meeting IDs from search results
+        meeting_ids = results.sort_values('score', ascending=False)['meeting_id'].unique().tolist()
         
-        return {
-            "results": results_list,
-            "total": len(results_list)
-        }
-        
+        async with async_session() as session:
+            result = await get_meetings_by_ids(
+            meeting_ids=meeting_ids, 
+            user_id=user_id
+        )
+            
+            return result
+            
     except Exception as e:
         logger.error(f"Error in global search: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
