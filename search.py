@@ -12,9 +12,11 @@ from core import system_msg, user_msg, assistant_msg, generic_call_stream, count
 from prompts import Prompts
 from pydantic_models import ThreadName,ParsedSearchRequest
 from thread_manager import ThreadManager
-from psql_helpers import get_accessible_meetings,get_session
+from psql_helpers import get_accessible_meetings,get_session, clean_meeting_postgres_data
 from uuid import UUID
 from logger import logger
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class SearchResult(BaseModel):
@@ -278,3 +280,21 @@ class SearchAssistant:
             "linked_output": linked_output
         }   
         yield result
+
+    async def clean_meeting_data(self, meeting_id: UUID | str, session: AsyncSession = None) -> tuple[bool, bool]:
+        """Clean all meeting data from both PostgreSQL and Qdrant
+        
+        Args:
+            meeting_id: Meeting UUID or string
+            session: Optional AsyncSession
+            
+        Returns:
+            tuple[bool, bool]: (postgres_success, qdrant_success)
+        """
+        # Clean PostgreSQL data
+        postgres_success = await clean_meeting_postgres_data(meeting_id, session)
+        
+        # Clean Qdrant vectors
+        qdrant_success = await self.search_engine.clean_meeting_vectors(meeting_id)
+        
+        return postgres_success, qdrant_success

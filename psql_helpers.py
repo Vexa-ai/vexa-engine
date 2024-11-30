@@ -941,3 +941,38 @@ async def get_meetings_by_ids(
             "total": len(meetings_list),
             "meetings": meetings_list
         }
+
+async def clean_meeting_postgres_data(meeting_id: UUID | str, session: AsyncSession = None) -> bool:
+    """Clean all PostgreSQL data for a meeting (discussion points, name, summary)
+    
+    Args:
+        meeting_id: Meeting UUID or string
+        session: Optional AsyncSession
+        
+    Returns:
+        bool: True if meeting was updated, False if meeting not found
+    """
+    if isinstance(meeting_id, str):
+        meeting_id = UUID(meeting_id)
+        
+    async with (session or get_session()) as session:
+        # Get meeting
+        query = select(Meeting).where(Meeting.meeting_id == meeting_id)
+        result = await session.execute(query)
+        meeting = result.scalar_one_or_none()
+        
+        if not meeting:
+            return False
+            
+        # Delete discussion points using delete statement
+        from sqlalchemy import delete
+        delete_stmt = delete(DiscussionPoint).where(DiscussionPoint.meeting_id == meeting_id)
+        await session.execute(delete_stmt)
+        
+        # Clean meeting data
+        meeting.meeting_name = None
+        meeting.meeting_summary = None
+        meeting.is_indexed = False
+        
+        await session.commit()
+        return True

@@ -1,5 +1,6 @@
 import uuid
 from typing import List, Dict, Any
+from uuid import UUID
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
@@ -822,3 +823,33 @@ class QdrantSearchEngine:
             )
 
             return sampled_df.sort_values(by='timestamp', ascending=False)
+
+    async def clean_meeting_vectors(self, meeting_id: UUID | str) -> bool:
+        """Remove all vectors for a meeting from Qdrant
+        
+        Args:
+            meeting_id: Meeting UUID or string
+            
+        Returns:
+            bool: True if points were deleted
+        """
+        if isinstance(meeting_id, str):
+            meeting_id = UUID(meeting_id)
+        
+        try:
+            # Delete all points for this meeting
+            await self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="meeting_id",
+                            match=MatchValue(value=str(meeting_id))
+                        )
+                    ]
+                )
+            )
+            return True
+        except Exception as e:
+            print(f"Error deleting Qdrant data: {e}")
+            return False
