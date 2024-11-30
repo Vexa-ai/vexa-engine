@@ -21,17 +21,17 @@ class Entity(BaseModel):
 
 class EntityExtraction(BaseCall):
     language: str = Field(..., description="Detected language code of the input text (e.g. 'en')")
-    list_of_entities: list[str] = Field(..., description="START WITH THIS ONE:List of all of the the entities in the meeting.")
+    list_of_entities: list[str] = Field(..., description="START WITH THIS ONE:List of ALL of the entities from  the meeting.")
     entities: List[Entity] = Field(..., description="List of extracted entities with their context. Get all the entities and their context.")
     
     @classmethod
     async def extract(cls, formatted_input: str, model: str = "gpt-4o-mini", use_cache: bool = False, force_store: bool = False):
         output = await cls.call([
-            system_msg(f"""{prompts.naming} 
-                          Think critically about the meeting content and extract key entities. Summarize the meeting, focusing on important details, names, and facts. 
-                          IMPORTANT: Always copy speaker names EXACTLY as they appear in the text - do not modify or interpret names.
-                          Entity to speaker can be one to one or many to many. Extract all the entities and their context. CHeck again is all the entities extracted. 
-                          Write exclusively in the language in input"""),
+            system_msg(f"""Think critically about the meeting content and extract ALL entities. 
+                            MUST extract ALL entities.
+                            IMPORTANT: Always copy speaker names EXACTLY as they appear in the text - do not modify or interpret names.
+                            Entity to speaker can be one to one or many to many. Extract all the entities and their context. CHeck again is all the entities extracted. 
+                            Write exclusively in the language in input"""),
             user_msg(formatted_input)
         ], model=model, use_cache=use_cache, force_store=force_store)
 
@@ -41,7 +41,7 @@ class EntityExtraction(BaseCall):
 
 class MeetingItem(BaseModel):
     item: str = Field(..., description="Name of the meeting item (e.g., action plan, goal, idea, task, usecase, etc.)")
-    type: str = Field(..., description="Type of the item: action plan, goal, future projection, idea, task, decision, concern, usecase, problem, solution, opportunity, risk, etc. Use the most appropriate descriptor.")
+    type: str = Field(..., description="Type of the item: task, action point, action plan, goal, future projection, idea, task, decision, concern, usecase, problem, solution, opportunity, risk, proposal, strategy, milestone, objective, feedback, agenda item, report, challenge, outcome, insight, question, recommendation, requirement, roadblock, key takeaway, budget discussion, status update, analysis, follow-up item, benchmark, resource allocation, and more. Use the most appropriate descriptor.")
     summary: str = Field(..., max_length=250, description="Full standalone concise summary of the item's context, including its significance and potential impact. Be specific and avoid generic words.")
     details: str = Field(..., description="Specific details about the item, including timelines, responsible parties, importance, potential impacts, usecases, implementation steps, challenges, benefits, and any relevant facts or numbers")
     speaker: str = Field(
@@ -51,14 +51,13 @@ class MeetingItem(BaseModel):
 
 class MeetingExtraction(BaseCall):
     language: str = Field(..., description="Detected language code of the input text (e.g. 'en')")
-    list_of_items: list[str] = Field(..., description="START WITH THIS ONE: List of all significant items discussed in the meeting, including action plans, goals, future projections, ideas, tasks, decisions, concerns, usecases, problems, solutions, opportunities, risks, etc.")
+    list_of_items: list[str] = Field(..., description="START WITH THIS ONE: List of AS MANY AS POSSIBLE the items discussed in the meeting, including action plans, goals, future projections, ideas, tasks, decisions, concerns, usecases, problems, solutions, opportunities, risks, and more.")
     items: List[MeetingItem] = Field(..., description="List of extracted meeting items with their full context. Capture all significant discussion points, plans, outcomes, usecases, and their implications. Write exclusively in the language in input")
 
     @classmethod
     async def extract(cls, formatted_input: str, model: str = "gpt-4o-mini", use_cache: bool = False, force_store: bool = False):
         output = await cls.call([
-            system_msg(f"""{prompts.naming} 
-                            Analyze the meeting content and extract key purposes, tasks, and actions. Summarize each item, focusing on important details, deadlines, assignees, usecases, etc. and any relevant facts or numbers.
+            system_msg(f"""Analyze the meeting content and extract key purposes, tasks, and actions. Summarize each item, focusing on important details, deadlines, assignees, usecases, etc. and any relevant facts or numbers.
                           IMPORTANT: Always copy speaker names EXACTLY as they appear in the text - do not modify or interpret names.
                           Write exclusively in the language in input"""),
             user_msg(formatted_input)
