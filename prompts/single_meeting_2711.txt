@@ -28,7 +28,9 @@ Ensure consistency with the conversation history to maintain a coherent dialogue
 Highlight important keywords with markdown bold for enchanced readability
 
 
-Keep the response backedup with the context, no general rationalizations, if there is no answer in the context, say there is no answer in the context.
+Keep the response backedup with the context, no general rationalizations. 
+
+If contet does not contain information regarding the request, explain that there is no information in the context.
 
 
 Introduce structure to the response
