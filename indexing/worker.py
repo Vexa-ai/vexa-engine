@@ -18,6 +18,8 @@ from .redis_keys import RedisKeys
 from asyncio import TaskGroup
 from collections import deque
 from psql_helpers import get_meeting_token
+import logging
+from time import time
 
 class ProcessingError(Exception):
     pass
@@ -30,6 +32,15 @@ class IndexingWorker:
         self.max_retries = 3
         self.qdrant = QdrantSearchEngine()
         self.max_concurrent = max_concurrent
+        
+        # Setup logging
+        self.logger = logging.getLogger('indexing_worker')
+        self.logger.setLevel(logging.INFO)
+        handler = logging.FileHandler('indexing_worker.log')
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s'
+        ))
+        self.logger.addHandler(handler)
 
     async def _process_meeting_data(self, formatted_input: str, df: pd.DataFrame) -> tuple:
         # Extract meeting data using AI models
@@ -217,9 +228,30 @@ class IndexingWorker:
     async def run(self):
         processing_tasks = set()
         pending_meetings = deque()
+        processed_meetings = set()
+        
+        async def cleanup_stale_processing():
+            # Consider entries stale after 30 minutes
+            stale_timeout = 30 * 60  
+            now = datetime.now().timestamp()
+            
+            # Get all processing meetings
+            processing = self.redis.smembers(RedisKeys.PROCESSING_SET)
+            for mid in processing:
+                meeting_id = mid.decode() if isinstance(mid, bytes) else mid
+                # Check if meeting is actually being processed
+                if not any(t for t in processing_tasks if t.get_name() == meeting_id):
+                    # Check if meeting is in retry queue
+                    retry_score = self.redis.zscore(RedisKeys.INDEXING_QUEUE, meeting_id)
+                    if not retry_score or (now - retry_score) > stale_timeout:
+                        self.logger.warning(f"Removing stale processing entry for meeting {meeting_id}")
+                        self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)
         
         while True:
             try:
+                # Add periodic cleanup
+                await cleanup_stale_processing()
+                
                 # Refill pending_meetings if below threshold
                 if len(pending_meetings) < self.max_concurrent:
                     now = datetime.now().timestamp()
@@ -229,24 +261,33 @@ class IndexingWorker:
                         start=0,
                         num=self.max_concurrent * 2
                     )
-                    pending_meetings.extend(
-                        (m.decode() if isinstance(m, bytes) else m)
-                        for m in next_meetings 
-                        if (m.decode() if isinstance(m, bytes) else m) not in pending_meetings
-                    )
+                    # Only add meetings that aren't already pending or processing
+                    for m in next_meetings:
+                        meeting_id = m.decode() if isinstance(m, bytes) else m
+                        if (meeting_id not in pending_meetings and 
+                            not any(t for t in processing_tasks if t.get_name() == meeting_id)):
+                            pending_meetings.append(meeting_id)
                 
                 # Start new tasks if we're below max_concurrent
                 while len(processing_tasks) < self.max_concurrent and pending_meetings:
                     meeting_id = pending_meetings.popleft()
                     
-                    # Skip if already processing
+                    # Skip if already processing, log only once per meeting
                     if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
+                        if meeting_id not in processed_meetings:
+                            self.logger.info(f"Skipping queue add for meeting {meeting_id} - already processing")
+                            processed_meetings.add(meeting_id)
                         continue
                         
                     # Create and track new task
                     task = asyncio.create_task(self._process_meeting_safe(meeting_id))
+                    task.set_name(meeting_id)  # Set task name to meeting_id for tracking
                     processing_tasks.add(task)
                     task.add_done_callback(processing_tasks.discard)
+                
+                    # Clean up processed meetings set periodically
+                    if len(processed_meetings) > 1000:  # Arbitrary limit
+                        processed_meetings.clear()
                 
                 # Wait a bit if we have no work
                 if not pending_meetings and not processing_tasks:
@@ -260,33 +301,27 @@ class IndexingWorker:
                         return_when=asyncio.FIRST_COMPLETED
                     )
                 
+                # Small sleep to prevent tight loop
+                await asyncio.sleep(0.1)
+                
             except Exception as e:
-                print(f"Worker loop error: {e}")
+                self.logger.error(f"Worker loop error: {e}")
                 await asyncio.sleep(5)
 
     async def _process_meeting_safe(self, meeting_id: str):
+        start_time = time()
+        self.logger.info(f"Starting processing meeting: {meeting_id}")
+        
         async with self.semaphore:
             try:
-                # Mark as processing
                 self.redis.sadd(RedisKeys.PROCESSING_SET, meeting_id)
                 await self._process_meeting(meeting_id)
-                # Clean up on success
+                processing_time = time() - start_time
+                self.logger.info(f"Successfully processed meeting {meeting_id} in {processing_time:.2f} seconds")
                 self._cleanup_success(meeting_id)
             except Exception as e:
+                processing_time = time() - start_time
+                self.logger.error(f"Failed processing meeting {meeting_id} after {processing_time:.2f} seconds. Error: {str(e)}")
                 await self._handle_error(meeting_id, e)
             finally:
-                # Always remove from processing set
                 self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)
-                
-                
-    # async def _process_meeting_safe(self, meeting_id: str):
-    #     async with self.semaphore:
-
-    #         # Mark as processing
-    #         self.redis.sadd(RedisKeys.PROCESSING_SET, meeting_id)
-    #         await self._process_meeting(meeting_id)
-    #         # Clean up on success
-    #         self._cleanup_success(meeting_id)
-
-    #         # Always remove from processing set
-    #         self.redis.srem(RedisKeys.PROCESSING_SET, meeting_id)

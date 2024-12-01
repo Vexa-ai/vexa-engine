@@ -53,13 +53,32 @@ class MeetingsMonitor:
         self.vexa_auth = VexaAuth()
         self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         self.active_seconds = 60 *30
+        
+        # Setup logging
+        self.logger = logging.getLogger('indexing_worker')
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:  # Prevent duplicate handlers
+            handler = logging.FileHandler('indexing_worker.log')
+            handler.setFormatter(logging.Formatter(
+                '%(asctime)s - %(levelname)s - %(message)s'
+            ))
+            self.logger.addHandler(handler)
     
 
     def _add_to_queue(self, meeting_id: str, score: float = None):
+        # Skip if already processing or in queue
+        if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
+            self.logger.info(f"Skipping queue add for meeting {meeting_id} - already processing")
+            return
+        
+        if self.redis.zscore(RedisKeys.INDEXING_QUEUE, meeting_id) is not None:
+            self.logger.info(f"Skipping queue add for meeting {meeting_id} - already in queue")
+            return
+
         if score is None:
             score = datetime.now().timestamp()
         self.redis.zadd(RedisKeys.INDEXING_QUEUE, {meeting_id: score})
-        logger.debug(f"Queued meeting {meeting_id}")
+        self.logger.info(f"Added meeting {meeting_id} to queue with score {datetime.fromtimestamp(score).isoformat()}")
 
 
     async def _queue_user_meetings(self, user_id: str, session, days: int = 30):
