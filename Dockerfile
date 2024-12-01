@@ -17,17 +17,10 @@ COPY . .
 # Setup supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Start with root user explicitly
-USER root
-
-# Create directories and set permissions
-RUN mkdir -p /var/log/supervisor /var/run && \
+# Create necessary directories with proper permissions
+RUN mkdir -p /var/log/supervisor /var/run/supervisor && \
     touch /var/log/supervisor/supervisord.log && \
-    chown -R root:root /var/log/supervisor /var/run && \
-    chmod -R 777 /var/log/supervisor /var/run /app
-
-# If you have a specific user for running the app (optional)
-# USER appuser
+    chmod -R 777 /var/log/supervisor /var/run/supervisor /app
 
 # Command to run supervisor
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

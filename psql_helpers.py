@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 import hashlib
 from uuid import UUID
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import timezone
 from sqlalchemy import or_
 from sqlalchemy import func
@@ -817,7 +817,7 @@ async def has_meeting_access(session: AsyncSession, user_id: UUID, meeting_id: U
     )
     return result.scalar_one_or_none() is not None
 
-async def get_meeting_token(meeting_id: UUID | str, session: AsyncSession = None) -> Optional[str]:
+async def get_meeting_token(meeting_id: Union[UUID, str], session: AsyncSession = None) -> Optional[str]:
     # Convert string to UUID if needed
     if isinstance(meeting_id, str):
         meeting_id = UUID(meeting_id)
@@ -859,8 +859,8 @@ async def get_token_by_email(email: str, session: AsyncSession = None) -> Option
         return token.token, user_data
 
 async def get_meetings_by_ids(
-    meeting_ids: List[UUID | str], 
-    user_id: UUID | str,
+    meeting_ids: List[Union[UUID, str]], 
+    user_id: Union[UUID, str],
     session: AsyncSession = None
 ) -> dict:
     """Get meetings by list of meeting IDs with associated data
@@ -942,7 +942,7 @@ async def get_meetings_by_ids(
             "meetings": meetings_list
         }
 
-async def clean_meeting_postgres_data(meeting_id: UUID | str, session: AsyncSession = None) -> bool:
+async def clean_meeting_postgres_data(meeting_id: Union[UUID, str], session: AsyncSession = None) -> bool:
     """Clean all PostgreSQL data for a meeting (discussion points, name, summary)
     
     Args:

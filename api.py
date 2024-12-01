@@ -985,6 +985,10 @@ async def index_meeting(
         logger.error(f"Error queuing meeting for indexing: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+from analytics.api import router as analytics_router
+
+app.include_router(analytics_router)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)
