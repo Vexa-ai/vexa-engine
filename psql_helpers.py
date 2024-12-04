@@ -594,6 +594,32 @@ async def update_user_meetings_access(
     
     await session.commit()
 
+async def create_share_link(
+    session: AsyncSession,
+    owner_id: UUID,
+    access_level: AccessLevel,
+    meeting_ids: Optional[List[UUID]] = None,
+    target_email: Optional[str] = None,
+    expiration_hours: Optional[int] = 24
+) -> str:
+    """Create a sharing link with specified access level and optional target email"""
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=expiration_hours) if expiration_hours else None
+    
+    share_link = ShareLink(
+        token=token,
+        owner_id=owner_id,
+        target_email=target_email.lower() if target_email else None,
+        access_level=access_level.value,
+        expires_at=expires_at,
+        shared_meetings=meeting_ids
+    )
+    
+    session.add(share_link)
+    await session.commit()
+    
+    return token
+
 async def accept_share_link(
     session: AsyncSession,
     token: str,
@@ -612,25 +638,30 @@ async def accept_share_link(
     share_link = share_query.scalar_one_or_none()
     
     if not share_link:
+        print("Share link not found")
         return False
     
-    if accepting_email:
-        if share_link.target_email and share_link.target_email.lower() != accepting_email.lower():
-            return False
-    
-    # Set default access
-    await set_default_access(
-        session,
-        owner_user_id=share_link.owner_id,
-        granted_user_id=accepting_user_id,
-        access_level=AccessLevel(share_link.access_level)
-    )
-    
-    # Update existing meetings if the share link includes them
-    if share_link.include_existing_meetings:
-        await update_user_meetings_access(
+    if accepting_email and share_link.target_email and share_link.target_email.lower() != accepting_email.lower():
+        print("Target email mismatch")
+        return False
+
+    # If specific meetings are shared, only grant access to those
+    if share_link.shared_meetings:
+        for meeting_id in share_link.shared_meetings:
+            user_meeting = UserMeeting(
+                meeting_id=meeting_id,
+                user_id=accepting_user_id,
+                access_level=share_link.access_level,
+                created_at=datetime.now(timezone.utc),
+                created_by=share_link.owner_id,
+                is_owner=False
+            )
+            session.add(user_meeting)
+    else:
+        # Set default access for future meetings
+        await set_default_access(
             session,
-            owner_id=share_link.owner_id,
+            owner_user_id=share_link.owner_id,
             granted_user_id=accepting_user_id,
             access_level=AccessLevel(share_link.access_level)
         )
@@ -642,29 +673,6 @@ async def accept_share_link(
     
     await session.commit()
     return True
-
-async def create_share_link(
-    session: AsyncSession,
-    owner_id: UUID,
-    access_level: AccessLevel,
-    target_email: Optional[str] = None,
-    expiration_hours: int = 24
-) -> str:
-    """Create a sharing link with specified access level and optional target email"""
-    token = secrets.token_urlsafe(32)
-    
-    share_link = ShareLink(
-        token=token,
-        owner_id=owner_id,
-        target_email=target_email.lower() if target_email else None,
-        access_level=access_level.value,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=expiration_hours)
-    )
-    
-    session.add(share_link)
-    await session.commit()
-    
-    return token
 
 # ... existing code ...
 

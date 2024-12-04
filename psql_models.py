@@ -21,6 +21,7 @@ from sqlalchemy import Index, UniqueConstraint, CheckConstraint
 from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, ForeignKey
 import os
 from sqlalchemy.pool import AsyncAdaptedQueuePool
+from sqlalchemy.dialects.postgresql import ARRAY
 
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
@@ -225,17 +226,18 @@ class ShareLink(Base):
 
     token = Column(String(64), primary_key=True)
     owner_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    target_email = Column(String(255), nullable=True)  # Optional email for specific recipient
+    target_email = Column(String(255), nullable=True)
     access_level = Column(
         String(20),
         nullable=False,
         default=AccessLevel.SEARCH.value
     )
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     is_used = Column(Boolean, default=False)
     accepted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
+    shared_meetings = Column(ARRAY(PostgresUUID(as_uuid=True)), nullable=True)  # Array of meeting IDs
 
     owner = relationship('User', foreign_keys=[owner_id])
     accepted_user = relationship('User', foreign_keys=[accepted_by])
