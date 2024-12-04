@@ -4,6 +4,12 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Generator
 from vexa import VexaAPI
 from psql_helpers import get_token_by_email
+from enum import Enum
+
+class MeetingOwnership(str, Enum):
+    MY = "my"
+    SHARED = "shared"
+    ALL = "all"
 
 class APIClient:
     def __init__(self, email: Optional[str] = None, base_url: str = "http://localhost:8765"):
@@ -14,27 +20,77 @@ class APIClient:
 
     @classmethod
     async def create(cls, email: Optional[str] = None, base_url: str = "http://localhost:8765") -> 'APIClient':
-        client = cls(base_url=base_url)
+        client = cls(email=email, base_url=base_url)
         if email:
             await client.set_email(email)
         return client
 
     async def set_email(self, email: str) -> None:
+        """Set email and initialize authorization headers"""
         self.email = email
         token, _ = await get_token_by_email(email)
+        if not token:
+            raise ValueError(f"No token found for email: {email}")
         self.token = token
-        self.headers["Authorization"] = f"Bearer {token}"
-        self.headers["X-User-Email"] = email
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "X-User-Email": email
+        }
         self._initialized = True
 
     async def _ensure_initialized(self):
-        if not self._initialized and self.email:
+        """Ensure client is initialized with proper headers"""
+        if not self._initialized:
+            if not self.email:
+                raise ValueError("Email not set. Please call set_email first.")
             await self.set_email(self.email)
 
-    async def get_meetings(self, offset: int = 0, limit: int = 50) -> Dict:
+    async def get_meetings(
+        self, 
+        offset: int = 0, 
+        limit: int = 50, 
+        include_summary: bool = False, 
+        ownership: MeetingOwnership = MeetingOwnership.ALL
+    ) -> Dict:
+        """Get meetings with ownership filter"""
         await self._ensure_initialized()
-        return requests.get(f"{self.base_url}/meetings/all", headers=self.headers, 
-            params={"offset": offset, "limit": limit}).json()
+        
+        response = requests.get(
+            f"{self.base_url}/meetings/all", 
+            headers=self.headers,
+            params={
+                "offset": offset, 
+                "limit": limit,
+                "include_summary": include_summary,
+                "ownership": ownership
+            }
+        )
+        
+        if response.status_code == 401:
+            raise ValueError("Unauthorized. Please check your authentication token.")
+        elif response.status_code != 200:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+        return response.json()
+
+    async def get_my_meetings(self, offset: int = 0, limit: int = 50, include_summary: bool = False) -> Dict:
+        """Get only meetings owned by the user"""
+        return await self.get_meetings(
+            offset=offset,
+            limit=limit,
+            include_summary=include_summary,
+            ownership=MeetingOwnership.MY
+        )
+
+    async def get_shared_meetings(self, offset: int = 0, limit: int = 50, include_summary: bool = False) -> Dict:
+        """Get only meetings shared with the user"""
+        return await self.get_meetings(
+            offset=offset,
+            limit=limit,
+            include_summary=include_summary,
+            ownership=MeetingOwnership.SHARED
+        )
 
     def submit_token(self, token: str) -> Dict:
         response = requests.post(f"{self.base_url}/submit_token", json={"token": token})
@@ -71,10 +127,24 @@ class APIClient:
         await self._ensure_initialized()
         return requests.get(f"{self.base_url}/meeting/{meeting_id}/details", headers=self.headers).json()
 
-    def create_share_link(self, target_email: str, access_level: str = "READ", expiration_hours: int = 24, include_existing: bool = True) -> Dict:
-        return requests.post(f"{self.base_url}/share-links", headers=self.headers, json={
-            "access_level": access_level, "target_email": target_email,
-            "expiration_hours": expiration_hours, "include_existing_meetings": include_existing}).json()
+    def create_share_link(
+        self, 
+        access_level: str = "search",
+        meeting_ids: Optional[List[str]] = None,
+        target_email: Optional[str] = None,
+        expiration_hours: Optional[int] = 24
+    ) -> Dict:
+        """Create a share link for specific meetings or general access"""
+        return requests.post(
+            f"{self.base_url}/share-links", 
+            headers=self.headers, 
+            json={
+                "access_level": access_level,
+                "meeting_ids": meeting_ids,
+                "target_email": target_email,
+                "expiration_hours": expiration_hours
+            }
+        ).json()
 
     def accept_share_link(self, token: str, accepting_email: str) -> Dict:
         return requests.post(f"{self.base_url}/share-links/accept", headers=self.headers,
@@ -129,4 +199,11 @@ class APIClient:
                     elif data.get('type') == 'done': break
                     else: final_response = data
                 except json.JSONDecodeError: continue
-        return final_response or {"error": "No response received"} 
+        return final_response or {"error": "No response received"}
+
+    def revoke_meeting_share(self, meeting_id: str, token: str) -> Dict:
+        """Revoke share access for a specific meeting"""
+        return requests.post(
+            f"{self.base_url}/meetings/{meeting_id}/revoke-share/{token}",
+            headers=self.headers
+        ).json()

@@ -57,6 +57,8 @@ import pandas as pd
 
 import httpx
 
+from sqlalchemy import case
+
 
 
 from datetime import datetime, timezone
@@ -109,9 +111,9 @@ class MeetingsProcessedResponse(BaseModel):
 
 class CreateShareLinkRequest(BaseModel):
     access_level: str
+    meeting_ids: Optional[List[UUID]] = None
     target_email: Optional[EmailStr] = None
-    expiration_hours: Optional[int] = 24
-    include_existing_meetings: Optional[bool] = False
+    expiration_hours: Optional[int] = None
 
 class CreateShareLinkResponse(BaseModel):
     token: str
@@ -300,14 +302,24 @@ async def create_new_share_link(
             detail=f"Invalid access level. Must be one of: {[e.value for e in AccessLevel]}"
         )
     
+    # Verify meeting access if specific meetings are being shared
+    if request.meeting_ids:
+        async with async_session() as session:
+            for meeting_id in request.meeting_ids:
+                if not await has_meeting_access(session, user_id, meeting_id):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"No access to meeting {meeting_id}"
+                    )
+    
     async with async_session() as session:
         token = await create_share_link(
             session=session,
             owner_id=user_id,
             access_level=access_level,
+            meeting_ids=request.meeting_ids,
             target_email=request.target_email,
-            expiration_hours=request.expiration_hours,
-            include_existing_meetings=request.include_existing_meetings
+            expiration_hours=request.expiration_hours
         )
         
     return CreateShareLinkResponse(token=token)
@@ -353,33 +365,41 @@ async def get_transcript(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+from enum import Enum
+
+class MeetingOwnership(str, Enum):
+    MY = "my"
+    SHARED = "shared"
+    ALL = "all"
+
 @app.get("/meetings/all")
 async def get_meetings(
     authorization: str = Header(None),
     offset: int = 0,
     limit: int = None,
     include_summary: bool = False,
+    ownership: MeetingOwnership = MeetingOwnership.ALL,  # New parameter
     current_user: tuple = Depends(get_current_user)
 ):
-    logger.info(f"Getting meetings with offset={offset}, limit={limit}, include_summary={include_summary}")
+    logger.info(f"Getting meetings with offset={offset}, limit={limit}, include_summary={include_summary}, ownership={ownership}")
     user_id, _ = current_user
     
     try:
         async with async_session() as session:
-            # Build base query with outer joins
             select_columns = [
                 Meeting.meeting_id,
                 Meeting.meeting_name,
                 Meeting.timestamp,
                 Meeting.is_indexed,
+                UserMeeting.is_owner,
+                UserMeeting.access_level,
                 func.array_agg(distinct(Speaker.name)).label('speakers')
             ]
             
-            # Add meeting_summary to select columns if requested
             if include_summary:
                 select_columns.append(Meeting.meeting_summary)
             
-            query = (
+            base_query = (
                 select(*select_columns)
                 .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
                 .outerjoin(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
@@ -387,11 +407,28 @@ async def get_meetings(
                 .where(
                     and_(
                         UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value
+                        UserMeeting.access_level != AccessLevel.REMOVED.value,
+                        # Filter based on ownership type
+                        case(
+                            (ownership == MeetingOwnership.MY, UserMeeting.is_owner == True),
+                            (ownership == MeetingOwnership.SHARED, UserMeeting.is_owner == False),
+                            else_=True  # ALL case - no additional filter
+                        )
                     )
                 )
-                .group_by(Meeting.meeting_id, Meeting.meeting_name, Meeting.timestamp, Meeting.is_indexed, 
-                         *([] if not include_summary else [Meeting.meeting_summary]))
+            )
+            
+            query = (
+                base_query
+                .group_by(
+                    Meeting.meeting_id, 
+                    Meeting.meeting_name, 
+                    Meeting.timestamp, 
+                    Meeting.is_indexed,
+                    UserMeeting.is_owner,
+                    UserMeeting.access_level,
+                    *([] if not include_summary else [Meeting.meeting_summary])
+                )
                 .order_by(Meeting.timestamp.desc())
             )
             
@@ -403,27 +440,33 @@ async def get_meetings(
             result = await session.execute(query)
             meetings = result.all()
             
-            # Format response
             meetings_list = [
                 {
                     "meeting_id": str(meeting.meeting_id),
                     "meeting_name": meeting.meeting_name,
                     "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
                     "is_indexed": meeting.is_indexed,
+                    "is_owner": meeting.is_owner,
+                    "access_level": meeting.access_level,
                     "speakers": [s for s in meeting.speakers if s and s != 'TBD'],
                     **({"meeting_summary": meeting.meeting_summary} if include_summary else {})
                 }
                 for meeting in meetings
             ]
             
-            # Get total count
+            # Update count query with ownership filter
             count_query = (
                 select(func.count(distinct(Meeting.meeting_id)))
                 .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
                 .where(
                     and_(
                         UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value
+                        UserMeeting.access_level != AccessLevel.REMOVED.value,
+                        case(
+                            (ownership == MeetingOwnership.MY, UserMeeting.is_owner == True),
+                            (ownership == MeetingOwnership.SHARED, UserMeeting.is_owner == False),
+                            else_=True
+                        )
                     )
                 )
             )
