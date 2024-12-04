@@ -57,8 +57,12 @@ class MeetingsMonitor:
         # Setup logging
         self.logger = logging.getLogger('indexing_worker')
         self.logger.setLevel(logging.INFO)
+
+        # Create logs directory if it doesn't exist
+        os.makedirs('logs', exist_ok=True)
+
         if not self.logger.handlers:  # Prevent duplicate handlers
-            handler = logging.FileHandler('indexing_worker.log')
+            handler = logging.FileHandler('logs/indexing_worker.log')  # Updated path
             handler.setFormatter(logging.Formatter(
                 '%(asctime)s - %(levelname)s - %(message)s'
             ))

@@ -143,16 +143,31 @@ async def startup_event():
 
 # Add logging configuration after the imports and before app initialization
 def setup_logger():
+    # Create logs directory if it doesn't exist
+    os.makedirs('logs', exist_ok=True)
+    
     logger = logging.getLogger('vexa_api')
     logger.setLevel(logging.DEBUG)
 
-    # Create console handler with formatter
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(
-        logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    )
+    # Create formatters
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     
+    # Create and setup file handler
+    file_handler = logging.handlers.RotatingFileHandler(
+        'logs/api.log',
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5
+    )
+    file_handler.setFormatter(formatter)
+    
+    # Create and setup console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    
+    # Add both handlers to logger
+    logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+    
     return logger
 
 logger = setup_logger()
