@@ -4,7 +4,7 @@ from psql_models import User, Meeting, UserMeeting, UserToken, Speaker, meeting_
 from psql_helpers import get_session
 from vexa import VexaAuth, VexaAPI
 from redis import Redis
-from typing import List
+from typing import List, Optional
 import logging
 from functools import wraps
 import asyncio
@@ -113,7 +113,7 @@ class MeetingsMonitor:
             stmt = select(Meeting.meeting_id)\
                 .where(and_(
                     Meeting.timestamp >= last_days,
-                    Meeting.timestamp <= cutoff,
+                    Meeting.last_update <= cutoff,
                     Meeting.is_indexed == False
                 ))
             meetings = await session.execute(stmt)
@@ -127,7 +127,7 @@ class MeetingsMonitor:
             stmt = select(Meeting.meeting_id, UserMeeting.user_id)\
                 .join(UserMeeting)\
                 .where(and_(
-                    Meeting.timestamp > cutoff,
+                    Meeting.last_update > cutoff,
                     Meeting.is_indexed == False
                 ))
             recent_meetings = await session.execute(stmt)
@@ -219,17 +219,16 @@ class MeetingsMonitor:
                             meeting_id=meeting_id,
                             timestamp=meeting_time,
                             meeting_name=meeting_name,
-                            last_update=last_update  # Store last update time
+                            last_update=last_update
                         )
                         session.add(existing_meeting)
                     else:
                         existing_meeting.timestamp = meeting_time
                         existing_meeting.meeting_name = meeting_name
-                        existing_meeting.last_update = last_update  # Update last update time
+                        existing_meeting.last_update = last_update
                 else:
-                    # Inactive meeting
+                    # Inactive meeting - changed logic to check last_update
                     if not existing_meeting:
-                        # New inactive meeting - create and queue
                         existing_meeting = Meeting(
                             meeting_id=meeting_id,
                             timestamp=meeting_time,
@@ -237,12 +236,11 @@ class MeetingsMonitor:
                             last_update=last_update
                         )
                         session.add(existing_meeting)
-                        self._add_to_queue(str(meeting_id))  # Queue only new inactive meetings
+                        self._add_to_queue(str(meeting_id))
                     else:
                         # Check if it was previously active
                         active_score = self.redis.zscore(RedisKeys.ACTIVE_MEETINGS, str(meeting_id))
                         if active_score is not None:
-                            # Was active, update last_update time
                             existing_meeting.last_update = last_update
                             self._add_to_queue(str(meeting_id))  # Queue for indexing as it's now inactive
                 
@@ -298,11 +296,11 @@ class MeetingsMonitor:
         return result
     
 
-    async def sync_meetings(self):
+    async def sync_meetings(self, overlap_minutes: int = 5):
         async with get_session() as session:
             cursor = await self._get_stored_max_timestamp(session)
             if cursor:
-                cursor = cursor - timedelta(minutes=5)  # Small overlap to ensure no records are missed
+                cursor = cursor - timedelta(minutes=overlap_minutes)  # Small overlap to ensure no records are missed
             
             while True:
                 meetings = await self.vexa_auth.get_speech_stats(
