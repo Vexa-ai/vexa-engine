@@ -288,54 +288,18 @@ class VexaAuth:
 
     async def google_auth(self, token: str, utm_params: dict = None) -> dict:
         try:
+            # First get Google user info
             user_info = await self.google_client.get_user_info(token)
             
             async with async_session() as session:
                 try:
+                    # Check if user exists by email
                     existing_user = await session.execute(
                         select(User).where(User.email == user_info.email)
                     )
                     user = existing_user.scalar_one_or_none()
                     
-                    if user:
-                        # Update existing user info if needed
-                        if (user.username != user_info.name or 
-                            user.first_name != user_info.given_name or 
-                            user.last_name != user_info.family_name or 
-                            user.image != user_info.picture):
-                            
-                            user.username = user_info.name
-                            user.first_name = user_info.given_name
-                            user.last_name = user_info.family_name
-                            user.image = user_info.picture
-                            user.updated_timestamp = datetime.now(timezone('utc'))
-                    else:
-                        # Create new user
-                        user = User(
-                            id=uuid.uuid4(),
-                            email=user_info.email,
-                            username=user_info.name,
-                            first_name=user_info.given_name,
-                            last_name=user_info.family_name,
-                            image=user_info.picture,
-                            created_timestamp=datetime.now(timezone('utc')),
-                            updated_timestamp=datetime.now(timezone('utc'))
-                        )
-                        session.add(user)
-
-                    # Handle UTM params
-                    if utm_params:
-                        utm = UTMParams(
-                            id=uuid.uuid4(),
-                            user_id=user.id,
-                            **{k: v for k, v in utm_params.items() if v is not None},
-                            created_at=datetime.now(timezone('utc'))
-                        )
-                        session.add(utm)
-
-                    await session.flush()
-
-                    # Get auth token
+                    # Get Vexa token regardless of whether user exists
                     auth_link = await self.get_default_auth_token(
                         email=user_info.email,
                         username=user_info.name,
@@ -348,8 +312,39 @@ class VexaAuth:
                     parsed_url = urlparse(auth_link)
                     query_params = parse_qs(parsed_url.query)
                     vexa_token = query_params.get('__vexa_token', [''])[0]
-
-                    # Check if token already exists
+                    
+                    if not user:
+                        # Get Vexa user info to get correct user ID
+                        vexa = VexaAPI(token=vexa_token)
+                        vexa_user_info = await vexa.get_user_info()
+                        vexa_user_id = vexa_user_info.get('id')
+                        
+                        # Create user with Vexa ID
+                        user = User(
+                            id=vexa_user_id,
+                            email=user_info.email,
+                            username=user_info.name,
+                            first_name=user_info.given_name,
+                            last_name=user_info.family_name,
+                            image=user_info.picture,
+                            created_timestamp=datetime.now(timezone('utc')),
+                            updated_timestamp=datetime.now(timezone('utc'))
+                        )
+                        session.add(user)
+                    
+                    # Handle UTM params
+                    if utm_params:
+                        utm = UTMParams(
+                            id=uuid.uuid4(),
+                            user_id=user.id,
+                            **{k: v for k, v in utm_params.items() if v is not None},
+                            created_at=datetime.now(timezone('utc'))
+                        )
+                        session.add(utm)
+                    
+                    await session.flush()
+                    
+                    # Now check for existing token after we have the vexa_token
                     existing_token = await session.execute(
                         select(UserToken).where(UserToken.token == vexa_token)
                     )
@@ -358,12 +353,9 @@ class VexaAuth:
                     user_name = f"{user_info.given_name or ''} {user_info.family_name or ''}".strip()
                     
                     if token_obj:
-                        # Update existing token
                         token_obj.user_id = user.id
-                        token_obj.user_name = user_name
                         token_obj.last_used_at = datetime.now(timezone('utc'))
                     else:
-                        # Create new token
                         token_obj = UserToken(
                             token=vexa_token,
                             user_id=user.id,
@@ -387,8 +379,6 @@ class VexaAuth:
                 
         except GoogleError as e:
             raise VexaAPIError(f"Google authentication failed: {str(e)}")
-        except httpx.HTTPStatusError as e:
-            raise VexaAPIError(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
         except Exception as e:
             raise VexaAPIError(f"Authentication failed: {str(e)}")
         
