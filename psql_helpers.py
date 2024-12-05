@@ -603,6 +603,22 @@ async def create_share_link(
     expiration_hours: Optional[int] = 24
 ) -> str:
     """Create a sharing link with specified access level and optional target email"""
+    # Verify ownership of meetings if specific meetings are being shared
+    if meeting_ids:
+        for meeting_id in meeting_ids:
+            user_meeting = await session.execute(
+                select(UserMeeting)
+                .where(
+                    and_(
+                        UserMeeting.meeting_id == meeting_id,
+                        UserMeeting.user_id == owner_id,
+                        UserMeeting.is_owner == True
+                    )
+                )
+            )
+            if not user_meeting.scalar_one_or_none():
+                raise ValueError(f"User {owner_id} is not the owner of meeting {meeting_id}")
+
     token = secrets.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=expiration_hours) if expiration_hours else None
     

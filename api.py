@@ -302,27 +302,20 @@ async def create_new_share_link(
             detail=f"Invalid access level. Must be one of: {[e.value for e in AccessLevel]}"
         )
     
-    # Verify meeting access if specific meetings are being shared
-    if request.meeting_ids:
+    try:
         async with async_session() as session:
-            for meeting_id in request.meeting_ids:
-                if not await has_meeting_access(session, user_id, meeting_id):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"No access to meeting {meeting_id}"
-                    )
-    
-    async with async_session() as session:
-        token = await create_share_link(
-            session=session,
-            owner_id=user_id,
-            access_level=access_level,
-            meeting_ids=request.meeting_ids,
-            target_email=request.target_email,
-            expiration_hours=request.expiration_hours
-        )
-        
-    return CreateShareLinkResponse(token=token)
+            token = await create_share_link(
+                session=session,
+                owner_id=user_id,
+                access_level=access_level,
+                meeting_ids=request.meeting_ids,
+                target_email=request.target_email,
+                expiration_hours=request.expiration_hours
+            )
+            
+        return CreateShareLinkResponse(token=token)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
 @app.post("/share-links/accept")
 async def accept_new_share_link(
