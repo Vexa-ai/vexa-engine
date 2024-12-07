@@ -231,7 +231,7 @@ class MeetingsMonitor:
                         existing_meeting.meeting_name = meeting_name
                         existing_meeting.last_update = last_update
                 else:
-                    # Inactive meeting - changed logic to check last_update
+                    # Inactive meeting - ONLY queue if it's been inactivelong enough
                     if not existing_meeting:
                         existing_meeting = Meeting(
                             meeting_id=meeting_id,
@@ -240,7 +240,9 @@ class MeetingsMonitor:
                             last_update=last_update
                         )
                         session.add(existing_meeting)
-                        self._add_to_queue(str(meeting_id))
+                        # Only queue if it's been inactive for the full period
+                        if last_update <= cutoff:
+                            self._add_to_queue(str(meeting_id))
                     else:
                         # Check if it was previously active
                         active_score = self.redis.zscore(RedisKeys.ACTIVE_MEETINGS, str(meeting_id))
@@ -448,7 +450,7 @@ class MeetingsMonitor:
         
         print("\n=== Active Meetings ===")
         for meeting in status['active_meetings']:
-            print(f"Meeting {meeting['meeting_id']} - started at {meeting['started_at']}")
+            print(f"Meeting {meeting['meeting_id']} - last updated at {meeting['started_at']}")
 
     def flush_queues(self):
         """Flush all Redis queues and sets used for indexing"""
