@@ -116,15 +116,16 @@ class SearchAssistant:
             logger.error(f"Error in search_transcripts: {str(e)}", exc_info=True)
             raise
 
-    async def search(self, query: str, user_id: str, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
+    async def search(self, query: str, user_id: Optional[str] = None, meeting_ids: Optional[List[str]] = None, limit: int = 200, min_score: float = 0.4) -> pd.DataFrame:
         # Get accessible meetings for user
-        async with get_session() as session:
-            meetings, _ = await get_accessible_meetings(
+        if not meeting_ids:
+            async with get_session() as session:
+                meetings, _ = await get_accessible_meetings(
                 session=session,
                 user_id=UUID(user_id),
-                limit=1000  # Set high limit to get all accessible meetings
-            )
-            meeting_ids = [str(meeting.meeting_id) for meeting in meetings]
+                    limit=1000  # Set high limit to get all accessible meetings
+                )
+                meeting_ids = [str(meeting.meeting_id) for meeting in meetings]
         
         if not meeting_ids:
             return pd.DataFrame()  # Return empty dataframe if user has no accessible meetings

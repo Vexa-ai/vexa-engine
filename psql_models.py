@@ -53,6 +53,13 @@ meeting_speaker_association = Table('meeting_speaker', Base.metadata,
     Column('meeting_id', Integer, ForeignKey('meetings.id')),
     Column('speaker_id', Integer, ForeignKey('speakers.id'))
 )
+
+# Add this new association table
+thread_speaker_association = Table('thread_speaker', Base.metadata,
+    Column('thread_id', String, ForeignKey('threads.thread_id')),
+    Column('speaker_id', Integer, ForeignKey('speakers.id'))
+)
+
 class AccessLevel(str, Enum):
     REMOVED = 'removed'
     SEARCH = 'search'
@@ -142,6 +149,7 @@ class Speaker(Base):
     
     discussion_points = relationship('DiscussionPoint', back_populates='speaker')
     meetings = relationship('Meeting', secondary=meeting_speaker_association, back_populates='speakers')
+    threads = relationship('Thread', secondary=thread_speaker_association, back_populates='speakers')
 
 
 class DiscussionPoint(Base):
@@ -173,6 +181,7 @@ class Thread(Base):
 
     user = relationship('User')
     meeting = relationship('Meeting')
+    speakers = relationship('Speaker', secondary=thread_speaker_association, back_populates='threads')
 
     __table_args__ = (
         Index('idx_thread_user_meeting', 'user_id', 'meeting_id'),
