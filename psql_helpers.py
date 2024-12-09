@@ -642,28 +642,59 @@ async def accept_share_link(
     accepting_user_id: UUID,
     accepting_email: Optional[str] = None
 ) -> bool:
-    """Accept a share link and set up access"""
-    share_query = await session.execute(
-        select(ShareLink)
-        .filter(
-            ShareLink.token == token,
-            ShareLink.expires_at > datetime.now(timezone.utc),
-            ShareLink.is_used == False
-        )
-    )
-    share_link = share_query.scalar_one_or_none()
+    """Accept a share link and grant access to the accepting user"""
+    
+    # Get the share link
+    share_link_query = select(ShareLink).where(ShareLink.token == token)
+    result = await session.execute(share_link_query)
+    share_link = result.scalar_one_or_none()
     
     if not share_link:
-        print("Share link not found")
         return False
+        
+    # Check if link is expired
+    if share_link.expires_at and share_link.expires_at < datetime.now(timezone.utc):
+        return False
+        
+    # Check if link is already used
+    if share_link.is_used:
+        return False
+        
+    # Check if target email matches if specified
+    if share_link.target_email and accepting_email:
+        if share_link.target_email.lower() != accepting_email.lower():
+            return False
+            
+    # Mark link as used
+    share_link.is_used = True
+    share_link.accepted_by = accepting_user_id
+    share_link.accepted_at = datetime.now(timezone.utc)
     
-    if accepting_email and share_link.target_email and share_link.target_email.lower() != accepting_email.lower():
-        print("Target email mismatch")
-        return False
-
-    # If specific meetings are shared, only grant access to those
-    if share_link.shared_meetings:
-        for meeting_id in share_link.shared_meetings:
+    # Get meetings to share
+    meetings = share_link.shared_meetings or []
+    
+    # Grant access to each meeting
+    for meeting_id in meetings:
+        # Check if user already has access
+        existing_access = await session.execute(
+            select(UserMeeting)
+            .where(
+                and_(
+                    UserMeeting.meeting_id == meeting_id,
+                    UserMeeting.user_id == accepting_user_id
+                )
+            )
+        )
+        existing = existing_access.scalar_one_or_none()
+        
+        if existing:
+            # Update access level if new level is higher
+            if AccessLevel(share_link.access_level).value > AccessLevel(existing.access_level).value:
+                existing.access_level = share_link.access_level
+                existing.created_by = share_link.owner_id
+                existing.created_at = datetime.now(timezone.utc)
+        else:
+            # Create new access
             user_meeting = UserMeeting(
                 meeting_id=meeting_id,
                 user_id=accepting_user_id,
@@ -673,19 +704,6 @@ async def accept_share_link(
                 is_owner=False
             )
             session.add(user_meeting)
-    else:
-        # Set default access for future meetings
-        await set_default_access(
-            session,
-            owner_user_id=share_link.owner_id,
-            granted_user_id=accepting_user_id,
-            access_level=AccessLevel(share_link.access_level)
-        )
-    
-    # Mark share link as used
-    share_link.is_used = True
-    share_link.accepted_by = accepting_user_id
-    share_link.accepted_at = datetime.now(timezone.utc)
     
     await session.commit()
     return True
