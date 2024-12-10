@@ -93,8 +93,8 @@ class MeetingsMonitor:
         stmt = select(Meeting.meeting_id).join(UserMeeting)\
             .where(and_(
                 UserMeeting.user_id == user_id,
-                Meeting.timestamp >= cutoff,
-                Meeting.timestamp <= active_cutoff,  # Only queue non-active meetings
+                Meeting.last_update >= cutoff,
+                Meeting.last_update <= active_cutoff,  # Only queue non-active meetings
                 Meeting.is_indexed == False
             ))
         meetings = await session.execute(stmt)
@@ -116,7 +116,7 @@ class MeetingsMonitor:
             
             stmt = select(Meeting.meeting_id)\
                 .where(and_(
-                    Meeting.timestamp >= last_days,
+                    Meeting.last_update >= last_days,
                     Meeting.last_update <= cutoff,
                     Meeting.is_indexed == False
                 ))
@@ -302,7 +302,7 @@ class MeetingsMonitor:
         return result
     
 
-    async def sync_meetings(self, overlap_minutes: int = 5):
+    async def sync_meetings(self, overlap_minutes: int = 20):
         async with get_session() as session:
             cursor = await self._get_stored_max_timestamp(session)
             if cursor:

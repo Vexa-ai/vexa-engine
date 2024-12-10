@@ -517,7 +517,6 @@ async def get_meeting_details(
         
         # Convert discussion points to pandas DataFrame and deduplicate
         if discussion_points and discussion_points[0] is not None:
-            import pandas as pd
             df = pd.DataFrame(discussion_points)
             df = df.drop_duplicates(subset=['topic_name']).to_dict('records')
             discussion_points = df
@@ -527,53 +526,53 @@ async def get_meeting_details(
         transcript_data = None
         speakers = []
         
-        if not meeting.is_indexed or not meeting.transcript:
-            try:
-                vexa_api = VexaAPI(token=token)
-                transcription = await vexa_api.get_transcription(meeting_session_id=str(meeting_id))
+        try:
+            vexa_api = VexaAPI(token=token)
+            transcription = await vexa_api.get_transcription(meeting_session_id=str(meeting_id))
+            
+            if transcription:
+                df, _, start_datetime, speakers, transcript = transcription
+                utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
                 
-                if transcription:
-                    df, _, start_datetime, speakers, transcript = transcription
-                    utc_timestamp = start_datetime.astimezone(timezone.utc).replace(tzinfo=None)
-                    
-                    await session.execute(
-                        update(Meeting)
-                        .where(Meeting.meeting_id == meeting_id)
-                        .values(
-                            transcript=str(transcript),
-                            timestamp=utc_timestamp
-                        )
+                # Update database with latest transcript
+                await session.execute(
+                    update(Meeting)
+                    .where(Meeting.meeting_id == meeting_id)
+                    .values(
+                        transcript=str(transcript),
+                        timestamp=utc_timestamp
                     )
-                    
-                    for speaker_name in speakers:
-                        if speaker_name and speaker_name != 'TBD':
-                            speaker_query = select(Speaker).where(Speaker.name == speaker_name)
-                            existing_speaker = await session.execute(speaker_query)
-                            speaker = existing_speaker.scalar_one_or_none()
-                            
-                            if not speaker:
-                                speaker = Speaker(name=speaker_name)
-                                session.add(speaker)
-                                await session.flush()
-                            
-                            await session.execute(
-                                pg_insert(meeting_speaker_association).values(
-                                    meeting_id=meeting.id,
-                                    speaker_id=speaker.id
-                                ).on_conflict_do_nothing()
-                            )
-                    
-                    await session.commit()
-                    await session.refresh(meeting)
-                    transcript_data = eval(meeting.transcript)
-                    speakers = list(set(segment.get('speaker') for segment in transcript_data 
-                                if segment.get('speaker') and segment.get('speaker') != 'TBD'))
-            except Exception as e:
-                logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
-        else:
-            transcript_data = eval(meeting.transcript)
-            speakers = list(set(segment.get('speaker') for segment in transcript_data 
-                        if segment.get('speaker') and segment.get('speaker') != 'TBD'))
+                )
+                
+                for speaker_name in speakers:
+                    if speaker_name and speaker_name != 'TBD':
+                        speaker_query = select(Speaker).where(Speaker.name == speaker_name)
+                        existing_speaker = await session.execute(speaker_query)
+                        speaker = existing_speaker.scalar_one_or_none()
+                        
+                        if not speaker:
+                            speaker = Speaker(name=speaker_name)
+                            session.add(speaker)
+                            await session.flush()
+                        
+                        await session.execute(
+                            pg_insert(meeting_speaker_association).values(
+                                meeting_id=meeting.id,
+                                speaker_id=speaker.id
+                            ).on_conflict_do_nothing()
+                        )
+                
+                await session.commit()
+                transcript_data = transcript
+                speakers = list(set(segment.get('speaker') for segment in transcript_data 
+                            if segment.get('speaker') and segment.get('speaker') != 'TBD'))
+        except Exception as e:
+            logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
+            # Fallback to stored transcript if Vexa API fails
+            if meeting.transcript:
+                transcript_data = eval(meeting.transcript)
+                speakers = list(set(segment.get('speaker') for segment in transcript_data 
+                            if segment.get('speaker') and segment.get('speaker') != 'TBD'))
         
         response = {
             "meeting_id": meeting.meeting_id,
