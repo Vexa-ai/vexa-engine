@@ -170,6 +170,7 @@ async def generic_call_(messages: List[Msg], model='default', temperature=0, max
 async def generic_call(messages: List[Msg], model='default', temperature=0, max_tokens=4000, timeout=60):
     result = [token async for token in generic_call_(messages, model=model, temperature=temperature, max_tokens=max_tokens, timeout=timeout, streaming=False)]
     print(''.join(result))
+    return ''.join(result)
 
 
 async def generic_call_stream(messages: List[Msg], model='default', temperature=0, max_tokens=4000, timeout=60, use_cache=False):
