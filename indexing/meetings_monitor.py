@@ -52,7 +52,7 @@ class MeetingsMonitor:
     def __init__(self):
         self.vexa_auth = VexaAuth()
         self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-        self.active_seconds = 60 *3
+        self.active_seconds = 60 *30
         
         # Setup logging
         self.logger = logging.getLogger('indexing_worker')

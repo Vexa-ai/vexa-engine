@@ -15,7 +15,7 @@ async def monitor_loop():
     
     while True:
         try:
-            await monitor.sync_meetings()
+            await monitor.sync_meetings(overlap_minutes=5*60)
             await monitor.sync_meetings_queue(last_days=30)
             await monitor.print_queue_status()
             await asyncio.sleep(15)  # Check every 30 seconds
