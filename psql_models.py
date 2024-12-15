@@ -22,6 +22,7 @@ from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, For
 import os
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import JSONB
 
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
@@ -48,23 +49,26 @@ async_session = sessionmaker(
 
 Base = declarative_base()
 
-# Association table for the many-to-many relationship between meetings and speakers
-meeting_speaker_association = Table('meeting_speaker', Base.metadata,
-    Column('meeting_id', Integer, ForeignKey('meetings.id')),
-    Column('speaker_id', Integer, ForeignKey('speakers.id'))
-)
-
-# Add this new association table
-thread_speaker_association = Table('thread_speaker', Base.metadata,
-    Column('thread_id', String, ForeignKey('threads.thread_id')),
-    Column('speaker_id', Integer, ForeignKey('speakers.id'))
-)
 
 class AccessLevel(str, Enum):
     REMOVED = 'removed'
     SEARCH = 'search'
     TRANSCRIPT = 'transcript'
     OWNER = 'owner'
+    
+
+
+# Rename association tables
+content_entity_association = Table('content_entity', Base.metadata,
+    Column('content_id', Integer, ForeignKey('content.id')),
+    Column('entity_id', Integer, ForeignKey('entities.id'))
+)
+
+thread_entity_association = Table('thread_entity', Base.metadata,
+    Column('thread_id', String, ForeignKey('threads.thread_id')),
+    Column('entity_id', Integer, ForeignKey('entities.id'))
+)
+
     
 class User(Base):
     __tablename__ = 'users'
@@ -96,28 +100,59 @@ class UserToken(Base):
     __table_args__ = (
         Index('idx_user_tokens_user_id', 'user_id'),
     )
+    
 
-class Meeting(Base):
-    __tablename__ = 'meetings'
+class EntityType(str, Enum):
+    SPEAKER = 'speaker'
+
+
+class Entity(Base):
+    __tablename__ = 'entities'
 
     id = Column(Integer, primary_key=True)
-    meeting_id = Column(PostgresUUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
-    transcript = Column(Text)
+    name = Column(String(100), nullable=False)
+    type = Column(String(50), nullable=False)
+    
+    content = relationship('Content', secondary=content_entity_association, back_populates='entities')
+    threads = relationship('Thread', secondary=thread_entity_association, back_populates='entities')
+
+
+class ContentType(str, Enum):
+    MEETING = 'meeting'
+    DOCUMENT = 'document'
+    NAME = 'name'
+    SUMMARY = 'summary'
+
+class Content(Base):
+    __tablename__ = 'content'
+
+    id = Column(Integer, primary_key=True)
+    content_id = Column(PostgresUUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
+    type = Column(String(50), nullable=False)
+    text = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    meeting_name = Column(String(100), nullable=True)
-    meeting_summary = Column(Text, nullable=True)
+    parent_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.content_id'), nullable=True)
     is_indexed = Column(Boolean, default=False, nullable=False, server_default='false')
     last_update = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    discussion_points = relationship('DiscussionPoint', back_populates='meeting')
-    user_meetings = relationship('UserMeeting', back_populates='meeting')
-    speakers = relationship('Speaker', secondary=meeting_speaker_association, back_populates='meetings')
+    # Self-referential relationship
+    parent = relationship('Content', remote_side=[content_id], backref='children')
+    
+    # Existing relationships
+    user_content = relationship('UserContent', back_populates='content')
+    entities = relationship('Entity', secondary=content_entity_association, back_populates='content')
 
-class UserMeeting(Base):
-    __tablename__ = 'user_meetings'
+    __table_args__ = (
+        Index('idx_content_parent_id', 'parent_id'),
+        Index('idx_content_type', 'type'),
+    )
+
+
+class UserContent(Base):
+    __tablename__ = 'user_content'
 
     id = Column(Integer, primary_key=True)
-    meeting_id = Column(PostgresUUID(as_uuid=True), ForeignKey('meetings.meeting_id'))
+    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.content_id'))
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'))
     access_level = Column(
         String(20),
@@ -129,63 +164,41 @@ class UserMeeting(Base):
     created_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'))
     is_owner = Column(Boolean, nullable=False, default=False)
 
-    meeting = relationship('Meeting', back_populates='user_meetings')
+    content = relationship('Content', back_populates='user_content')
     user = relationship('User', foreign_keys=[user_id])
     creator = relationship('User', foreign_keys=[created_by])
 
     __table_args__ = (
-        UniqueConstraint('meeting_id', 'user_id', name='uq_user_meeting'),
+        UniqueConstraint('content_id', 'user_id', name='uq_user_content'),
         CheckConstraint(
             access_level.in_([e.value for e in AccessLevel]),
             name='valid_access_level'
         )
     )
 
-class Speaker(Base):
-    __tablename__ = 'speakers'
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False, unique=True)
-    
-    discussion_points = relationship('DiscussionPoint', back_populates='speaker')
-    meetings = relationship('Meeting', secondary=meeting_speaker_association, back_populates='speakers')
-    threads = relationship('Thread', secondary=thread_speaker_association, back_populates='speakers')
-
-
-class DiscussionPoint(Base):
-    __tablename__ = 'discussion_points'
-
-    id = Column(Integer, primary_key=True)
-    summary_index = Column(Integer)
-    summary = Column(Text)
-    details = Column(Text)
-    referenced_text = Column(Text)
-    meeting_id = Column(PostgresUUID(as_uuid=True), ForeignKey('meetings.meeting_id'))
-    speaker_id = Column(Integer, ForeignKey('speakers.id'))
-    topic_name = Column(String(255))
-    topic_type = Column(String(50))
-    model = Column(String(50))
-
-    meeting = relationship('Meeting', back_populates='discussion_points')
-    speaker = relationship('Speaker', back_populates='discussion_points')
     
 class Thread(Base):
     __tablename__ = 'threads'
 
     thread_id = Column(String, primary_key=True)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    meeting_id = Column(PostgresUUID(as_uuid=True), ForeignKey('meetings.meeting_id'), nullable=True)
+    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.content_id'), nullable=True)
+    prompt_id = Column(Integer, ForeignKey('prompts.id'), nullable=True)
     thread_name = Column(String(255))
-    messages = Column(Text)  # We'll store JSON serialized messages
+    messages = Column(Text)
     timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     user = relationship('User')
-    meeting = relationship('Meeting')
-    speakers = relationship('Speaker', secondary=thread_speaker_association, back_populates='threads')
+    content = relationship('Content')
+    entities = relationship('Entity', secondary=thread_entity_association, back_populates='threads')
+    prompt = relationship('Prompt', back_populates='threads')
 
     __table_args__ = (
-        Index('idx_thread_user_meeting', 'user_id', 'meeting_id'),
+        Index('idx_thread_user_content', 'user_id', 'content_id'),
+        Index('idx_thread_prompt', 'prompt_id'),
     )
+
 
 class DefaultAccess(Base):
     __tablename__ = 'default_access'
@@ -210,26 +223,6 @@ class DefaultAccess(Base):
         ),
     )
 
-
-class Output(Base):
-    __tablename__ = 'outputs'
-
-    id = Column(Integer, primary_key=True)
-    input_text = Column(Text, nullable=False)
-    output_text = Column(Text)
-    model = Column(String(100), nullable=False)
-    temperature = Column(Float, nullable=False)
-    max_tokens = Column(Integer, nullable=False)
-    cache_key = Column(String(64), unique=True, nullable=False)
-
-    def __repr__(self):
-        return f"<Output(id={self.id}, model='{self.model}', cache_key='{self.cache_key}')>"
-
-    @staticmethod
-    def generate_cache_key(input_text: str, model: str, temperature: float, max_tokens: int) -> str:
-        key = f"{input_text}_{model}_{temperature}_{max_tokens}"
-        return hashlib.md5(key.encode()).hexdigest()
-
 class ShareLink(Base):
     __tablename__ = 'share_links'
 
@@ -246,7 +239,7 @@ class ShareLink(Base):
     is_used = Column(Boolean, default=False)
     accepted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
-    shared_meetings = Column(ARRAY(PostgresUUID(as_uuid=True)), nullable=True)  # Array of meeting IDs
+    shared_content = Column(ARRAY(PostgresUUID(as_uuid=True)), nullable=True)  # Array of content IDs
 
     owner = relationship('User', foreign_keys=[owner_id])
     accepted_user = relationship('User', foreign_keys=[accepted_by])
@@ -276,6 +269,23 @@ class UTMParams(Base):
     __table_args__ = (
         Index('idx_utm_params_user_id', 'user_id'),
     )
+
+class Prompt(Base):
+    __tablename__ = 'prompts'
+
+    id = Column(Integer, primary_key=True)
+    prompt = Column(Text, nullable=False)
+    alias = Column(String(255), nullable=True)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    
+    user = relationship('User')
+    threads = relationship('Thread', back_populates='prompt')
+
+    __table_args__ = (
+        Index('idx_prompts_user_id', 'user_id'),
+    )
+
 
 # The following code should be placed inside an async function to avoid the "async" not allowed outside of async function error.
 
