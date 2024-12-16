@@ -256,3 +256,13 @@ class DummyTranscript(BaseCall):
         description="List of all speakers who participated in the meeting, extracted from attendees list"
     )
     
+    
+####### december
+
+
+class TopicsMapping(BaseCall):
+    formatted_time: str = Field(..., description="time of the input qoute")
+    topic: str = Field(..., description="topic of the input qoute")
+    
+class TopicsExtraction(BaseCall):
+    mapping: list[TopicsMapping] = Field(..., description="Mapping of topics to the input text. Aim for equal chunks of time for each topic switch. ")

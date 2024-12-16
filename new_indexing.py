@@ -13,6 +13,8 @@ from qdrant_search import QdrantSearchEngine
 from elasticsearch import AsyncElasticsearch
 from qdrant_client import AsyncQdrantClient
 
+from pydantic_models import TopicsExtraction
+
 from core import generic_call,system_msg,user_msg
 import asyncio
 
@@ -36,12 +38,6 @@ Answer only with the succinct context and nothing else.
 """
 
 
-class TopicsMapping(BaseCall):
-    formatted_time: str = Field(..., description="time of the input qoute")
-    topic: str = Field(..., description="topic of the input qoute")
-    
-class TopicsExtraction(BaseCall):
-    mapping: list[TopicsMapping] = Field(..., description="Mapping of topics to the input text. Aim for equal chunks of time for each topic switch. ")
 
 async def process_meeting(meeting: Dict, vexa_api, voyage: VoyageClient) -> Tuple[List[Dict], List[PointStruct]]:
     """Process single meeting and return prepared documents for both engines"""

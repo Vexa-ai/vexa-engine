@@ -1,6 +1,9 @@
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, and_, func
-from psql_models import User, Meeting, UserMeeting, UserToken, Speaker, meeting_speaker_association
+from psql_models import (
+    User, Content, UserContent, ContentType, AccessLevel, 
+    Entity, content_entity_association, UserToken
+)
 from psql_helpers import get_session
 from vexa import VexaAuth, VexaAPI
 from redis import Redis
@@ -10,6 +13,7 @@ from functools import wraps
 import asyncio
 import json
 from .redis_keys import RedisKeys
+from .content_relations import update_child_content
 
 logger = logging.getLogger(__name__)
 
@@ -85,21 +89,28 @@ class MeetingsMonitor:
         self.logger.info(f"Added meeting {meeting_id} to queue with score {datetime.fromtimestamp(score).isoformat()}")
 
 
-    async def _queue_user_meetings(self, user_id: str, session, days: int = 30):
-        # Create naive datetime for PostgreSQL
+    async def _queue_user_content(self, user_id: str, session, days: int = 30):
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = (now - timedelta(days=days)).replace(tzinfo=None)
         active_cutoff = (now - timedelta(seconds=self.active_seconds))
-        stmt = select(Meeting.meeting_id).join(UserMeeting)\
+        
+        # Query for meetings (Content with type=meeting) that user has access to
+        stmt = select(Content.content_id).join(UserContent)\
             .where(and_(
-                UserMeeting.user_id == user_id,
-                Meeting.last_update >= cutoff,
-                Meeting.last_update <= active_cutoff,  # Only queue non-active meetings
-                Meeting.is_indexed == False
+                UserContent.user_id == user_id,
+                Content.type == ContentType.MEETING.value,
+                Content.last_update >= cutoff,
+                Content.last_update <= active_cutoff,
+                Content.is_indexed == False,
+                UserContent.access_level.in_([
+                    AccessLevel.OWNER.value,
+                    AccessLevel.TRANSCRIPT.value
+                ])
             ))
-        meetings = await session.execute(stmt)
-        for (meeting_id,) in meetings:
-            self._add_to_queue(str(meeting_id))
+        
+        contents = await session.execute(stmt)
+        for (content_id,) in contents:
+            self._add_to_queue(str(content_id))
 
 
     async def sync_meetings_queue(self, last_days:int=30):
@@ -108,41 +119,48 @@ class MeetingsMonitor:
             last_days = (now - timedelta(days=last_days))
             cutoff = (now - timedelta(seconds=self.active_seconds))
             
-            # Get all non-active unindexed meetings that aren't in failed set
-            failed_meetings = set(
+            # Get failed content IDs
+            failed_contents = set(
                 m.decode() if isinstance(m, bytes) else m 
                 for m in self.redis.hkeys(RedisKeys.FAILED_SET)
             )
             
-            stmt = select(Meeting.meeting_id)\
+            # Get all non-active unindexed meetings
+            stmt = select(Content.content_id)\
                 .where(and_(
-                    Meeting.last_update >= last_days,
-                    Meeting.last_update <= cutoff,
-                    Meeting.is_indexed == False
+                    Content.type == ContentType.MEETING.value,
+                    Content.last_update >= last_days,
+                    Content.last_update <= cutoff,
+                    Content.is_indexed == False
                 ))
-            meetings = await session.execute(stmt)
+            contents = await session.execute(stmt)
             
-            # Skip failed meetings when queueing
-            for (meeting_id,) in meetings:
-                if str(meeting_id) not in failed_meetings:
-                    self._add_to_queue(str(meeting_id))
+            # Queue non-failed contents
+            for (content_id,) in contents:
+                if str(content_id) not in failed_contents:
+                    self._add_to_queue(str(content_id))
             
-            # Track active meetings in Redis
-            stmt = select(Meeting.meeting_id, UserMeeting.user_id)\
-                .join(UserMeeting)\
+            # Track active meetings
+            stmt = select(Content.content_id, UserContent.user_id)\
+                .join(UserContent)\
                 .where(and_(
-                    Meeting.last_update > cutoff,
-                    Meeting.is_indexed == False
+                    Content.type == ContentType.MEETING.value,
+                    Content.last_update > cutoff,
+                    Content.is_indexed == False,
+                    UserContent.access_level.in_([
+                        AccessLevel.OWNER.value,
+                        AccessLevel.TRANSCRIPT.value
+                    ])
                 ))
-            recent_meetings = await session.execute(stmt)
+            recent_contents = await session.execute(stmt)
             
             # Update active meetings in Redis
             pipe = self.redis.pipeline()
             pipe.delete(RedisKeys.ACTIVE_MEETINGS)
-            for meeting_id, user_id in recent_meetings:
-                pipe.zadd(RedisKeys.ACTIVE_MEETINGS, {str(meeting_id): now.timestamp()})
+            for content_id, user_id in recent_contents:
+                pipe.zadd(RedisKeys.ACTIVE_MEETINGS, {str(content_id): now.timestamp()})
                 if not self.redis.sismember(RedisKeys.SEEN_USERS, str(user_id)):
-                    await self._queue_user_meetings(str(user_id), session)
+                    await self._queue_user_content(str(user_id), session)
                     self.redis.sadd(RedisKeys.SEEN_USERS, str(user_id))
             pipe.execute()
 
@@ -200,104 +218,131 @@ class MeetingsMonitor:
                 
                 # Ensure user exists and is committed before proceeding
                 await self._ensure_user_exists(str(user_id), session)
-                # Verify user was created
                 user = await session.scalar(select(User).where(User.id == user_id))
                 if not user:
                     logger.error(f"Failed to create user {user_id}")
                     continue
                 
-                # Rest of the meeting processing
+                # Process meeting as content
                 meeting_time = self._parse_timestamp(meeting.start_timestamp).replace(tzinfo=None)
                 last_update = self._parse_timestamp(meeting.last_finish).replace(tzinfo=None)
                 meeting_name = f"{meeting_time.strftime('%H:%M')}"
                 cutoff = cutoff.replace(tzinfo=None)
                 
-                # Check if meeting exists
-                stmt = select(Meeting).where(Meeting.meeting_id == meeting_id)
-                existing_meeting = await session.scalar(stmt)
+                # Check if content exists
+                stmt = select(Content).where(and_(
+                    Content.content_id == meeting_id,
+                    Content.type == ContentType.MEETING.value
+                ))
+                existing_content = await session.scalar(stmt)
                 
                 if last_update > cutoff:
                     # Active meeting - just upsert, no queuing
-                    if not existing_meeting:
-                        existing_meeting = Meeting(
-                            meeting_id=meeting_id,
+                    if not existing_content:
+                        existing_content = Content(
+                            content_id=meeting_id,
+                            type=ContentType.MEETING.value,
                             timestamp=meeting_time,
-                            meeting_name=meeting_name,
-                            last_update=last_update
+                            last_update=last_update,
+                            is_indexed=False
                         )
-                        session.add(existing_meeting)
+                        session.add(existing_content)
+                        await session.flush()  # Get content ID
+                        
+                        # Create title as child content
+                        await update_child_content(
+                            session,
+                            meeting_id,
+                            ContentType.TITLE.value,
+                            meeting_name,
+                            order=0
+                        )
                     else:
-                        existing_meeting.timestamp = meeting_time
-                        existing_meeting.meeting_name = meeting_name
-                        existing_meeting.last_update = last_update
-                else:
-                    # Inactive meeting - ONLY queue if it's been inactivelong enough
-                    if not existing_meeting:
-                        existing_meeting = Meeting(
-                            meeting_id=meeting_id,
-                            timestamp=meeting_time,
-                            meeting_name=meeting_name,
-                            last_update=last_update
+                        existing_content.timestamp = meeting_time
+                        existing_content.last_update = last_update
+                        
+                        # Update title
+                        await update_child_content(
+                            session,
+                            meeting_id,
+                            ContentType.TITLE.value,
+                            meeting_name,
+                            order=0
                         )
-                        session.add(existing_meeting)
-                        # Only queue if it's been inactive for the full period
+                else:
+                    # Inactive meeting - ONLY queue if it's been inactive long enough
+                    if not existing_content:
+                        existing_content = Content(
+                            content_id=meeting_id,
+                            type=ContentType.MEETING.value,
+                            timestamp=meeting_time,
+                            last_update=last_update,
+                            is_indexed=False
+                        )
+                        session.add(existing_content)
                         if last_update <= cutoff:
                             self._add_to_queue(str(meeting_id))
                     else:
                         # Check if it was previously active
                         active_score = self.redis.zscore(RedisKeys.ACTIVE_MEETINGS, str(meeting_id))
                         if active_score is not None:
-                            existing_meeting.last_update = last_update
-                            self._add_to_queue(str(meeting_id))  # Queue for indexing as it's now inactive
+                            existing_content.last_update = last_update
+                            self._add_to_queue(str(meeting_id))
                 
-                # Handle UserMeeting association
-                stmt = select(UserMeeting).where(
-                    and_(
-                        UserMeeting.meeting_id == meeting_id,
-                        UserMeeting.user_id == user_id
-                    )
-                )
-                user_meeting = await session.scalar(stmt)
+                # Handle UserContent association
+                stmt = select(UserContent).where(and_(
+                    UserContent.content_id == meeting_id,
+                    UserContent.user_id == user_id
+                ))
+                user_content = await session.scalar(stmt)
                 
-                if not user_meeting:
-                    user_meeting = UserMeeting(
-                        meeting_id=meeting_id,
+                if not user_content:
+                    user_content = UserContent(
+                        content_id=meeting_id,
                         user_id=user_id,
                         created_at=meeting_time,
                         created_by=user_id,
                         is_owner=True,
-                        access_level='search'
+                        access_level=AccessLevel.OWNER.value
                     )
-                    session.add(user_meeting)
+                    session.add(user_content)
                 
-                # Handle speakers
+                # Handle speakers as entities
                 for speaker_name in meeting.speakers:
-                    stmt = select(Speaker).where(Speaker.name == speaker_name)
-                    speaker = await session.scalar(stmt)
-                    if not speaker:
-                        speaker = Speaker(name=speaker_name)
-                        session.add(speaker)
-                        await session.flush()
+                    # Check if entity exists
+                    stmt = select(Entity).where(Entity.name == speaker_name)
+                    entity = await session.scalar(stmt)
                     
-                    stmt = select(meeting_speaker_association).where(
-                        and_(
-                            meeting_speaker_association.c.meeting_id == existing_meeting.id,
-                            meeting_speaker_association.c.speaker_id == speaker.id
+                    if not entity:
+                        entity = Entity(
+                            name=speaker_name,
+                            type='speaker'
                         )
-                    )
+                        session.add(entity)
+                        await session.flush()  # Get entity ID
+                    
+                    # Check content-entity association
+                    stmt = select(content_entity_association).where(and_(
+                        content_entity_association.c.content_id == existing_content.id,
+                        content_entity_association.c.entity_id == entity.id
+                    ))
                     existing = await session.scalar(stmt)
+                    
                     if not existing:
                         await session.execute(
-                            meeting_speaker_association.insert().values(
-                                meeting_id=existing_meeting.id,
-                                speaker_id=speaker.id
+                            content_entity_association.insert().values(
+                                content_id=existing_content.id,
+                                entity_id=entity.id
                             )
                         )
                 
                 await session.commit()
 
     async def _get_stored_max_timestamp(self, session) -> datetime:
-        stmt = select(func.max(Meeting.last_update))
+        # Get max timestamp from Content table for meetings
+        stmt = select(func.max(Content.last_update)).where(
+            Content.type == ContentType.MEETING.value
+        )
         result = await session.scalar(stmt)
         return result
     
@@ -318,73 +363,70 @@ class MeetingsMonitor:
                     
                 await self.upsert_meetings(meetings)
                 
-                if len(meetings) < 1000:
+                if len(meetings) < 1000:  # API page size
                     break
                     
                 # Update cursor to last updated_timestamp we've seen
                 cursor = max(m.updated_timestamp for m in meetings)
 
-    def get_queue_status(self) -> dict:
+    @log_execution 
+    def get_queue_status(self):
+        """Get current status of indexing queue"""
         now = datetime.now().timestamp()
         
-        # Get queue statistics
+        # Get queue stats
         queue_size = self.redis.zcard(RedisKeys.INDEXING_QUEUE)
         processing_count = self.redis.scard(RedisKeys.PROCESSING_SET)
         failed_count = self.redis.hlen(RedisKeys.FAILED_SET)
         seen_users = self.redis.scard(RedisKeys.SEEN_USERS)
         
-        # Get next meetings to process (score <= now)
+        # Get ready to process items
         ready_to_process = self.redis.zrangebyscore(
-            RedisKeys.INDEXING_QUEUE, 
-            '-inf', 
+            RedisKeys.INDEXING_QUEUE,
+            0,
             now,
-            start=0,
-            num=5,
             withscores=True
         )
         ready_formatted = [
             {
-                'meeting_id': mid.decode() if isinstance(mid, bytes) else mid,
-                'retry_after': datetime.fromtimestamp(score).isoformat() if score > now else 'ready'
+                'content_id': cid.decode() if isinstance(cid, bytes) else cid,
+                'retry_after': datetime.fromtimestamp(score).isoformat()
             }
-            for mid, score in ready_to_process
+            for cid, score in ready_to_process
         ]
         
-        # Get delayed meetings (score > now)
-        delayed = self.redis.zrangebyscore(
-            RedisKeys.INDEXING_QUEUE, 
+        # Get delayed retry items
+        delayed_retry = self.redis.zrangebyscore(
+            RedisKeys.INDEXING_QUEUE,
             now,
             '+inf',
-            start=0,
-            num=5,
             withscores=True
         )
         delayed_formatted = [
             {
-                'meeting_id': mid.decode() if isinstance(mid, bytes) else mid,
+                'content_id': cid.decode() if isinstance(cid, bytes) else cid,
                 'retry_after': datetime.fromtimestamp(score).isoformat()
             }
-            for mid, score in delayed
+            for cid, score in delayed_retry
         ]
         
-        # Get recent failures
-        failed_meetings = self.redis.hgetall(RedisKeys.FAILED_SET)
+        # Get failures
         failures = [
             {
-                'meeting_id': mid.decode() if isinstance(mid, bytes) else mid,
+                'content_id': cid.decode() if isinstance(cid, bytes) else cid,
                 'error': json.loads(error.decode() if isinstance(error, bytes) else error)
             }
-            for mid, error in failed_meetings.items()
-        ][:5]
+            for cid, error in self.redis.hgetall(RedisKeys.FAILED_SET).items()
+        ]
         
-        # Currently processing
+        # Get currently processing
         processing = [
             mid.decode() if isinstance(mid, bytes) else mid
             for mid in self.redis.smembers(RedisKeys.PROCESSING_SET)
         ]
         
-        # Get active meetings
-        active_meetings = self.redis.zrange(
+        # Get active contents
+        active_contents = self.redis.zrange(
             RedisKeys.ACTIVE_MEETINGS,
             0,
             -1,
@@ -392,10 +434,10 @@ class MeetingsMonitor:
         )
         active_formatted = [
             {
-                'meeting_id': mid.decode() if isinstance(mid, bytes) else mid,
+                'content_id': cid.decode() if isinstance(cid, bytes) else cid,
                 'started_at': datetime.fromtimestamp(score).isoformat()
             }
-            for mid, score in active_meetings
+            for cid, score in active_contents
         ]
         
         return {
@@ -404,14 +446,14 @@ class MeetingsMonitor:
                 'processing': processing_count,
                 'failed': failed_count,
                 'seen_users': seen_users,
-                'active_meetings': len(active_formatted),
+                'active_contents': len(active_formatted),
                 'timestamp': datetime.now().isoformat()
             },
             'ready_to_process': ready_formatted,
             'delayed_retry': delayed_formatted,
             'currently_processing': processing,
             'recent_failures': failures,
-            'active_meetings': active_formatted
+            'active_contents': active_formatted
         }
 
     @log_execution
@@ -425,32 +467,32 @@ class MeetingsMonitor:
         print(f"Processing: {status['stats']['processing']}")
         print(f"Failed: {status['stats']['failed']}")
         print(f"Seen Users: {status['stats']['seen_users']}")
-        print(f"Active Meetings: {status['stats']['active_meetings']}")
+        print(f"Active Contents: {status['stats']['active_contents']}")
         
         print("\n=== Ready to Process ===")
-        for meeting in status['ready_to_process']:
-            print(f"Meeting {meeting['meeting_id']} - {meeting['retry_after']}")
+        for content in status['ready_to_process']:
+            print(f"Content {content['content_id']} - {content['retry_after']}")
         
         print("\n=== Delayed for Retry ===")
-        for meeting in status['delayed_retry']:
-            print(f"Meeting {meeting['meeting_id']} - retry after {meeting['retry_after']}")
+        for content in status['delayed_retry']:
+            print(f"Content {content['content_id']} - retry after {content['retry_after']}")
         
         print("\n=== Currently Processing ===")
-        for mid in status['currently_processing']:
-            print(f"Processing: {mid}")
+        for cid in status['currently_processing']:
+            print(f"Processing: {cid}")
         
         if status['recent_failures']:
             print("\n=== Recent Failures ===")
             for failure in status['recent_failures']:
                 error = failure['error']
-                print(f"\nMeeting: {failure['meeting_id']}")
+                print(f"\nContent: {failure['content_id']}")
                 print(f"Error: {error['error']}")
                 print(f"Retries: {error['retry_count']}")
                 print(f"Last Attempt: {error['last_attempt']}")
         
-        print("\n=== Active Meetings ===")
-        for meeting in status['active_meetings']:
-            print(f"Meeting {meeting['meeting_id']} - last updated at {meeting['started_at']}")
+        print("\n=== Active Contents ===")
+        for content in status['active_contents']:
+            print(f"Content {content['content_id']} - last updated at {content['started_at']}")
 
     def flush_queues(self):
         """Flush all Redis queues and sets used for indexing"""
