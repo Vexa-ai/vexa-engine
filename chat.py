@@ -18,7 +18,7 @@ import pandas as pd
 from core import count_tokens
 from vexa import VexaAPI
 
-from psql_access import get_meeting_token, get_accessible_content
+from psql_access import get_meeting_token, get_accessible_content, get_user_name
 
 from hybrid_search import hybrid_search
 
@@ -69,51 +69,16 @@ class BaseContextProvider:
 
 
 class UnifiedContextProvider(BaseContextProvider):
-    def __init__(
-        self, 
-        session: AsyncSession = None, 
-        qdrant_engine: Optional[QdrantSearchEngine] = None,
-        es_engine: Optional[ElasticsearchBM25] = None
-    ):
+    def __init__(self, session: AsyncSession = None, qdrant_engine: Optional[QdrantSearchEngine] = None,
+                 es_engine: Optional[ElasticsearchBM25] = None):
         super().__init__()
         self.session = session
         self.qdrant_engine = qdrant_engine
         self.es_engine = es_engine
-        self.meeting_map = {}  # For storing meeting ID mappings
-        self.url_dict = []  # For storing URL mappings
-        
-    def format_context(self, df: pd.DataFrame) -> str:
-        # Sort by timestamp and formatted_time
-        df = df.sort_values(['timestamp', 'formatted_time'])
-        
-        # Create meeting map for reference numbers
-        unique_meetings = df['meeting_id'].unique()
-        self.meeting_map = {mid: idx+1 for idx, mid in enumerate(unique_meetings)}
-        
-        # Store URL mappings for post-processing
-        self.url_dict = [(idx+1, f"https://assistant.dev.vexa.ai/meeting/{mid}") 
-                         for idx, mid in enumerate(unique_meetings)]
-        
-        meetings = []
-        for meeting_id, group in df.groupby('meeting_id'):
-            int_meeting_id = self.meeting_map[meeting_id]
-            timestamp = pd.to_datetime(group['timestamp'].iloc[0])
-            date_header = f"## Meeting {int_meeting_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
-            
-            content_items = []
-            for _, row in group.iterrows():
-                time_prefix = f"[{row['formatted_time']}]" if 'formatted_time' in row else ''
-                if 'contextualized_content' in row:
-                    content_items.append(f"- {time_prefix} {row['contextualized_content']}")
-                content_items.append(f"  > {row['speaker']}: {row['content']}")
-            
-            content = "\n".join(content_items)
-            meetings.append(f"{date_header}\n\n{content}\n")
-        
-        return "\n".join(meetings)
+        self.meeting_map = {}  # meeting_id -> int
+        self.meeting_map_reverse = {}  # int -> meeting_id
         
     async def _get_raw_context(self, meeting_ids: List[UUID] = None, speakers: List[str] = None, **kwargs) -> str:
-        # Get search results
         results = await hybrid_search(
             query=kwargs.get('query', ''),
             qdrant_engine=self.qdrant_engine,
@@ -123,22 +88,14 @@ class UnifiedContextProvider(BaseContextProvider):
             k=100
         )
         
-        # Create DataFrame from results
-        df = pd.DataFrame(results['results']).sort_values('meeting_id', ascending=False)
+        df = pd.DataFrame(results['results'])
         if df.empty:
             return "No relevant context found."
-        
-        # Sort by timestamp and formatted_time
-        df = df.sort_values(['timestamp', 'formatted_time'])
-        
-        # Create meeting map
+            
+        # Create meeting maps
         unique_meetings = df['meeting_id'].unique()
         self.meeting_map = {mid: idx+1 for idx, mid in enumerate(unique_meetings)}
-        meeting_map_reverse = {v:k for k,v in self.meeting_map.items()}
-        
-        # Store URL mappings for post-processing
-        self.url_dict = [(idx+1, f"https://assistant.dev.vexa.ai/meeting/{mid}") 
-                         for idx, mid in enumerate(unique_meetings)]
+        self.meeting_map_reverse = {v: k for k, v in self.meeting_map.items()}
         
         meetings = []
         for meeting_id, group in df.groupby('meeting_id'):
@@ -157,23 +114,6 @@ class UnifiedContextProvider(BaseContextProvider):
             meetings.append(f"{date_header}\n\n{content}\n")
         
         return "\n".join(meetings)
-
-    async def post_process_output(self, output: str) -> str:
-        """Post-process output to add meeting reference links"""
-        # Add space between consecutive reference numbers
-        output = re.sub(r'\]\[', '] [', output)
-        
-        # Replace meeting references with links
-        for meeting_num, url in self.url_dict:
-            # Replace both "Meeting X" and "[X]" patterns
-            output = re.sub(
-                f'Meeting {meeting_num}(?!\])',
-                f'[Meeting {meeting_num}]({url})',
-                output
-            )
-            output = output.replace(f'[{meeting_num}]', f'[{meeting_num}]({url})')
-            
-        return output
 
 
 class ChatManager:
@@ -195,6 +135,9 @@ class ChatManager:
         speaker_names: Optional[List[str]] = None,
         **context_kwargs
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        # Get user name
+        user_name = await get_user_name(user_id, self.session) or "User"
+        
         if thread_id:
             thread = await self.thread_manager.get_thread(thread_id)
             if not thread:
@@ -214,9 +157,12 @@ class ChatManager:
             **context_kwargs
         )
         
+        prompt = prompt or self.prompts.chat_december
+        prompt = prompt.format(user_name=user_name)
+        
         context_msg = system_msg(f"Context: {context}")
         messages_context = [
-            system_msg(prompt or self.prompts.search2),
+            system_msg(prompt),
             context_msg,
             *messages,
             user_msg(f'User request: {query}')
@@ -261,22 +207,33 @@ class ChatManager:
     
 
 class UnifiedChatManager(ChatManager):
-    def __init__(self, session: AsyncSession = None, qdrant_engine: Optional[QdrantSearchEngine] = None, es_engine: Optional[ElasticsearchBM25] = None):
+    def __init__(self, session: AsyncSession = None, qdrant_engine: Optional[QdrantSearchEngine] = None, 
+                 es_engine: Optional[ElasticsearchBM25] = None):
         super().__init__()
         self.session = session
         self.context_provider = UnifiedContextProvider(session, qdrant_engine, es_engine)
+    
+    async def _create_linked_output(self, output: str, meeting_map_reverse: dict) -> str:
+        # Add space between consecutive reference numbers
+        output = re.sub(r'\]\[', '] [', output)
         
-    async def chat(
-        self,
-        user_id: str,
-        query: str,
-        meeting_ids: Optional[List[UUID]] = None,
-        speakers: Optional[List[str]] = None,
-        thread_id: Optional[str] = None,
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        prompt: Optional[str] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+        # Replace meeting references with links
+        for int_id, meeting_id in meeting_map_reverse.items():
+            url = f"/meeting/{meeting_id}"
+            # Replace both "Meeting X" and "[X]" patterns
+            output = re.sub(
+                f'Meeting {int_id}(?!\])',
+                f'[Meeting {int_id}]({url})',
+                output
+            )
+            output = output.replace(f'[{int_id}]', f'[{int_id}]({url})')
+            
+        return output
+
+    async def chat(self, user_id: str, query: str, meeting_ids: Optional[List[UUID]] = None,
+                  speakers: Optional[List[str]] = None, thread_id: Optional[str] = None,
+                  model: Optional[str] = None, temperature: Optional[float] = None,
+                  prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # Validate access if meeting_ids provided
         if meeting_ids:
             meetings, _ = await get_accessible_content(
@@ -284,7 +241,7 @@ class UnifiedChatManager(ChatManager):
                 user_id=UUID(user_id),
                 limit=1000
             )
-            accessible_meeting_ids = {str(m.meeting_id) for m in meetings}
+            accessible_meeting_ids = {str(m['content_id']) for m in meetings}
             authorized_meeting_ids = [
                 mid for mid in meeting_ids 
                 if str(mid) in accessible_meeting_ids
@@ -299,6 +256,9 @@ class UnifiedChatManager(ChatManager):
                 
             meeting_ids = authorized_meeting_ids
 
+        output = ""
+        context_kwargs = {"meeting_ids": meeting_ids} if meeting_ids else {}
+        
         async for result in super().chat(
             user_id=user_id,
             query=query,
@@ -307,18 +267,22 @@ class UnifiedChatManager(ChatManager):
             model=model or self.model,
             temperature=temperature,
             prompt=prompt,
-            content_ids=meeting_ids,  # Pass as content_ids
-            speaker_names=speakers    # Pass speaker names
+            content_ids=meeting_ids,
+            speaker_names=speakers,
+            **context_kwargs  # Pass meeting_ids only through context_kwargs
         ):
-            # Add context metadata
-            if 'service_content' not in result:
-                result['service_content'] = {}
-            result['service_content'].update({
-                'context_source': 'meeting' if (meeting_ids and len(meeting_ids) == 1) else 'search',
-                'meeting_count': len(meeting_ids) if meeting_ids else 0,
-                'meeting_id': str(meeting_ids[0]) if (meeting_ids and len(meeting_ids) == 1) else None
-            })
-            yield result
+            if 'chunk' in result:
+                output += result['chunk']
+                yield {"chunk": result['chunk']}
+            else:
+                linked_output = await self._create_linked_output(
+                    output, 
+                    self.context_provider.meeting_map_reverse
+                )
+                yield {
+                    "thread_id": result['thread_id'],
+                    "linked_output": linked_output
+                }
         
         
         

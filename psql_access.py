@@ -359,3 +359,25 @@ async def get_accessible_content(
         } for row in rows]
 
         return contents, total_count
+
+async def get_user_name(user_id: Union[UUID, str], session: AsyncSession = None) -> Optional[str]:
+    """Get user's full name by ID, returns 'First Last' or None if not found"""
+    if isinstance(user_id, str):
+        user_id = UUID(user_id)
+        
+    async with (session or get_session()) as session:
+        query = select(User.first_name, User.last_name).where(User.id == user_id)
+        result = await session.execute(query)
+        user = result.first()
+        
+        if not user:
+            return None
+            
+        first_name, last_name = user
+        if first_name and last_name:
+            return f"{first_name} {last_name}".strip()
+        elif first_name:
+            return first_name
+        elif last_name:
+            return last_name
+        return None

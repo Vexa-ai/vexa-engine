@@ -70,15 +70,30 @@ class ThreadManager:
                     # First clear existing
                     await session.execute(
                         delete(content_entity_association).where(
-                            content_entity_association.c.content_id == thread.thread_id
+                            content_entity_association.c.content_id.in_(content_ids)
                         )
                     )
                     # Then add new
                     for content_id in content_ids:
+                        # Get or create entity for the thread
+                        entity = await session.execute(
+                            select(Entity).where(
+                                and_(
+                                    Entity.name == thread.thread_id,
+                                    Entity.type == "thread"
+                                )
+                            )
+                        )
+                        entity = entity.scalar_one_or_none()
+                        if not entity:
+                            entity = Entity(name=thread.thread_id, type="thread")
+                            session.add(entity)
+                            await session.flush()
+                        
                         await session.execute(
                             insert(content_entity_association).values({
                                 "content_id": content_id,
-                                "entity_id": thread.thread_id
+                                "entity_id": entity.id
                             })
                         )
                 
@@ -87,7 +102,7 @@ class ThreadManager:
                     # First clear existing
                     await session.execute(
                         delete(thread_entity_association).where(
-                            thread_entity_association.c.entity_id == thread.thread_id
+                            thread_entity_association.c.thread_id == thread.thread_id
                         )
                     )
                     # Then add new speakers
@@ -108,8 +123,8 @@ class ThreadManager:
                         
                         await session.execute(
                             insert(thread_entity_association).values({
-                                "entity_id": entity.id,
-                                "content_id": thread.thread_id
+                                "thread_id": thread.thread_id,
+                                "entity_id": entity.id
                             })
                         )
                 
