@@ -381,3 +381,23 @@ async def get_user_name(user_id: Union[UUID, str], session: AsyncSession = None)
         elif last_name:
             return last_name
         return None
+
+
+async def has_content_access(
+    session: AsyncSession, 
+    user_id: UUID, 
+    content_id: UUID,
+    content_type: ContentType = ContentType.MEETING
+) -> bool:
+    """Check if user has access to specific content"""
+    result = await session.execute(
+        select(UserContent)
+        .join(Content, Content.id == UserContent.content_id)
+        .where(and_(
+            UserContent.user_id == user_id,
+            UserContent.content_id == content_id,
+            Content.type == content_type,
+            UserContent.access_level != AccessLevel.REMOVED.value
+        ))
+    )
+    return result.scalar_one_or_none() is not None

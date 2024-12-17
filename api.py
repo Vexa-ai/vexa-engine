@@ -1,79 +1,64 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Path
+from fastapi import FastAPI, HTTPException, Depends, Header, Path, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
-from uuid import UUID
-from datetime import datetime, timezone
-from sqlalchemy import func, select, and_, case, distinct
-
-from psql_models import (
-    Content, UserContent, ContentType, AccessLevel,
-    User, Thread as ThreadModel, ShareLink,
-    DefaultAccess
-)
-from psql_helpers import async_session, get_session
-
-from search import SearchAssistant
-from token_manager import TokenManager
-#from indexing import Indexing
-import asyncio
-from datetime import datetime
-import json
-# Add these new imports
-from psql_helpers import (
-    async_session,
-    get_first_meeting_timestamp,
-    get_last_meeting_timestamp,
-    create_share_link,
-    accept_share_link,
-    get_session,
-    has_meeting_access,
-    get_meeting_by_id,
-)
-from sqlalchemy import func, select, update,insert
-from vexa import VexaAPI
-from psql_models import Meeting,UserMeeting
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from pydantic import BaseModel, EmailStr
-from uuid import UUID
-from psql_models import AccessLevel
-#from pyinstrument import Profiler
-from fastapi import FastAPI, Request
-from functools import lru_cache
 from fastapi_cache import FastAPICache
 from fastapi_cache.decorator import cache
 from fastapi_cache.backends.redis import RedisBackend
+
+from pydantic import BaseModel, EmailStr, Field
+from typing import List, Optional, Dict, Any, AsyncGenerator, Tuple
+from uuid import UUID
+from datetime import datetime, timezone, timedelta
+from enum import Enum
+
+from sqlalchemy import (
+    func, select, update, insert, and_, case, distinct, desc
+)
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from psql_models import (
+    Content, UserContent, ContentType, AccessLevel,
+    User, Thread as ThreadModel, ShareLink, Entity,
+    DefaultAccess, EntityType, content_entity_association
+)
+
+from psql_helpers import (
+    async_session, get_session,
+
+)
+
+from psql_sharing import (
+    create_share_link, accept_share_link,has_content_access
+)
+
+import sys
+
+from token_manager import TokenManager
+from vexa import VexaAPI, VexaAuth
+from chat import UnifiedChatManager
+from logger import logger
+from prompts import Prompts
+from indexing.redis_keys import RedisKeys
+from qdrant_search import QdrantSearchEngine
+from bm25_search import ElasticsearchBM25
+
 import redis
 import os
-from sqlalchemy import desc
-
-from psql_models import Speaker, DiscussionPoint, Meeting, UserMeeting, AccessLevel,meeting_speaker_association
-
-import logging
-from logging.handlers import RotatingFileHandler
-import sys
-from sqlalchemy import distinct
-
-from logger import logger
-
-from chat import MeetingChatManager
-
-from vexa import VexaAuth
-
+import json
 import pandas as pd
-
 import httpx
+import asyncio
+import logging
 
-from datetime import datetime, timezone
-from chat import MeetingSummaryContextProvider,MeetingContextProvider
+from qdrant_search import QdrantSearchEngine
+from bm25_search import ElasticsearchBM25
 
-from prompts import Prompts
-prompts = Prompts()
+from thread_manager import ThreadManager
 
 app = FastAPI()
 
-# Move this BEFORE any other middleware or app setup
+# Move this BEFORE any other middleware or app setup``
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173", "http://localhost:5174","https://vexa.ai"],  # Must be explicit
@@ -84,8 +69,8 @@ app.add_middleware(
 
 # Other middleware and routes should come after CORS middleware
 
-search_assistant = SearchAssistant()
 token_manager = TokenManager()
+thread_manager = ThreadManager()
 
 class Thread(BaseModel):
     thread_id: str
@@ -97,6 +82,8 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
+    meeting_ids: Optional[List[UUID]] = None
+    speakers: Optional[List[str]] = None
 
 class TokenRequest(BaseModel):
     token: str
@@ -143,9 +130,7 @@ async def startup():
         prefix="fastapi-cache"
     )
 
-@app.on_event("startup")
-async def startup_event():
-    await search_assistant.initialize()
+
 
 # Add logging configuration after the imports and before app initialization
 def setup_logger():
@@ -216,44 +201,52 @@ async def submit_token(request: TokenRequest):
 @app.get("/threads", response_model=List[Thread])
 async def get_threads(current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
-    threads = await search_assistant.get_user_threads(user_id)
+    threads = await thread_manager.get_user_threads(user_id)
     return [Thread(**thread) for thread in threads]
 
 @app.get("/thread/{thread_id}")
 async def get_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
-    thread = await search_assistant.get_thread(thread_id)
+    thread = await thread_manager.get_thread(thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     if thread.user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
     return thread
 
+# Initialize search engines
+qdrant_engine = QdrantSearchEngine(os.getenv('VOYAGE_API_KEY'))
+es_engine = ElasticsearchBM25()
+
+# Initialize chat manager
+chat_manager = UnifiedChatManager(qdrant_engine=qdrant_engine, es_engine=es_engine)
+
 @app.post("/chat")
-async def chat(request: ChatRequest, current_user: tuple = Depends(get_current_user)):
+async def chat(
+    request: ChatRequest, 
+    current_user: tuple = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
     user_id, _ = current_user
+    chat_manager.session = session  # Set session for this request
+    
     try:
         async def stream_response():
-            async for item in search_assistant.chat(
+            async for item in chat_manager.chat(
+                user_id=str(user_id),
                 query=request.query,
                 thread_id=request.thread_id,
                 model=request.model,
                 temperature=request.temperature,
-                user_id=user_id
+                meeting_ids=request.meeting_ids,
+                speakers=request.speakers
             ):
-                if isinstance(item, dict):
-                    if "search_results" in item:
-                        # Filter search results based on user access
-                        async with get_session() as session:
-                            accessible_results = [
-                                result for result in item["search_results"]
-                                if await has_content_access(session, user_id, result["content_id"])
-                            ]
-                        yield f"data: {json.dumps({'type': 'search_results', 'results': accessible_results})}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'final', **item})}\n\n"
-                elif isinstance(item, str):
-                    yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
+                if "chunk" in item:
+                    yield f"data: {json.dumps({'type': 'stream', 'content': item['chunk']})}\n\n"
+                elif "error" in item:
+                    yield f"data: {json.dumps({'type': 'error', 'message': item['error']})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'final', 'thread_id': item['thread_id'], 'output': item.get('linked_output', '')})}\n\n"
             yield "data: {\"type\": \"done\"}\n\n"
 
         return StreamingResponse(stream_response(), media_type="text/event-stream")
@@ -265,13 +258,13 @@ async def chat(request: ChatRequest, current_user: tuple = Depends(get_current_u
 @app.delete("/thread/{thread_id}")
 async def delete_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
-    thread = await search_assistant.get_thread(thread_id)
+    thread = await thread_manager.get_thread(thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     if thread.user_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    success = await search_assistant.delete_thread(thread_id)
+    success = await thread_manager.delete_thread(thread_id)
     if success:
         return {"message": "Thread deleted successfully"}
     else:
@@ -372,8 +365,7 @@ async def get_meetings(
         async with async_session() as session:
             select_columns = [
                 Content.id.label('meeting_id'),
-                Content.name.label('meeting_name'),
-                Content.created_at.label('timestamp'),
+                Content.timestamp,
                 Content.is_indexed,
                 UserContent.is_owner,
                 UserContent.access_level,
@@ -381,7 +373,7 @@ async def get_meetings(
             ]
             
             if include_summary:
-                select_columns.append(Content.summary.label('meeting_summary'))
+                select_columns.append(Content.text.label('meeting_summary'))
             
             base_query = (
                 select(*select_columns)
@@ -409,14 +401,13 @@ async def get_meetings(
                 base_query
                 .group_by(
                     Content.id,
-                    Content.name,
-                    Content.created_at,
+                    Content.timestamp,
                     Content.is_indexed,
                     UserContent.is_owner,
                     UserContent.access_level,
-                    *([] if not include_summary else [Content.summary])
+                    *([] if not include_summary else [Content.text])
                 )
-                .order_by(Content.created_at.desc())
+                .order_by(Content.timestamp.desc())
             )
             
             if limit is not None:
@@ -430,11 +421,10 @@ async def get_meetings(
             meetings_list = [
                 {
                     "meeting_id": str(meeting.meeting_id),
-                    "meeting_name": meeting.meeting_name,
                     "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
                     "is_indexed": meeting.is_indexed,
-                    "is_owner": meeting.is_owner,
                     "access_level": meeting.access_level,
+                    "is_owner": meeting.is_owner,
                     "speakers": [s for s in meeting.speakers if s and s != 'TBD'],
                     **({"meeting_summary": meeting.meeting_summary} if include_summary else {})
                 }
@@ -479,19 +469,10 @@ async def get_meeting_details(
     token = authorization.split("Bearer ")[-1]
     
     async with get_session() as session:
-        # Query for meeting details and discussion points
+        # Query for meeting details
         query = (
-            select(Content, UserContent, func.array_agg(func.json_build_object(
-                'id', DiscussionPoint.id,
-                'summary', DiscussionPoint.summary,
-                'details', DiscussionPoint.details,
-                'referenced_text', DiscussionPoint.referenced_text,
-                'speaker_id', DiscussionPoint.speaker_id,
-                'topic_name', DiscussionPoint.topic_name,
-                'topic_type', DiscussionPoint.topic_type
-            )).label('discussion_points'))
+            select(Content, UserContent)
             .join(UserContent, Content.id == UserContent.content_id)
-            .outerjoin(DiscussionPoint, Content.id == DiscussionPoint.content_id)
             .where(
                 and_(
                     Content.id == meeting_id,
@@ -500,7 +481,6 @@ async def get_meeting_details(
                     UserContent.access_level != AccessLevel.REMOVED.value
                 )
             )
-            .group_by(Content.id, UserContent.id)
         )
         
         result = await session.execute(query)
@@ -509,16 +489,8 @@ async def get_meeting_details(
         if not row:
             raise HTTPException(status_code=404, detail="Meeting not found or access denied")
             
-        content, user_content, discussion_points = row
+        content, user_content = row
         
-        # Convert discussion points to pandas DataFrame and deduplicate
-        if discussion_points and discussion_points[0] is not None:
-            df = pd.DataFrame(discussion_points)
-            df = df.drop_duplicates(subset=['topic_name']).to_dict('records')
-            discussion_points = df
-        else:
-            discussion_points = []
-
         transcript_data = None
         speakers = []
         
@@ -543,7 +515,6 @@ async def get_meeting_details(
                 # Update or create speaker entities
                 for speaker_name in speakers:
                     if speaker_name and speaker_name != 'TBD':
-                        # Query for existing entity
                         entity_query = select(Entity).where(
                             and_(
                                 Entity.name == speaker_name,
@@ -558,7 +529,6 @@ async def get_meeting_details(
                             session.add(entity)
                             await session.flush()
                         
-                        # Associate entity with content
                         await session.execute(
                             insert(content_entity_association).values(
                                 content_id=content.id,
@@ -572,7 +542,6 @@ async def get_meeting_details(
                             if segment.get('speaker') and segment.get('speaker') != 'TBD'))
         except Exception as e:
             logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
-            # Fallback to stored transcript if Vexa API fails
             if content.text:
                 transcript_data = eval(content.text)
                 speakers = list(set(segment.get('speaker') for segment in transcript_data 
@@ -598,12 +567,11 @@ async def get_meeting_details(
             "timestamp": content.timestamp,
             "meeting_name": content.name,
             "transcript": json.dumps(transcript_data) if transcript_data else [],
-            "meeting_summary": content.summary,
+            "meeting_summary": '',
             "speakers": speakers,
             "access_level": user_content.access_level,
             "is_owner": user_content.is_owner,
-            "is_indexed": content.is_indexed,
-            "discussion_points": discussion_points
+            "is_indexed": content.is_indexed
         }
         
         return response
@@ -642,14 +610,6 @@ async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(ge
             "thread_name": t.thread_name,
             "timestamp": t.timestamp
         } for t in result.scalars().all()]
-
-class MeetingChatRequest(BaseModel):
-    query: str
-    meeting_ids: List[UUID]
-    thread_id: Optional[str] = None
-    model: Optional[str] = None
-    temperature: Optional[float] = None
-
 
 class GoogleAuthRequest(BaseModel):
     utm_source: Optional[str] = None
@@ -861,37 +821,6 @@ class MeetingSummaryChatRequest(BaseModel):
     temperature: Optional[float] = 0.7
 
 
-
-@app.post("/chat")
-async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    try:
-        async with get_session() as session:
-            context_provider = MeetingContextProvider(request.meeting_ids)
-            meeting_chat_manager = MeetingChatManager(session, context_provider=context_provider)
-            
-            async def stream_response():
-                async for item in meeting_chat_manager.chat(
-                    user_id=user_id,
-                    query=request.query,
-                    meeting_ids=request.meeting_ids,
-                    thread_id=request.thread_id,
-                    model=request.model,
-                    temperature=request.temperature,
-                    prompt=prompts.single_meeting_2711
-                ):
-                    if isinstance(item, dict):
-                        yield f"data: {json.dumps(item)}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
-                yield "data: {\"type\": \"done\"}\n\n"
-
-            return StreamingResponse(stream_response(), media_type="text/event-stream")
-    except ValueError as e:
-        if "Thread with id" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        raise
-
 from indexing.redis_keys import RedisKeys
 from redis import Redis
 from datetime import datetime
@@ -914,7 +843,7 @@ async def index_meeting(
     
     try:
         async with get_session() as session:
-            if not await has_meeting_access(session, user_id, meeting_id):
+            if not await has_content_access(session, user_id, meeting_id):
                 raise HTTPException(status_code=403, detail="No access to meeting")
             
             # Check if meeting is already being processed
@@ -952,24 +881,4 @@ if __name__ == "__main__":
     
     
     # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8765 --workers 1 --loop uvloop --reload
-
-async def has_content_access(
-    session: AsyncSession,
-    user_id: UUID,
-    content_id: UUID,
-    required_level: AccessLevel = AccessLevel.SEARCH
-) -> bool:
-    result = await session.execute(
-        select(UserContent)
-        .where(and_(
-            UserContent.content_id == content_id,
-            UserContent.user_id == user_id,
-            UserContent.access_level != AccessLevel.REMOVED.value
-        ))
-    )
-    user_content = result.scalar_one_or_none()
-    return user_content is not None and AccessLevel(user_content.access_level) >= required_level
-
-
-
 

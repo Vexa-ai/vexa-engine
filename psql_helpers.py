@@ -21,9 +21,11 @@ from sqlalchemy import Index, UniqueConstraint, CheckConstraint
 from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, ForeignKey
 from sqlalchemy import distinct
 
-#docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
+from psql_models import (
+    Base, engine, async_session, DATABASE_URL,
+)
 
-from psql_models import Base,engine,async_session,DATABASE_URL
+#docker run --name dima_entities -e POSTGRES_PASSWORD=mysecretpassword -p 5432:5432 -d postgres
 
 import secrets
 
@@ -144,3 +146,4 @@ async def get_schema_info():
         schema_info = result.fetchall()
         
         return schema_info
+
