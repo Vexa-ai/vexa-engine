@@ -1,7 +1,7 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, Table
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, Table, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker, joinedload
-from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID, ARRAY, JSONB
 from sqlalchemy import create_engine, text
 import uuid
 from datetime import datetime
@@ -23,6 +23,7 @@ import os
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
@@ -60,7 +61,7 @@ class AccessLevel(str, Enum):
 
 # Rename association tables
 content_entity_association = Table('content_entity', Base.metadata,
-    Column('content_id', Integer, ForeignKey('content.id')),
+    Column('content_id', PostgresUUID(as_uuid=True), ForeignKey('content.id')),
     Column('entity_id', Integer, ForeignKey('entities.id'))
 )
 
@@ -120,23 +121,24 @@ class Entity(Base):
 class ContentType(str, Enum):
     MEETING = 'meeting'
     DOCUMENT = 'document'
-    NAME = 'name'
+    TITLE = 'title'
     SUMMARY = 'summary'
+    CHUNK = 'chunk'
 
 class Content(Base):
     __tablename__ = 'content'
 
-    id = Column(Integer, primary_key=True)
-    content_id = Column(PostgresUUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
-    type = Column(String(50), nullable=False)
-    text = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    parent_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.content_id'), nullable=True)
-    is_indexed = Column(Boolean, default=False, nullable=False, server_default='false')
-    last_update = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    content_id = Column(PostgresUUID(as_uuid=True))
+    type = Column(String)
+    text = Column(String)
+    timestamp = Column(DateTime)
+    parent_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=True)
+    is_indexed = Column(Boolean, default=False)
+    last_update = Column(DateTime)
 
     # Self-referential relationship
-    parent = relationship('Content', remote_side=[content_id], backref='children')
+    parent = relationship('Content', remote_side=[id], backref='children')
     
     # Existing relationships
     user_content = relationship('UserContent', back_populates='content')
@@ -152,7 +154,7 @@ class UserContent(Base):
     __tablename__ = 'user_content'
 
     id = Column(Integer, primary_key=True)
-    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.content_id'))
+    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'))
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'))
     access_level = Column(
         String(20),
@@ -183,7 +185,7 @@ class Thread(Base):
 
     thread_id = Column(String, primary_key=True)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.content_id'), nullable=True)
+    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=True)
     prompt_id = Column(Integer, ForeignKey('prompts.id'), nullable=True)
     thread_name = Column(String(255))
     messages = Column(Text)
@@ -239,7 +241,7 @@ class ShareLink(Base):
     is_used = Column(Boolean, default=False)
     accepted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
-    shared_content = Column(ARRAY(PostgresUUID(as_uuid=True)), nullable=True)  # Array of content IDs
+    shared_content = Column(ARRAY(PostgresUUID), nullable=True)  # Array of content IDs
 
     owner = relationship('User', foreign_keys=[owner_id])
     accepted_user = relationship('User', foreign_keys=[accepted_by])

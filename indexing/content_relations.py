@@ -3,6 +3,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from psql_models import Content, ContentType
 import logging
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -10,8 +11,7 @@ async def create_child_content(
     session: AsyncSession,
     parent_id: str,
     content_type: str,
-    content_data: str,
-    order: int = 0,
+    text_content: str,
     metadata: dict = None
 ) -> Optional[Content]:
     """Create child content and link to parent"""
@@ -26,14 +26,15 @@ async def create_child_content(
         
     # Create child content
     child = Content(
+        content_id=str(uuid.uuid4()),
         parent_id=parent_id,
         type=content_type,
-        content=content_data,
-        order=order,
-        metadata=metadata or {}
+        text=text_content,
+        metadata=metadata or {},
+        is_indexed=False
     )
     session.add(child)
-    await session.flush()  # Get child ID
+    await session.flush()
     
     return child
 
@@ -47,7 +48,6 @@ async def get_child_content(
     query = select(Content).where(Content.parent_id == parent_id)
     if content_type:
         query = query.where(Content.type == content_type)
-    query = query.order_by(Content.order)
     
     result = await session.execute(query)
     return result.scalars().all()
@@ -56,8 +56,7 @@ async def update_child_content(
     session: AsyncSession,
     parent_id: str,
     content_type: str,
-    content_data: str,
-    order: int = 0,
+    text_content: str,
     metadata: dict = None
 ) -> Optional[Content]:
     """Update or create child content"""
@@ -73,13 +72,12 @@ async def update_child_content(
     )
     
     if existing:
-        existing.content = content_data
-        existing.order = order
+        existing.text = text_content
         if metadata:
             existing.metadata = metadata
         return existing
     
     # Create new if not exists
     return await create_child_content(
-        session, parent_id, content_type, content_data, order, metadata
+        session, parent_id, content_type, text_content, metadata
     ) 

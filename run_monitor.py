@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 
 async def monitor_loop():
-    monitor = MeetingsMonitor()
+    monitor = MeetingsMonitor(test_user_id="ef7c085b-fdb5-4c94-b7b6-a61a3d04c210")
     
     while True:
         try:

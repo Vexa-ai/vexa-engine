@@ -3,6 +3,7 @@ class RedisKeys:
     INDEXING_QUEUE = "indexing_queue"
     PROCESSING_SET = "processing_set"
     FAILED_SET = "failed_set"
+    RETRY_COUNTS = "retry_counts"
     
     # User tracking
     SEEN_USERS = "seen_users_set"

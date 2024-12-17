@@ -16,7 +16,7 @@ from datetime import date
 from dotenv import load_dotenv
 import tiktoken
 from sqlalchemy.orm import sessionmaker, Session
-from psql_models import Output, engine
+from psql_models import engine
 from sqlalchemy import select
 from psql_helpers import async_session
 

@@ -7,6 +7,7 @@ async def hybrid_search(
     qdrant_engine: QdrantSearchEngine,
     es_engine: ElasticsearchBM25,
     meeting_ids: Optional[List[str]] = None,
+    speakers: Optional[List[str]] = None,
     k: int = 100,
     semantic_weight: float = 0.8,
     bm25_weight: float = 0.2
@@ -15,9 +16,20 @@ async def hybrid_search(
     
     num_chunks_to_recall = 300  # Retrieve more candidates initially
     
-    # Get results from both engines
-    semantic_results = await qdrant_engine.search(query, meeting_ids=meeting_ids, limit=num_chunks_to_recall)
-    bm25_results = es_engine.search(query, meeting_ids=meeting_ids, k=num_chunks_to_recall)
+    # Get results from both engines with speaker filtering
+    semantic_results = await qdrant_engine.search(
+        query, 
+        meeting_ids=meeting_ids, 
+        speakers=speakers,
+        limit=num_chunks_to_recall,
+        min_score=0.000
+    )
+    bm25_results = es_engine.search(
+        query, 
+        meeting_ids=meeting_ids, 
+        speakers=speakers,
+        k=num_chunks_to_recall
+    )
     
     # Convert to ranked IDs
     ranked_semantic_ids = [

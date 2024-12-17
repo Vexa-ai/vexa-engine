@@ -53,10 +53,11 @@ def log_execution(func):
         return wrapper
 
 class MeetingsMonitor:
-    def __init__(self):
+    def __init__(self, test_user_id: str = None):
         self.vexa_auth = VexaAuth()
         self.redis = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         self.active_seconds = 60 *30
+        self.test_user_id = test_user_id
         
         # Setup logging
         self.logger = logging.getLogger('indexing_worker')
@@ -71,6 +72,9 @@ class MeetingsMonitor:
                 '%(asctime)s - %(levelname)s - %(message)s'
             ))
             self.logger.addHandler(handler)
+        
+        if self.test_user_id:
+            self.logger.info(f"Running in test mode for user: {test_user_id}")
     
 
     def _add_to_queue(self, meeting_id: str, score: float = None):
@@ -90,6 +94,10 @@ class MeetingsMonitor:
 
 
     async def _queue_user_content(self, user_id: str, session, days: int = 30):
+        # Skip if in test mode and not test user
+        if self.test_user_id and user_id != self.test_user_id:
+            return
+            
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         cutoff = (now - timedelta(days=days)).replace(tzinfo=None)
         active_cutoff = (now - timedelta(seconds=self.active_seconds))
@@ -108,6 +116,10 @@ class MeetingsMonitor:
                 ])
             ))
         
+        # Add order and limit for test mode
+        if self.test_user_id:
+            stmt = stmt.order_by(Content.last_update.desc()).limit(50)
+        
         contents = await session.execute(stmt)
         for (content_id,) in contents:
             self._add_to_queue(str(content_id))
@@ -116,8 +128,32 @@ class MeetingsMonitor:
     async def sync_meetings_queue(self, last_days:int=30):
         async with get_session() as session:
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            last_days = (now - timedelta(days=last_days))
+            cutoff_date = (now - timedelta(days=last_days))
             cutoff = (now - timedelta(seconds=self.active_seconds))
+            
+            if self.test_user_id:
+                # In test mode, only get meetings directly through user filter
+                await self._queue_user_content(self.test_user_id, session, days=last_days)
+                return
+            
+            # Rest of the method remains unchanged for non-test mode
+            base_query = select(Content.content_id)
+            
+            if self.test_user_id:
+                # Add user filter for test mode
+                base_query = base_query.join(UserContent).where(
+                    UserContent.user_id == self.test_user_id
+                )
+                # Add order and limit for test mode
+                base_query = base_query.order_by(Content.last_update.desc()).limit(50)
+            
+            # Add standard filters
+            base_query = base_query.where(and_(
+                Content.type == ContentType.MEETING.value,
+                Content.last_update >= cutoff_date,
+                Content.last_update <= cutoff,
+                Content.is_indexed == False
+            ))
             
             # Get failed content IDs
             failed_contents = set(
@@ -125,15 +161,7 @@ class MeetingsMonitor:
                 for m in self.redis.hkeys(RedisKeys.FAILED_SET)
             )
             
-            # Get all non-active unindexed meetings
-            stmt = select(Content.content_id)\
-                .where(and_(
-                    Content.type == ContentType.MEETING.value,
-                    Content.last_update >= last_days,
-                    Content.last_update <= cutoff,
-                    Content.is_indexed == False
-                ))
-            contents = await session.execute(stmt)
+            contents = await session.execute(base_query)
             
             # Queue non-failed contents
             for (content_id,) in contents:
@@ -240,6 +268,7 @@ class MeetingsMonitor:
                     # Active meeting - just upsert, no queuing
                     if not existing_content:
                         existing_content = Content(
+                            id=meeting_id,
                             content_id=meeting_id,
                             type=ContentType.MEETING.value,
                             timestamp=meeting_time,
@@ -247,15 +276,14 @@ class MeetingsMonitor:
                             is_indexed=False
                         )
                         session.add(existing_content)
-                        await session.flush()  # Get content ID
+                        await session.flush()
                         
                         # Create title as child content
                         await update_child_content(
-                            session,
-                            meeting_id,
-                            ContentType.TITLE.value,
-                            meeting_name,
-                            order=0
+                            session=session,
+                            parent_id=meeting_id,
+                            content_type=ContentType.TITLE.value,
+                            text_content=meeting_name
                         )
                     else:
                         existing_content.timestamp = meeting_time
@@ -263,16 +291,16 @@ class MeetingsMonitor:
                         
                         # Update title
                         await update_child_content(
-                            session,
-                            meeting_id,
-                            ContentType.TITLE.value,
-                            meeting_name,
-                            order=0
+                            session=session,
+                            parent_id=meeting_id,
+                            content_type=ContentType.TITLE.value,
+                            text_content=meeting_name
                         )
                 else:
                     # Inactive meeting - ONLY queue if it's been inactive long enough
                     if not existing_content:
                         existing_content = Content(
+                            id=meeting_id,
                             content_id=meeting_id,
                             type=ContentType.MEETING.value,
                             timestamp=meeting_time,
@@ -280,6 +308,8 @@ class MeetingsMonitor:
                             is_indexed=False
                         )
                         session.add(existing_content)
+                        await session.commit()  # Commit content before associations
+                        
                         if last_update <= cutoff:
                             self._add_to_queue(str(meeting_id))
                     else:

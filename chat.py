@@ -58,7 +58,7 @@ class BaseContextProvider:
         
     async def get_context(self, **kwargs) -> str:
         context = await self._get_raw_context(**kwargs)
-        return self._truncate_context(context)
+        return context #self._truncate_context(context)
         
     async def _get_raw_context(self, **kwargs) -> str:
         raise NotImplementedError()
@@ -472,3 +472,7 @@ class MeetingChatManager(ChatManager):
         }
         
         self.messages = messages
+        
+        
+        
+        

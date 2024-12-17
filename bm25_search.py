@@ -39,7 +39,10 @@ class ElasticsearchBM25:
                     "meeting_id": {"type": "keyword"},
                     "formatted_time": {"type": "keyword"},
                     "timestamp": {"type": "date"},
-                    "chunk_index": {"type": "integer"}
+                    "chunk_index": {"type": "integer"},
+                    "speakers": {"type": "keyword"},
+                    "speaker": {"type": "keyword"},
+                    "contextualized_content": {"type": "text", "analyzer": "english"}
                 }
             }
         }
@@ -66,7 +69,10 @@ class ElasticsearchBM25:
                         "meeting_id": doc["meeting_id"],
                         "formatted_time": doc["formatted_time"],
                         "timestamp": doc["timestamp"],
-                        "chunk_index": doc["chunk_index"]
+                        "chunk_index": doc["chunk_index"],
+                        "speaker": doc["speaker"],
+                        "speakers": doc["speakers"],
+                        "contextualized_content": doc["contextualized_content"]
                     }
                 }
                 for doc in documents
@@ -81,6 +87,7 @@ class ElasticsearchBM25:
     def search(self, 
               query: str, 
               meeting_ids: List[str] = None, 
+              speakers: List[str] = None,
               k: int = 20) -> List[Dict[str, Any]]:
         if not self.es_client:
             print("No Elasticsearch connection available")
@@ -105,6 +112,13 @@ class ElasticsearchBM25:
                     }
                 })
                 
+            if speakers:
+                must.append({
+                    "terms": {
+                        "speaker": speakers
+                    }
+                })
+                
             search_body = {
                 "query": {
                     "bool": {
@@ -120,10 +134,14 @@ class ElasticsearchBM25:
                 {
                     "score": hit["_score"],
                     "content": hit["_source"]["content"],
+                    "contextualized_content": hit["_source"]["contextualized_content"],
                     "topic": hit["_source"]["topic"],
                     "meeting_id": hit["_source"]["meeting_id"],
                     "formatted_time": hit["_source"]["formatted_time"],
-                    "timestamp": hit["_source"]["timestamp"]
+                    "timestamp": hit["_source"]["timestamp"],
+                    "speaker": hit["_source"]["speaker"],
+                    "speakers": hit["_source"]["speakers"],
+                    "chunk_index": hit["_source"]["chunk_index"]
                 }
                 for hit in response["hits"]["hits"]
             ]
@@ -136,13 +154,18 @@ async def hybrid_search(
     qdrant_engine,
     es_engine: ElasticsearchBM25,
     meeting_ids: List[str] = None,
+    speakers: List[str] = None,
     k: int = 10,
     semantic_weight: float = 0.7,
     bm25_weight: float = 0.3
 ) -> List[Dict]:
-    # Get results from both engines
-    semantic_results = await qdrant_engine.search(query, meeting_ids=meeting_ids, limit=k*2)
-    bm25_results = es_engine.search(query, meeting_ids=meeting_ids, k=k*2)
+    # Get results from both engines with speaker filtering
+    semantic_results = await qdrant_engine.search(
+        query, meeting_ids=meeting_ids, speakers=speakers, limit=k*2
+    )
+    bm25_results = es_engine.search(
+        query, meeting_ids=meeting_ids, speakers=speakers, k=k*2
+    )
     
     # Create dictionaries for scoring
     all_results = {}

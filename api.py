@@ -1,8 +1,19 @@
 from fastapi import FastAPI, HTTPException, Depends, Header, Path
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import List, Optional
+from uuid import UUID
+from datetime import datetime, timezone
+from sqlalchemy import func, select, and_, case, distinct
+
+from psql_models import (
+    Content, UserContent, ContentType, AccessLevel,
+    User, Thread as ThreadModel, ShareLink,
+    DefaultAccess
+)
+from psql_helpers import async_session, get_session
+
 from search import SearchAssistant
 from token_manager import TokenManager
 #from indexing import Indexing
@@ -22,11 +33,8 @@ from psql_helpers import (
 )
 from sqlalchemy import func, select, update,insert
 from vexa import VexaAPI
-from psql_models import Thread as ThreadModel
-
 from psql_models import Meeting,UserMeeting
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy import and_
 from pydantic import BaseModel, EmailStr
 from uuid import UUID
 from psql_models import AccessLevel
@@ -56,10 +64,6 @@ from vexa import VexaAuth
 import pandas as pd
 
 import httpx
-
-from sqlalchemy import case
-
-
 
 from datetime import datetime, timezone
 from chat import MeetingSummaryContextProvider,MeetingContextProvider
@@ -237,15 +241,19 @@ async def chat(request: ChatRequest, current_user: tuple = Depends(get_current_u
                 temperature=request.temperature,
                 user_id=user_id
             ):
-                if isinstance(item, dict) and "search_results" in item:
-                    # Handle search results
-                    yield f"data: {json.dumps({'type': 'search_results', 'results': item['search_results']})}\n\n"
+                if isinstance(item, dict):
+                    if "search_results" in item:
+                        # Filter search results based on user access
+                        async with get_session() as session:
+                            accessible_results = [
+                                result for result in item["search_results"]
+                                if await has_content_access(session, user_id, result["content_id"])
+                            ]
+                        yield f"data: {json.dumps({'type': 'search_results', 'results': accessible_results})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'final', **item})}\n\n"
                 elif isinstance(item, str):
-                    # Handle streaming text chunks
                     yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
-                elif isinstance(item, dict):
-                    # Handle final response with thread info
-                    yield f"data: {json.dumps({'type': 'final', **item})}\n\n"
             yield "data: {\"type\": \"done\"}\n\n"
 
         return StreamingResponse(stream_response(), media_type="text/event-stream")
@@ -269,23 +277,6 @@ async def delete_thread(thread_id: str, current_user: tuple = Depends(get_curren
     else:
         raise HTTPException(status_code=500, detail="Failed to delete thread")
 
-@app.get("/user/meetings/timestamps", response_model=MeetingTimestamps)
-async def get_meeting_timestamps(current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    async with async_session() as session:
-        first_meeting = await get_first_meeting_timestamp(session, user_id)
-        last_meeting = await get_last_meeting_timestamp(session, user_id)
-        
-    return MeetingTimestamps(
-        first_meeting=first_meeting,
-        last_meeting=last_meeting
-    )
-
-@app.delete("/user/data")
-async def remove_user_data(current_user: tuple = Depends(get_current_user)):
-    user_id, user_name = current_user
-    deleted_points = await search_assistant.remove_user_data(user_id)
-    return {"message": f"Successfully removed {deleted_points} data points for user {user_name}"}
 
 @app.post("/share-links", response_model=CreateShareLinkResponse)
 async def create_new_share_link(
@@ -371,7 +362,7 @@ async def get_meetings(
     offset: int = 0,
     limit: int = None,
     include_summary: bool = False,
-    ownership: MeetingOwnership = MeetingOwnership.ALL,  # New parameter
+    ownership: MeetingOwnership = MeetingOwnership.ALL,
     current_user: tuple = Depends(get_current_user)
 ):
     logger.info(f"Getting meetings with offset={offset}, limit={limit}, include_summary={include_summary}, ownership={ownership}")
@@ -380,32 +371,35 @@ async def get_meetings(
     try:
         async with async_session() as session:
             select_columns = [
-                Meeting.meeting_id,
-                Meeting.meeting_name,
-                Meeting.timestamp,
-                Meeting.is_indexed,
-                UserMeeting.is_owner,
-                UserMeeting.access_level,
-                func.array_agg(distinct(Speaker.name)).label('speakers')
+                Content.id.label('meeting_id'),
+                Content.name.label('meeting_name'),
+                Content.created_at.label('timestamp'),
+                Content.is_indexed,
+                UserContent.is_owner,
+                UserContent.access_level,
+                func.array_agg(distinct(Entity.name)).label('speakers')
             ]
             
             if include_summary:
-                select_columns.append(Meeting.meeting_summary)
+                select_columns.append(Content.summary.label('meeting_summary'))
             
             base_query = (
                 select(*select_columns)
-                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
-                .outerjoin(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
-                .outerjoin(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
+                .join(UserContent, Content.id == UserContent.content_id)
+                .outerjoin(content_entity_association, Content.id == content_entity_association.c.content_id)
+                .outerjoin(Entity, and_(
+                    content_entity_association.c.entity_id == Entity.id,
+                    Entity.type == EntityType.SPEAKER
+                ))
                 .where(
                     and_(
-                        UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value,
-                        # Filter based on ownership type
+                        UserContent.user_id == user_id,
+                        UserContent.access_level != AccessLevel.REMOVED.value,
+                        Content.type == ContentType.MEETING,
                         case(
-                            (ownership == MeetingOwnership.MY, UserMeeting.is_owner == True),
-                            (ownership == MeetingOwnership.SHARED, UserMeeting.is_owner == False),
-                            else_=True  # ALL case - no additional filter
+                            (ownership == MeetingOwnership.MY, UserContent.is_owner == True),
+                            (ownership == MeetingOwnership.SHARED, UserContent.is_owner == False),
+                            else_=True
                         )
                     )
                 )
@@ -414,15 +408,15 @@ async def get_meetings(
             query = (
                 base_query
                 .group_by(
-                    Meeting.meeting_id, 
-                    Meeting.meeting_name, 
-                    Meeting.timestamp, 
-                    Meeting.is_indexed,
-                    UserMeeting.is_owner,
-                    UserMeeting.access_level,
-                    *([] if not include_summary else [Meeting.meeting_summary])
+                    Content.id,
+                    Content.name,
+                    Content.created_at,
+                    Content.is_indexed,
+                    UserContent.is_owner,
+                    UserContent.access_level,
+                    *([] if not include_summary else [Content.summary])
                 )
-                .order_by(Meeting.timestamp.desc())
+                .order_by(Content.created_at.desc())
             )
             
             if limit is not None:
@@ -447,17 +441,17 @@ async def get_meetings(
                 for meeting in meetings
             ]
             
-            # Update count query with ownership filter
             count_query = (
-                select(func.count(distinct(Meeting.meeting_id)))
-                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                select(func.count(distinct(Content.id)))
+                .join(UserContent, Content.id == UserContent.content_id)
                 .where(
                     and_(
-                        UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value,
+                        UserContent.user_id == user_id,
+                        UserContent.access_level != AccessLevel.REMOVED.value,
+                        Content.type == ContentType.MEETING,
                         case(
-                            (ownership == MeetingOwnership.MY, UserMeeting.is_owner == True),
-                            (ownership == MeetingOwnership.SHARED, UserMeeting.is_owner == False),
+                            (ownership == MeetingOwnership.MY, UserContent.is_owner == True),
+                            (ownership == MeetingOwnership.SHARED, UserContent.is_owner == False),
                             else_=True
                         )
                     )
@@ -485,8 +479,9 @@ async def get_meeting_details(
     token = authorization.split("Bearer ")[-1]
     
     async with get_session() as session:
+        # Query for meeting details and discussion points
         query = (
-            select(Meeting, UserMeeting, func.array_agg(func.json_build_object(
+            select(Content, UserContent, func.array_agg(func.json_build_object(
                 'id', DiscussionPoint.id,
                 'summary', DiscussionPoint.summary,
                 'details', DiscussionPoint.details,
@@ -495,16 +490,17 @@ async def get_meeting_details(
                 'topic_name', DiscussionPoint.topic_name,
                 'topic_type', DiscussionPoint.topic_type
             )).label('discussion_points'))
-            .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
-            .outerjoin(DiscussionPoint, Meeting.meeting_id == DiscussionPoint.meeting_id)
+            .join(UserContent, Content.id == UserContent.content_id)
+            .outerjoin(DiscussionPoint, Content.id == DiscussionPoint.content_id)
             .where(
                 and_(
-                    Meeting.meeting_id == meeting_id,
-                    UserMeeting.user_id == user_id,
-                    UserMeeting.access_level != AccessLevel.REMOVED.value
+                    Content.id == meeting_id,
+                    Content.type == ContentType.MEETING,
+                    UserContent.user_id == user_id,
+                    UserContent.access_level != AccessLevel.REMOVED.value
                 )
             )
-            .group_by(Meeting.id, UserMeeting.id)
+            .group_by(Content.id, UserContent.id)
         )
         
         result = await session.execute(query)
@@ -513,7 +509,7 @@ async def get_meeting_details(
         if not row:
             raise HTTPException(status_code=404, detail="Meeting not found or access denied")
             
-        meeting, user_meeting, discussion_points = row
+        content, user_content, discussion_points = row
         
         # Convert discussion points to pandas DataFrame and deduplicate
         if discussion_points and discussion_points[0] is not None:
@@ -536,29 +532,37 @@ async def get_meeting_details(
                 
                 # Update database with latest transcript
                 await session.execute(
-                    update(Meeting)
-                    .where(Meeting.meeting_id == meeting_id)
+                    update(Content)
+                    .where(Content.id == meeting_id)
                     .values(
-                        transcript=str(transcript),
+                        text=str(transcript),
                         timestamp=utc_timestamp
                     )
                 )
                 
+                # Update or create speaker entities
                 for speaker_name in speakers:
                     if speaker_name and speaker_name != 'TBD':
-                        speaker_query = select(Speaker).where(Speaker.name == speaker_name)
-                        existing_speaker = await session.execute(speaker_query)
-                        speaker = existing_speaker.scalar_one_or_none()
+                        # Query for existing entity
+                        entity_query = select(Entity).where(
+                            and_(
+                                Entity.name == speaker_name,
+                                Entity.type == EntityType.SPEAKER
+                            )
+                        )
+                        existing_entity = await session.execute(entity_query)
+                        entity = existing_entity.scalar_one_or_none()
                         
-                        if not speaker:
-                            speaker = Speaker(name=speaker_name)
-                            session.add(speaker)
+                        if not entity:
+                            entity = Entity(name=speaker_name, type=EntityType.SPEAKER)
+                            session.add(entity)
                             await session.flush()
                         
+                        # Associate entity with content
                         await session.execute(
-                            pg_insert(meeting_speaker_association).values(
-                                meeting_id=meeting.id,
-                                speaker_id=speaker.id
+                            insert(content_entity_association).values(
+                                content_id=content.id,
+                                entity_id=entity.id
                             ).on_conflict_do_nothing()
                         )
                 
@@ -569,118 +573,70 @@ async def get_meeting_details(
         except Exception as e:
             logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
             # Fallback to stored transcript if Vexa API fails
-            if meeting.transcript:
-                transcript_data = eval(meeting.transcript)
+            if content.text:
+                transcript_data = eval(content.text)
                 speakers = list(set(segment.get('speaker') for segment in transcript_data 
                             if segment.get('speaker') and segment.get('speaker') != 'TBD'))
         
+        # Get speakers from entity associations if not available from transcript
+        if not speakers:
+            speaker_query = (
+                select(Entity.name)
+                .join(content_entity_association, Entity.id == content_entity_association.c.entity_id)
+                .where(
+                    and_(
+                        content_entity_association.c.content_id == content.id,
+                        Entity.type == EntityType.SPEAKER
+                    )
+                )
+            )
+            speaker_result = await session.execute(speaker_query)
+            speakers = [row[0] for row in speaker_result if row[0] and row[0] != 'TBD']
+        
         response = {
-            "meeting_id": meeting.meeting_id,
-            "timestamp": meeting.timestamp,
-            "meeting_name": meeting.meeting_name,
+            "meeting_id": str(content.id),
+            "timestamp": content.timestamp,
+            "meeting_name": content.name,
             "transcript": json.dumps(transcript_data) if transcript_data else [],
-            "meeting_summary": meeting.meeting_summary,
+            "meeting_summary": content.summary,
             "speakers": speakers,
-            "access_level": user_meeting.access_level,
-            "is_owner": user_meeting.is_owner,
-            "is_indexed": meeting.is_indexed,
+            "access_level": user_content.access_level,
+            "is_owner": user_content.is_owner,
+            "is_indexed": content.is_indexed,
             "discussion_points": discussion_points
         }
         
         return response
 
-class SearchTranscriptsRequest(BaseModel):
-    query: str
-    meeting_ids: Optional[List[str]] = None
-    min_score: Optional[float] = 0.80
-
-@app.post("/search/transcripts")
-async def search_transcripts(
-    request: SearchTranscriptsRequest,
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, _ = current_user
-    logger.info(f"Starting transcript search for user {user_id}")
-    
-    # Add debug points
-    print("DEBUG: Request received:", request.dict())
-    
-    try:
-        # Add timing
-        import time
-        start_time = time.time()
-        
-        results = await search_assistant.search_transcripts(
-            query=request.query,
-            user_id=user_id,
-            meeting_ids=request.meeting_ids,
-            min_score=request.min_score
-        )
-        
-        elapsed_time = time.time() - start_time
-        print(f"DEBUG: Search completed in {elapsed_time:.2f} seconds")
-        
-        return {"results": results}
-    except Exception as e:
-        print("DEBUG: Error occurred:", str(e))
-        logger.error(f"Error searching transcripts: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-class GlobalSearchRequest(BaseModel):
-    query: str
-    limit: Optional[int] = 200
-    min_score: Optional[float] = 0.4
-    
-from psql_helpers import get_meetings_by_ids
-
-@app.post("/search/global")
-async def global_search(
-    request: GlobalSearchRequest,
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, _ = current_user
-    
-    try:
-        # Get search results just to obtain meeting IDs
-        results = await search_assistant.search(
-            query=request.query,
-            user_id=user_id,
-            limit=200,
-            min_score=request.min_score
-        )
-        
-        if results.empty:
-            return {
-                "total": 0,
-                "meetings": []
-            }
-        
-        # Extract unique meeting IDs from search results
-        meeting_ids = results.sort_values('score', ascending=False)['meeting_id'].unique().tolist()
-        
-        async with async_session() as session:
-            result = await get_meetings_by_ids(
-            meeting_ids=meeting_ids, 
-            user_id=user_id
-        )
-            
-            return result
-            
-    except Exception as e:
-        logger.error(f"Error in global search: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/threads/{meeting_id}")
 async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
+    
     async with get_session() as session:
-        if not await has_meeting_access(session, user_id, meeting_id):
-            raise HTTPException(status_code=403, detail="No access to meeting")
-        result = await session.execute(
-            select(ThreadModel)
-            .where(and_(ThreadModel.user_id == user_id, ThreadModel.meeting_id == meeting_id))
-            .order_by(ThreadModel.timestamp.desc())
+        # Check access using UserContent
+        access_check = await session.execute(
+            select(UserContent)
+            .where(and_(
+                UserContent.content_id == meeting_id,
+                UserContent.user_id == user_id,
+                UserContent.access_level != AccessLevel.REMOVED.value
+            ))
         )
+        
+        if not access_check.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="No access to meeting")
+            
+        # Get threads associated with the content
+        result = await session.execute(
+            select(Thread)
+            .where(and_(
+                Thread.user_id == user_id,
+                Thread.content_id == meeting_id
+            ))
+            .order_by(Thread.timestamp.desc())
+        )
+        
         return [{
             "thread_id": t.thread_id,
             "thread_name": t.thread_name,
@@ -752,22 +708,26 @@ async def get_speakers(current_user: tuple = Depends(get_current_user)):
             # Query to get speakers and their latest meeting timestamps
             query = (
                 select(
-                    Speaker.name,
-                    func.max(Meeting.timestamp).label('last_seen'),
-                    func.count(distinct(Meeting.meeting_id)).label('meeting_count')
+                    Entity.name,
+                    func.max(Content.timestamp).label('last_seen'),
+                    func.count(distinct(Content.id)).label('meeting_count')
                 )
-                .join(meeting_speaker_association, Speaker.id == meeting_speaker_association.c.speaker_id)
-                .join(Meeting, Meeting.id == meeting_speaker_association.c.meeting_id)
-                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                .join(content_entity_association, Entity.id == content_entity_association.c.entity_id)
+                .join(Content, and_(
+                    Content.id == content_entity_association.c.content_id,
+                    Content.type == ContentType.MEETING
+                ))
+                .join(UserContent, Content.id == UserContent.content_id)
                 .where(
                     and_(
-                        UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value,
-                        Speaker.name != 'TBD',
-                        Speaker.name != None
+                        UserContent.user_id == user_id,
+                        UserContent.access_level != AccessLevel.REMOVED.value,
+                        Entity.type == EntityType.SPEAKER,
+                        Entity.name != 'TBD',
+                        Entity.name != None
                     )
                 )
-                .group_by(Speaker.name)
+                .group_by(Entity.name)
                 .order_by(desc('last_seen'))
             )
             
@@ -804,10 +764,10 @@ async def get_meetings_by_speakers(
         async with async_session() as session:
             # Subquery to get all meeting IDs where any of the requested speakers participated
             meeting_ids_subquery = (
-                select(Meeting.id)
-                .join(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
-                .join(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
-                .where(Speaker.name.in_(request.speakers))
+                select(Content.id)
+                .join(content_entity_association, Content.id == content_entity_association.c.content_id)
+                .join(Entity, content_entity_association.c.entity_id == Entity.id)
+                .where(Entity.name.in_(request.speakers))
                 .distinct()
                 .scalar_subquery()
             )
@@ -815,35 +775,35 @@ async def get_meetings_by_speakers(
             # Main query using the subquery
             query = (
                 select(
-                    Meeting.meeting_id,
-                    Meeting.meeting_name,
-                    Meeting.timestamp,
-                    Meeting.is_indexed,
-                    Meeting.meeting_summary,
-                    UserMeeting.access_level,
-                    UserMeeting.is_owner,
-                    func.array_agg(distinct(Speaker.name)).label('speakers')
+                    Content.id.label('meeting_id'),
+                    Content.name.label('meeting_name'),
+                    Content.timestamp,
+                    Content.is_indexed,
+                    Content.summary.label('meeting_summary'),
+                    UserContent.access_level,
+                    UserContent.is_owner,
+                    func.array_agg(distinct(Entity.name)).label('speakers')
                 )
-                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
-                .join(meeting_speaker_association, Meeting.id == meeting_speaker_association.c.meeting_id)
-                .join(Speaker, meeting_speaker_association.c.speaker_id == Speaker.id)
+                .join(UserContent, Content.id == UserContent.content_id)
+                .join(content_entity_association, Content.id == content_entity_association.c.content_id)
+                .join(Entity, content_entity_association.c.entity_id == Entity.id)
                 .where(
                     and_(
-                        UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value,
-                        Meeting.id.in_(meeting_ids_subquery)
+                        UserContent.user_id == user_id,
+                        UserContent.access_level != AccessLevel.REMOVED.value,
+                        Content.id.in_(meeting_ids_subquery)
                     )
                 )
                 .group_by(
-                    Meeting.meeting_id,
-                    Meeting.meeting_name,
-                    Meeting.timestamp,
-                    Meeting.is_indexed,
-                    Meeting.meeting_summary,
-                    UserMeeting.access_level,
-                    UserMeeting.is_owner
+                    Content.id,
+                    Content.name,
+                    Content.timestamp,
+                    Content.is_indexed,
+                    Content.summary,
+                    UserContent.access_level,
+                    UserContent.is_owner
                 )
-                .order_by(Meeting.timestamp.desc())
+                .order_by(Content.timestamp.desc())
             )
             
             if request.limit:
@@ -870,13 +830,13 @@ async def get_meetings_by_speakers(
             
             # Count query using the same subquery logic
             count_query = (
-                select(func.count(distinct(Meeting.meeting_id)))
-                .join(UserMeeting, Meeting.meeting_id == UserMeeting.meeting_id)
+                select(func.count(distinct(Content.id)))
+                .join(UserContent, Content.id == UserContent.content_id)
                 .where(
                     and_(
-                        UserMeeting.user_id == user_id,
-                        UserMeeting.access_level != AccessLevel.REMOVED.value,
-                        Meeting.id.in_(meeting_ids_subquery)
+                        UserContent.user_id == user_id,
+                        UserContent.access_level != AccessLevel.REMOVED.value,
+                        Content.id.in_(meeting_ids_subquery)
                     )
                 )
             )
@@ -896,66 +856,13 @@ async def get_meetings_by_speakers(
 class MeetingSummaryChatRequest(BaseModel):
     query: str
     meeting_ids: List[UUID]
-    include_discussion_points: Optional[bool] = True
     thread_id: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = 0.7
 
-@app.post("/chat/meeting/summary")
-async def meeting_summary_chat(
-    request: MeetingSummaryChatRequest, 
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, _ = current_user
-    try:
-        # If more than 10 meetings, use SearchChatManager
-        if len(request.meeting_ids) > 20:
-            async def stream_response():
-                async for item in search_assistant.chat(
-                    query=request.query,
-                    thread_id=request.thread_id,
-                    model=request.model,
-                    temperature=request.temperature,
-                    user_id=user_id
-                ):
-                    if isinstance(item, dict):
-                        yield f"data: {json.dumps(item)}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
-                yield "data: {\"type\": \"done\"}\n\n"
-        else:
-            # Original logic for ≤ 10 meetings
-            async with get_session() as session:
-                summary_provider = MeetingSummaryContextProvider(
-                    meeting_ids=request.meeting_ids,
-                    include_discussion_points=request.include_discussion_points
-                )
-                chat_manager = MeetingChatManager(session, context_provider=summary_provider)
-                
-                async def stream_response():
-                    async for item in chat_manager.chat(
-                        user_id=user_id,
-                        query=request.query,
-                        meeting_ids=request.meeting_ids,
-                        thread_id=request.thread_id,
-                        model=request.model,
-                        temperature=request.temperature,
-                        prompt=prompts.multiple_meetings_2711
-                    ):
-                        if isinstance(item, dict):
-                            yield f"data: {json.dumps(item)}\n\n"
-                        else:
-                            yield f"data: {json.dumps({'type': 'stream', 'content': item})}\n\n"
-                    yield "data: {\"type\": \"done\"}\n\n"
 
-        return StreamingResponse(stream_response(), media_type="text/event-stream")
-    except ValueError as e:
-        if "Thread with id" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        raise
-    
 
-@app.post("/chat/meeting")
+@app.post("/chat")
 async def meeting_chat(request: MeetingChatRequest, current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
     try:
@@ -1041,10 +948,27 @@ app.include_router(analytics_router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8765, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8010, reload=True)
     
     
     # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8765 --workers 1 --loop uvloop --reload
+
+async def has_content_access(
+    session: AsyncSession,
+    user_id: UUID,
+    content_id: UUID,
+    required_level: AccessLevel = AccessLevel.SEARCH
+) -> bool:
+    result = await session.execute(
+        select(UserContent)
+        .where(and_(
+            UserContent.content_id == content_id,
+            UserContent.user_id == user_id,
+            UserContent.access_level != AccessLevel.REMOVED.value
+        ))
+    )
+    user_content = result.scalar_one_or_none()
+    return user_content is not None and AccessLevel(user_content.access_level) >= required_level
 
 
 

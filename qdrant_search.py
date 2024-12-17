@@ -5,12 +5,10 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
     VectorParams,
-    PointStruct,
+
     Filter,
     FieldCondition,
-    MatchValue,
-    MatchText,
-    Range,
+
     SearchParams,
     TextIndexParams,
     TokenizerType,
@@ -18,21 +16,9 @@ from qdrant_client.models import (
 )
 
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from psql_helpers import get_session
-import pandas as pd
-
-
-from fastembed import TextEmbedding,SparseTextEmbedding
-import numpy as np
-
-from psql_models import DiscussionPoint, Meeting, Speaker, UserMeeting
-from sqlalchemy import select
 
 import os
 
-import asyncio
 
 
 from voyageai import Client as VoyageClient
@@ -71,11 +57,9 @@ class QdrantSearchEngine:
             )
         )
 
-    async def search(self, 
-                    query: str, 
-                    meeting_ids: List[str] = None, 
-                    limit: int = 10, 
-                    min_score: float = 0.2):
+    async def search(self, query: str, meeting_ids: List[str] = None,
+                    speakers: List[str] = None, limit: int = 10, 
+                    min_score: float = 0.2) -> List[Dict[str, Any]]:
         query_embedding = self.voyage.embed(texts=[query], model='voyage-3')
         
         must_conditions = []
@@ -84,6 +68,14 @@ class QdrantSearchEngine:
                 FieldCondition(
                     key="meeting_id",
                     match=MatchAny(any=meeting_ids)
+                )
+            )
+        
+        if speakers:
+            must_conditions.append(
+                FieldCondition(
+                    key="speaker",
+                    match=MatchAny(any=speakers)
                 )
             )
         
@@ -99,13 +91,24 @@ class QdrantSearchEngine:
         
         return [
             {
-                'score': hit.score,
-                'content': hit.payload['content'],
-                'contextualized_content': hit.payload['contextualized_content'],
-                'topic': hit.payload['topic'],
-                'formatted_time': hit.payload['formatted_time'],
-                'meeting_id': hit.payload['meeting_id'],
-                'timestamp': hit.payload['timestamp']
+                "score": hit.score,
+                "content": hit.payload["content"],
+                "contextualized_content": hit.payload["contextualized_content"],
+                "topic": hit.payload["topic"],
+                "meeting_id": hit.payload["meeting_id"],
+                "formatted_time": hit.payload["formatted_time"],
+                "timestamp": hit.payload["timestamp"],
+                "speaker": hit.payload["speaker"],
+                "speakers": hit.payload["speakers"],
+                "chunk_index": hit.payload["chunk_index"]
             }
             for hit in results
         ]
+
+    async def drop_collection(self):
+        try:
+            await self.client.delete_collection(collection_name=self.collection_name)
+            return True
+        except Exception as e:
+
+            return False
