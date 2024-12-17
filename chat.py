@@ -5,22 +5,26 @@ import re
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from psql_models import Meeting, DiscussionPoint
+
 
 from core import system_msg, user_msg, assistant_msg, generic_call_, Msg
 from prompts import Prompts
 from thread_manager import ThreadManager
-from psql_helpers import get_meeting_by_id, get_accessible_meetings
 from logger import logger
-from search import SearchAssistant
-from pydantic_models import ParsedSearchRequest
+
+
 import pandas as pd
-import numpy as np
+
 from core import count_tokens
 from vexa import VexaAPI
 
-from psql_helpers import get_meeting_token
+from psql_access import get_meeting_token, get_accessible_content
+
+from hybrid_search import hybrid_search
+
+
+from qdrant_search import QdrantSearchEngine
+from bm25_search import ElasticsearchBM25
 
 
 
@@ -34,7 +38,7 @@ class ChatResult(BaseModel):
 
 class BaseContextProvider:
     """Base class for different context providers"""
-    def __init__(self, max_tokens: int = 16000):
+    def __init__(self, max_tokens: int = 40000):
         self.max_tokens = max_tokens
         
     def _truncate_context(self, context: str, model: str = "gpt-4o-mini") -> str:
@@ -64,211 +68,146 @@ class BaseContextProvider:
         raise NotImplementedError()
 
 
-class MeetingContextProvider(BaseContextProvider):
-    """Provides context from meeting transcripts"""
-    def __init__(self, meeting_ids, max_tokens: int = 16000):
-        super().__init__(max_tokens)
-        self.meeting_id = meeting_ids[0]
-
-    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
-        token = await get_meeting_token(self.meeting_id, session)
-        vexa_api = VexaAPI(token=token)
-        user_id = (await vexa_api.get_user_info())['id']
-        transcription = await vexa_api.get_transcription(meeting_session_id=self.meeting_id, use_index=True)
-        if not transcription:
-            return "No meeting found"
-        df, formatted_input, start_time, _, transcript = transcription
+class UnifiedContextProvider(BaseContextProvider):
+    def __init__(
+        self, 
+        session: AsyncSession = None, 
+        qdrant_engine: Optional[QdrantSearchEngine] = None,
+        es_engine: Optional[ElasticsearchBM25] = None
+    ):
+        super().__init__()
+        self.session = session
+        self.qdrant_engine = qdrant_engine
+        self.es_engine = es_engine
+        self.meeting_map = {}  # For storing meeting ID mappings
+        self.url_dict = []  # For storing URL mappings
         
-        return formatted_input
-
-
-class SearchContextProvider(BaseContextProvider):
-    """Provides context from search results"""
-    def __init__(self, search_assistant: SearchAssistant, max_tokens: int = 16000):
-        super().__init__(max_tokens=max_tokens)
-        self.search_assistant = search_assistant
-
-    async def get_context(self, user_id: str, query: str, **kwargs) -> str:
-        # Parse search queries
-        r = await ParsedSearchRequest.parse_request(query)
-        queries = [q.query for q in r.search_queries]
+    def format_context(self, df: pd.DataFrame) -> str:
+        # Sort by timestamp and formatted_time
+        df = df.sort_values(['timestamp', 'formatted_time'])
         
+        # Create meeting map for reference numbers
+        unique_meetings = df['meeting_id'].unique()
+        self.meeting_map = {mid: idx+1 for idx, mid in enumerate(unique_meetings)}
+        
+        # Store URL mappings for post-processing
+        self.url_dict = [(idx+1, f"https://assistant.dev.vexa.ai/meeting/{mid}") 
+                         for idx, mid in enumerate(unique_meetings)]
+        
+        meetings = []
+        for meeting_id, group in df.groupby('meeting_id'):
+            int_meeting_id = self.meeting_map[meeting_id]
+            timestamp = pd.to_datetime(group['timestamp'].iloc[0])
+            date_header = f"## Meeting {int_meeting_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
+            
+            content_items = []
+            for _, row in group.iterrows():
+                time_prefix = f"[{row['formatted_time']}]" if 'formatted_time' in row else ''
+                if 'contextualized_content' in row:
+                    content_items.append(f"- {time_prefix} {row['contextualized_content']}")
+                content_items.append(f"  > {row['speaker']}: {row['content']}")
+            
+            content = "\n".join(content_items)
+            meetings.append(f"{date_header}\n\n{content}\n")
+        
+        return "\n".join(meetings)
+        
+    async def _get_raw_context(self, meeting_ids: List[UUID] = None, speakers: List[str] = None, **kwargs) -> str:
         # Get search results
-        search_results = [
-            await self.search_assistant.search(q, user_id=user_id) 
-            for q in queries
-        ]
-        search_results = pd.concat(search_results)
-        search_results = search_results.drop(columns=['vector_scores', 'exact_matches'])\
-            .drop_duplicates(subset=['topic_name', 'speaker_name', 'summary', 'details', 'meeting_id'])
-
-        # Prepare context using search assistant's methods
-        prepared_df, indexed_meetings = self.search_assistant.prep_context(search_results)
+        results = await hybrid_search(
+            query=kwargs.get('query', ''),
+            qdrant_engine=self.qdrant_engine,
+            es_engine=self.es_engine,
+            meeting_ids=[str(mid) for mid in meeting_ids] if meeting_ids else None,
+            speakers=speakers,
+            k=100
+        )
         
-        # Calculate meeting relevance scores
-        meeting_groups = search_results.sort_values('relevance_score', ascending=False)\
-            .groupby('meeting_id').agg({
-                'relevance_score': lambda x: np.average(x, weights=np.exp2(x)),
-                'summary': 'first',
-                'speaker_name': set,
-                'timestamp': 'first'
-            })\
-            .sort_values('relevance_score', ascending=False)\
-            .reset_index()\
-            .head(20)
-
-        # Format context
-        columns_to_drop = ['timestamp', 'vector_scores', 'exact_matches', 'source', 'score', 'meeting_id']
-        existing_columns = [col for col in columns_to_drop if col in prepared_df.columns]
-        context_prepared = prepared_df.drop(columns=existing_columns)
+        # Create DataFrame from results
+        df = pd.DataFrame(results['results']).sort_values('meeting_id', ascending=False)
+        if df.empty:
+            return "No relevant context found."
         
-        context = context_prepared.to_markdown(index=False) if not prepared_df.empty else "No relevant context found."
+        # Sort by timestamp and formatted_time
+        df = df.sort_values(['timestamp', 'formatted_time'])
         
-        # Store meeting URLs for later use
-        self.url_dict = indexed_meetings.items()
+        # Create meeting map
+        unique_meetings = df['meeting_id'].unique()
+        self.meeting_map = {mid: idx+1 for idx, mid in enumerate(unique_meetings)}
+        meeting_map_reverse = {v:k for k,v in self.meeting_map.items()}
         
-        return context
+        # Store URL mappings for post-processing
+        self.url_dict = [(idx+1, f"https://assistant.dev.vexa.ai/meeting/{mid}") 
+                         for idx, mid in enumerate(unique_meetings)]
+        
+        meetings = []
+        for meeting_id, group in df.groupby('meeting_id'):
+            int_meeting_id = self.meeting_map[meeting_id]
+            timestamp = pd.to_datetime(group['timestamp'].iloc[0])
+            date_header = f"## Meeting {int_meeting_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
+            
+            content_items = []
+            for _, row in group.iterrows():
+                time_prefix = f"[{row['formatted_time']}]" if row['formatted_time'] else ''
+                if 'contextualized_content' in row:
+                    content_items.append(f"- {time_prefix} {row['contextualized_content']}")
+                content_items.append(f"  > {row['content']}")
+            
+            content = "\n".join(content_items)
+            meetings.append(f"{date_header}\n\n{content}\n")
+        
+        return "\n".join(meetings)
 
     async def post_process_output(self, output: str) -> str:
-        """Post-process the output to add hyperlinks"""
-        # First, add a space between consecutive reference numbers
+        """Post-process output to add meeting reference links"""
+        # Add space between consecutive reference numbers
         output = re.sub(r'\]\[', '] [', output)
         
-        # Then replace each reference with its link
-        for key, url in self.url_dict:
-            output = output.replace(f'[{key}]', f'[{key}]({url})')
-        return output
-
-
-class MeetingListContextProvider(BaseContextProvider):
-    def __init__(self, meeting_ids: List[UUID], max_tokens: int = 16000):
-        super().__init__(max_tokens=max_tokens)
-        self.meeting_ids = meeting_ids
-        
-    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
-        # Query meetings and their transcripts
-        meetings_query = (
-            select(Meeting)
-            .where(Meeting.meeting_id.in_(self.meeting_ids))
-            .order_by(Meeting.timestamp.desc())
-        )
-        
-        result = await session.execute(meetings_query)
-        meetings = result.scalars().all()
-        
-        # Format context with meeting information
-        context_parts = []
-        for meeting in meetings:
-            context_parts.append(f"Meeting: {meeting.meeting_name}")
-            context_parts.append(f"Date: {meeting.timestamp}")
-            context_parts.append(f"Transcript:\n{meeting.transcript}\n")
-            if meeting.meeting_summary:
-                context_parts.append(f"Summary:\n{meeting.meeting_summary}\n")
-            context_parts.append("-" * 80 + "\n")
-            
-        return "\n".join(context_parts)
-
-
-class MeetingSummaryContextProvider(BaseContextProvider):
-    def __init__(self, meeting_ids: List[UUID], include_discussion_points: bool = True, max_tokens: int = 16000):
-        super().__init__(max_tokens=max_tokens)
-        self.meeting_ids = meeting_ids
-        self.include_discussion_points = include_discussion_points
-        
-    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
-        # Query meetings with their summaries
-        meetings_query = (
-            select(Meeting)
-            .where(Meeting.meeting_id.in_(self.meeting_ids))
-            .order_by(Meeting.timestamp.desc())
-        )
-        result = await session.execute(meetings_query)
-        meetings = result.scalars().all()
-        
-        # Get discussion points if needed
-        discussion_points = {}
-        if self.include_discussion_points:
-            dp_query = (
-                select(DiscussionPoint)
-                .where(DiscussionPoint.meeting_id.in_(self.meeting_ids))
-                .order_by(DiscussionPoint.summary_index)
+        # Replace meeting references with links
+        for meeting_num, url in self.url_dict:
+            # Replace both "Meeting X" and "[X]" patterns
+            output = re.sub(
+                f'Meeting {meeting_num}(?!\])',
+                f'[Meeting {meeting_num}]({url})',
+                output
             )
-            dp_result = await session.execute(dp_query)
-            for dp in dp_result.scalars():
-                if dp.meeting_id not in discussion_points:
-                    discussion_points[dp.meeting_id] = []
-                discussion_points[dp.meeting_id].append(dp)
-        
-        # Format context
-        context_parts = []
-        for meeting in meetings:
-            context_parts.append(f"Meeting: {meeting.meeting_name}")
-            context_parts.append(f"Date: {meeting.timestamp}")
-            if meeting.meeting_summary:
-                context_parts.append(f"Summary:\n{meeting.meeting_summary}\n")
+            output = output.replace(f'[{meeting_num}]', f'[{meeting_num}]({url})')
             
-            # Add discussion points if available
-            if meeting.meeting_id in discussion_points:
-                context_parts.append("Discussion Points:")
-                for dp in discussion_points[meeting.meeting_id]:
-                    context_parts.append(f"- {dp.topic_name}: {dp.summary}")
-                context_parts.append("")
-                
-            context_parts.append("-" * 80 + "\n")
-            
-        return "\n".join(context_parts)
+        return output
 
 
 class ChatManager:
     def __init__(self):
-        logger.info("Initializing ChatManager")
         self.thread_manager = ThreadManager()
+        self.model = "gpt-4-mini"
         self.prompts = Prompts()
-        self.model = "gpt-4o-mini"
         
-    async def initialize(self):
-        self.thread_manager = await ThreadManager.create()
-
     async def chat(
         self,
         user_id: str,
         query: str,
         context_provider: BaseContextProvider,
         thread_id: Optional[str] = None,
-        meeting_id: Optional[UUID] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         prompt: Optional[str] = None,
+        content_ids: Optional[List[UUID]] = None,
+        speaker_names: Optional[List[str]] = None,
         **context_kwargs
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Generic chat method that works with different context providers
-        
-        Args:
-            user_id: User's ID
-            query: User's question
-            context_provider: Instance of BaseContextProvider
-            thread_id: Optional thread ID for conversation continuity
-            model: Optional model override
-            temperature: Optional temperature override
-            prompt: Optional system prompt override
-            **context_kwargs: Additional arguments passed to context provider
-        """
         if thread_id:
             thread = await self.thread_manager.get_thread(thread_id)
             if not thread:
                 raise ValueError(f"Thread with id {thread_id} not found")
             if thread.user_id != user_id:
                 raise ValueError("Thread belongs to different user")
-            if meeting_id and thread.meeting_id != meeting_id:
-                raise ValueError("Thread does not belong to specified meeting")
-            # Convert stored dicts back to Msg objects
-            messages = [Msg(**msg) for msg in thread.messages]
+            messages = thread.messages
             thread_name = thread.thread_name
         else:
             messages = []
             thread_name = query[:50]
 
+        # Get context using all kwargs
         context = await context_provider.get_context(
             user_id=user_id,
             query=query,
@@ -295,19 +234,22 @@ class ChatManager:
         }
         messages.append(assistant_msg(msg=output, service_content=service_content))
 
+        # Use new thread manager methods with content and speaker associations
         if not thread_id:
             thread_id = await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 thread_name=thread_name,
-                messages=messages,  # Pass Msg objects directly
-                meeting_id=meeting_id
+                messages=messages,
+                content_ids=content_ids,
+                speaker_names=speaker_names
             )
         else:
             await self.thread_manager.upsert_thread(
                 user_id=user_id,
-                messages=messages,  # Pass Msg objects directly
+                messages=messages,
                 thread_id=thread_id,
-                meeting_id=meeting_id
+                content_ids=content_ids,
+                speaker_names=speaker_names
             )
 
         yield {
@@ -316,74 +258,32 @@ class ChatManager:
             "service_content": service_content
         }
         
-        
-class SearchChatManager(ChatManager):
-    """Enhanced chat manager with search-specific context handling"""
     
-    async def chat(
-        self,
-        user_id: str,
-        query: str,
-        search_assistant: SearchAssistant,
-        thread_id: Optional[str] = None,
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        prompt: Optional[str] = None,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Chat specifically using search results as context"""
-        
-        # Create search context provider
-        context_provider = SearchContextProvider(search_assistant)
-        
-        # Use base chat method with search context
-        async for result in super().chat(
-            user_id=user_id,
-            query=query,
-            context_provider=context_provider,
-            thread_id=thread_id,
-            model=model or self.model,
-            temperature=temperature,
-            prompt=prompt
-        ):
-            # Post-process output to add hyperlinks if available
-            if "output" in result:
-                result["output"] = await context_provider.post_process_output(result["output"])
-                
-                # Add context metadata
-                if 'service_content' not in result:
-                    result['service_content'] = {}
-                result['service_content']['context_source'] = 'search'
-                
-            yield result
-            
 
-            
-            
-class MeetingChatManager(ChatManager):
-    def __init__(self, session: AsyncSession, context_provider: Optional[BaseContextProvider] = None):
+class UnifiedChatManager(ChatManager):
+    def __init__(self, session: AsyncSession = None, qdrant_engine: Optional[QdrantSearchEngine] = None, es_engine: Optional[ElasticsearchBM25] = None):
         super().__init__()
         self.session = session
-        self.model = "gpt-4o-mini"
-        self.context_provider = context_provider
-
+        self.context_provider = UnifiedContextProvider(session, qdrant_engine, es_engine)
+        
     async def chat(
         self,
         user_id: str,
         query: str,
         meeting_ids: Optional[List[UUID]] = None,
+        speakers: Optional[List[str]] = None,
         thread_id: Optional[str] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
-        prompt: str = Prompts().meeting_context,
+        prompt: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        # Get accessible meetings for user
-        meetings, _ = await get_accessible_meetings(
-            session=self.session,
-            user_id=UUID(user_id),
-            limit=1000
-        )
-        
+        # Validate access if meeting_ids provided
         if meeting_ids:
+            meetings, _ = await get_accessible_content(
+                session=self.session,
+                user_id=UUID(user_id),
+                limit=1000
+            )
             accessible_meeting_ids = {str(m.meeting_id) for m in meetings}
             authorized_meeting_ids = [
                 mid for mid in meeting_ids 
@@ -393,85 +293,32 @@ class MeetingChatManager(ChatManager):
             if not authorized_meeting_ids:
                 yield {
                     "error": "No access to specified meetings",
-                    "service_content": {
-                        "context_source": "meeting",
-                        "error": "No access to specified meetings"
-                    }
+                    "service_content": {"error": "No access to specified meetings"}
                 }
                 return
-        else:
-            authorized_meeting_ids = [m.meeting_id for m in meetings]
-            
-        # Use provided context provider or create default MeetingContextProvider
-        context_provider = self.context_provider or MeetingContextProvider()
-        
-        # Get thread info and messages
-        messages = []
-        if thread_id:
-            thread = await self.thread_manager.get_thread(thread_id)
-            print(thread)
-            if not thread:
-                raise ValueError(f"Thread with id {thread_id} not found")
-            messages = thread.messages
-            thread_name = thread.thread_name
-        else:
-            thread_name = query
+                
+            meeting_ids = authorized_meeting_ids
 
-        # Get context using the provider
-        meeting_id = meetings[0].meeting_id if hasattr(meetings[0], 'meeting_id') else meetings[0]
-        context = await context_provider.get_context(session=self.session, meeting_id=meeting_id)
-        
-        # Build message list maintaining Msg class structure
-        messages_context = [
-            system_msg(prompt),
-            system_msg(f"Context: {context}"),
-            *messages,
-            user_msg(query)
-        ]
-
-        # Generate response
-        output = ""
-        async for chunk in generic_call_(
-            messages=messages_context,
+        async for result in super().chat(
+            user_id=user_id,
+            query=query,
+            context_provider=self.context_provider,
+            thread_id=thread_id,
             model=model or self.model,
-            temperature=temperature or 0.7,
-            streaming=True
+            temperature=temperature,
+            prompt=prompt,
+            content_ids=meeting_ids,  # Pass as content_ids
+            speaker_names=speakers    # Pass speaker names
         ):
-            output += chunk
-            yield chunk
-
-        # Update thread
-        messages.append(user_msg(query))
-        messages.append(assistant_msg(output))
-        
-        # Update thread with meeting_id for single meeting chats
-        meeting_id = authorized_meeting_ids[0] if len(authorized_meeting_ids) == 1 else None
-        
-        if thread_id:
-            await self.thread_manager.upsert_thread(
-                user_id=user_id,
-                messages=messages,
-                thread_id=thread_id,
-                meeting_id=meeting_id
-            )
-        else:
-            thread_id = await self.thread_manager.upsert_thread(
-                user_id=user_id,
-                thread_name=thread_name,
-                messages=messages,
-                meeting_id=meeting_id
-            )
-
-        yield {
-            "thread_id": thread_id,
-            "service_content": {
-                "context_source": "meeting",
-                "meeting_count": len(authorized_meeting_ids),
-                "meeting_id": str(authorized_meeting_ids[0]) if len(authorized_meeting_ids) == 1 else None
-            }
-        }
-        
-        self.messages = messages
+            # Add context metadata
+            if 'service_content' not in result:
+                result['service_content'] = {}
+            result['service_content'].update({
+                'context_source': 'meeting' if (meeting_ids and len(meeting_ids) == 1) else 'search',
+                'meeting_count': len(meeting_ids) if meeting_ids else 0,
+                'meeting_id': str(meeting_ids[0]) if (meeting_ids and len(meeting_ids) == 1) else None
+            })
+            yield result
         
         
         

@@ -305,3 +305,57 @@ async def clean_content_data(
         
         await session.commit()
         return True
+
+async def get_accessible_content(
+    user_id: UUID,
+    content_type: ContentType = ContentType.MEETING,
+    access_level: Optional[AccessLevel] = None,
+    limit: int = 100,
+    offset: int = 0,
+    session: AsyncSession = None
+) -> tuple[List[dict], int]:
+    async with (session or get_session()) as session:
+        # Build base query
+        query = (
+            select(Content, UserContent.access_level)
+            .join(UserContent)
+            .where(and_(
+                UserContent.user_id == user_id,
+                Content.type == content_type.value,
+                UserContent.access_level != AccessLevel.REMOVED.value
+            ))
+        )
+
+        # Add access level filter if specified
+        if access_level:
+            query = query.where(
+                UserContent.access_level.in_([
+                    level.value for level in AccessLevel 
+                    if level.value >= access_level.value
+                ])
+            )
+
+        # Get total count
+        count_query = select(func.count()).select_from(query.subquery())
+        total_count = await session.scalar(count_query)
+
+        # Add ordering and pagination
+        query = (
+            query
+            .order_by(Content.timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+
+        result = await session.execute(query)
+        rows = result.all()
+        
+        contents = [{
+            "content_id": str(row.Content.content_id),
+            "timestamp": row.Content.timestamp,
+            "type": row.Content.type,
+            "access_level": row.access_level,
+            "is_indexed": row.Content.is_indexed
+        } for row in rows]
+
+        return contents, total_count
