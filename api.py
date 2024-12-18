@@ -533,7 +533,7 @@ async def get_meeting_details(
                             await session.flush()
                         
                         await session.execute(
-                            insert(content_entity_association).values(
+                            pg_insert(content_entity_association).values(
                                 content_id=content.id,
                                 entity_id=entity.id
                             ).on_conflict_do_nothing()

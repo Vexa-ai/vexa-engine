@@ -114,6 +114,24 @@ class UnifiedContextProvider(BaseContextProvider):
             meetings.append(f"{date_header}\n\n{content}\n")
         
         return "\n".join(meetings)
+    
+class MeetingContextProvider(BaseContextProvider):
+    """Provides context from meeting transcripts"""
+    def __init__(self, meeting_ids, max_tokens: int = 30000):
+        super().__init__(max_tokens)
+        self.meeting_id = meeting_ids[0]
+
+    async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
+        token = await get_meeting_token(self.meeting_id)
+        vexa_api = VexaAPI(token=token)
+        user_id = (await vexa_api.get_user_info())['id']
+        transcription = await vexa_api.get_transcription(meeting_session_id=self.meeting_id, use_index=True)
+        if not transcription:
+            return "No meeting found"
+        df, formatted_input, start_time, _, transcript = transcription
+        
+        return formatted_input
+
 
 
 class ChatManager:
@@ -211,7 +229,7 @@ class UnifiedChatManager(ChatManager):
                  es_engine: Optional[ElasticsearchBM25] = None):
         super().__init__()
         self.session = session
-        self.context_provider = UnifiedContextProvider(session, qdrant_engine, es_engine)
+        self.unified_context_provider = UnifiedContextProvider(session, qdrant_engine, es_engine)
     
     async def _create_linked_output(self, output: str, meeting_map_reverse: dict) -> str:
         # Add space between consecutive reference numbers
@@ -252,15 +270,23 @@ class UnifiedChatManager(ChatManager):
 
         output = ""
         meeting_ids = [meeting_id] if meeting_id else None
+        
+        # Choose appropriate context provider
+        context_provider = (
+            MeetingContextProvider(meeting_ids) if meeting_id 
+            else self.unified_context_provider
+        )
+        
         context_kwargs = {
             "meeting_ids": meeting_ids if meeting_ids else None,
-            "speakers": entities if entities else None  # Add speakers to context_kwargs
+            "speakers": entities if entities else None,
+            "session": self.session  # Add session for MeetingContextProvider
         }
         
         async for result in super().chat(
             user_id=user_id,
             query=query,
-            context_provider=self.context_provider,
+            context_provider=context_provider,
             thread_id=thread_id,
             model=model or self.model,
             temperature=temperature,
@@ -275,8 +301,9 @@ class UnifiedChatManager(ChatManager):
             else:
                 linked_output = await self._create_linked_output(
                     output, 
-                    self.context_provider.meeting_map_reverse
-                )
+                    self.unified_context_provider.meeting_map_reverse
+                ) if not meeting_id else output  # Skip linking if using MeetingContextProvider
+                
                 yield {
                     "thread_id": result['thread_id'],
                     "linked_output": linked_output
