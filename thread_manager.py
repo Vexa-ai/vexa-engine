@@ -190,7 +190,7 @@ class ThreadManager:
                 user_id=str(thread.user_id),
                 thread_name=thread.thread_name,
                 messages=messages,
-                meeting_id=thread.meeting_id,
+                meeting_id=thread.content_id,
                 timestamp=thread.timestamp
             )
 

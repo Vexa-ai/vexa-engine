@@ -230,34 +230,32 @@ class UnifiedChatManager(ChatManager):
             
         return output
 
-    async def chat(self, user_id: str, query: str, meeting_ids: Optional[List[UUID]] = None,
-                  speakers: Optional[List[str]] = None, thread_id: Optional[str] = None,
+    async def chat(self, user_id: str, query: str, meeting_id: Optional[UUID] = None,
+                  entities: Optional[List[str]] = None, thread_id: Optional[str] = None,
                   model: Optional[str] = None, temperature: Optional[float] = None,
                   prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
-        # Validate access if meeting_ids provided
-        if meeting_ids:
+        # Validate access if meeting_id provided
+        if meeting_id:
             meetings, _ = await get_accessible_content(
                 session=self.session,
                 user_id=UUID(user_id),
                 limit=1000
             )
             accessible_meeting_ids = {str(m['content_id']) for m in meetings}
-            authorized_meeting_ids = [
-                mid for mid in meeting_ids 
-                if str(mid) in accessible_meeting_ids
-            ]
             
-            if not authorized_meeting_ids:
+            if str(meeting_id) not in accessible_meeting_ids:
                 yield {
-                    "error": "No access to specified meetings",
-                    "service_content": {"error": "No access to specified meetings"}
+                    "error": "No access to specified meeting",
+                    "service_content": {"error": "No access to specified meeting"}
                 }
                 return
-                
-            meeting_ids = authorized_meeting_ids
 
         output = ""
-        context_kwargs = {"meeting_ids": meeting_ids} if meeting_ids else {}
+        meeting_ids = [meeting_id] if meeting_id else None
+        context_kwargs = {
+            "meeting_ids": meeting_ids if meeting_ids else None,
+            "speakers": entities if entities else None  # Add speakers to context_kwargs
+        }
         
         async for result in super().chat(
             user_id=user_id,
@@ -268,8 +266,8 @@ class UnifiedChatManager(ChatManager):
             temperature=temperature,
             prompt=prompt,
             content_ids=meeting_ids,
-            speaker_names=speakers,
-            **context_kwargs  # Pass meeting_ids only through context_kwargs
+            speaker_names=entities,
+            **context_kwargs
         ):
             if 'chunk' in result:
                 output += result['chunk']

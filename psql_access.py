@@ -360,28 +360,30 @@ async def get_accessible_content(
 
         return contents, total_count
 
-async def get_user_name(user_id: Union[UUID, str], session: AsyncSession = None) -> Optional[str]:
-    """Get user's full name by ID, returns 'First Last' or None if not found"""
-    if isinstance(user_id, str):
-        user_id = UUID(user_id)
-        
-    async with (session or get_session()) as session:
-        query = select(User.first_name, User.last_name).where(User.id == user_id)
-        result = await session.execute(query)
+async def get_user_name(user_id: str, session: Optional[AsyncSession] = None) -> Optional[str]:
+    query = select(User.first_name, User.last_name, User.username).where(User.id == UUID(user_id))
+    
+    try:
+        if isinstance(session, AsyncSession):
+            result = await session.execute(query)
+        else:
+            async with get_session() as new_session:
+                result = await new_session.execute(query)
+                
         user = result.first()
-        
         if not user:
             return None
             
-        first_name, last_name = user
-        if first_name and last_name:
-            return f"{first_name} {last_name}".strip()
-        elif first_name:
-            return first_name
-        elif last_name:
-            return last_name
+        if user.first_name and user.last_name:
+            return f"{user.first_name} {user.last_name}"
+        elif user.username:
+            return user.username
+        elif user.first_name:
+            return user.first_name
+            
         return None
-
+    except Exception as e:
+        return None
 
 async def has_content_access(
     session: AsyncSession, 

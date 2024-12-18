@@ -106,8 +106,8 @@ class APIClient:
     def chat(
         self, 
         query: str, 
-        meeting_ids: Optional[List[str]] = None,
-        speakers: Optional[List[str]] = None,
+        meeting_id: Optional[str] = None,
+        entities: Optional[List[str]] = None,
         thread_id: Optional[str] = None, 
         model: str = "gpt-4o-mini", 
         temperature: float = 0.7
@@ -118,8 +118,8 @@ class APIClient:
             headers=self.headers, 
             json={
                 "query": query,
-                "meeting_ids": meeting_ids,
-                "speakers": speakers,
+                "meeting_id": meeting_id,
+                "entities": entities,
                 "thread_id": thread_id,
                 "model": model,
                 "temperature": temperature

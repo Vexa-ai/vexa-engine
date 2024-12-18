@@ -85,8 +85,8 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
-    meeting_ids: Optional[List[UUID]] = None
-    speakers: Optional[List[str]] = None
+    meeting_id: Optional[UUID] = None
+    entities: Optional[List[str]] = None
 
 class TokenRequest(BaseModel):
     token: str
@@ -241,8 +241,8 @@ async def chat(
                 thread_id=request.thread_id,
                 model=request.model,
                 temperature=request.temperature,
-                meeting_ids=request.meeting_ids,
-                speakers=request.speakers
+                meeting_id=request.meeting_id,
+                entities=request.entities
             ):
                 if "chunk" in item:
                     yield f"data: {json.dumps({'type': 'stream', 'content': item['chunk']})}\n\n"
@@ -568,7 +568,7 @@ async def get_meeting_details(
         response = {
             "meeting_id": str(content.id),
             "timestamp": content.timestamp,
-            "meeting_name": content.name,
+
             "transcript": json.dumps(transcript_data) if transcript_data else [],
             "meeting_summary": '',
             "speakers": speakers,
@@ -764,10 +764,8 @@ async def get_meetings_by_speakers(
             query = (
                 select(
                     Content.id.label('meeting_id'),
-                    Content.name.label('meeting_name'),
                     Content.timestamp,
                     Content.is_indexed,
-                    Content.summary.label('meeting_summary'),
                     UserContent.access_level,
                     UserContent.is_owner,
                     func.array_agg(distinct(Entity.name)).label('speakers')
@@ -784,16 +782,14 @@ async def get_meetings_by_speakers(
                 )
                 .group_by(
                     Content.id,
-                    Content.name,
                     Content.timestamp,
                     Content.is_indexed,
-                    Content.summary,
                     UserContent.access_level,
                     UserContent.is_owner
                 )
                 .order_by(Content.timestamp.desc())
             )
-            
+
             if request.limit:
                 query = query.limit(request.limit)
             if request.offset:
@@ -805,10 +801,8 @@ async def get_meetings_by_speakers(
             meetings_list = [
                 {
                     "meeting_id": str(meeting.meeting_id),
-                    "meeting_name": meeting.meeting_name,
                     "timestamp": meeting.timestamp.astimezone(timezone.utc).replace(tzinfo=None),
                     "is_indexed": meeting.is_indexed,
-                    "meeting_summary": meeting.meeting_summary,
                     "access_level": meeting.access_level,
                     "is_owner": meeting.is_owner,
                     "speakers": [s for s in meeting.speakers if s and s != 'TBD']
@@ -828,15 +822,15 @@ async def get_meetings_by_speakers(
                     )
                 )
             )
-            
-            total_count = await session.execute(count_query)
-            total = total_count.scalar() or 0
-            
+
+            count = await session.execute(count_query)
+            total_count = count.scalar()
+
             return {
-                "total": total,
-                "meetings": meetings_list
+                "meetings": meetings_list,
+                "total": total_count
             }
-            
+
     except Exception as e:
         logger.error(f"Error getting meetings by speakers: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
