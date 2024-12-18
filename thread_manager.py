@@ -48,7 +48,10 @@ class ThreadManager:
                     await session.execute(
                         update(Thread)
                         .where(Thread.thread_id == thread_id)
-                        .values(messages=messages_json)
+                        .values(
+                            messages=messages_json,
+                            content_id=content_ids[0] if content_ids else None
+                        )
                     )
                     thread = await session.execute(
                         select(Thread).where(Thread.thread_id == thread_id)
@@ -60,42 +63,11 @@ class ThreadManager:
                         thread_id=str(uuid.uuid4()),
                         user_id=UUID(user_id),
                         thread_name=truncated_thread_name,
-                        messages=messages_json
+                        messages=messages_json,
+                        content_id=content_ids[0] if content_ids else None
                     )
                     session.add(thread)
                     await session.flush()
-                
-                # Add content associations
-                if content_ids:
-                    # First clear existing
-                    await session.execute(
-                        delete(content_entity_association).where(
-                            content_entity_association.c.content_id.in_(content_ids)
-                        )
-                    )
-                    # Then add new
-                    for content_id in content_ids:
-                        # Get or create entity for the thread
-                        entity = await session.execute(
-                            select(Entity).where(
-                                and_(
-                                    Entity.name == thread.thread_id,
-                                    Entity.type == "thread"
-                                )
-                            )
-                        )
-                        entity = entity.scalar_one_or_none()
-                        if not entity:
-                            entity = Entity(name=thread.thread_id, type="thread")
-                            session.add(entity)
-                            await session.flush()
-                        
-                        await session.execute(
-                            insert(content_entity_association).values({
-                                "content_id": content_id,
-                                "entity_id": entity.id
-                            })
-                        )
                 
                 # Add speaker entity associations
                 if speaker_names:

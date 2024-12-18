@@ -235,3 +235,43 @@ class APIClient:
             return response.json()
         else:
             raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+
+    async def get_meeting_threads(self, meeting_id: str) -> Dict:
+        """Get threads associated with a specific meeting
+        
+        Args:
+            meeting_id (str): UUID of the meeting
+            
+        Returns:
+            Dict: List of threads associated with the meeting
+            
+        Raises:
+            ValueError: If client not initialized or invalid meeting ID format
+            Exception: If API request fails
+        """
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        
+        try:
+            # Validate UUID format
+            UUID(meeting_id)
+            await self._ensure_initialized()
+            
+            response = requests.get(
+                f"{self.base_url}/threads/meeting/{meeting_id}", 
+                headers=self.headers
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                raise ValueError("Meeting not found")
+            elif response.status_code == 403:
+                raise ValueError("Access denied to meeting")
+            else:
+                raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+        except ValueError as e:
+            if "invalid literal for UUID" in str(e):
+                raise ValueError("Invalid meeting ID format - must be a valid UUID")
+            raise
