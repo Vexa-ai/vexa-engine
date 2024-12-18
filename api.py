@@ -533,7 +533,7 @@ async def get_meeting_details(
                             await session.flush()
                         
                         await session.execute(
-                            pg_insert(content_entity_association).values(
+                            insert(content_entity_association).values(
                                 content_id=content.id,
                                 entity_id=entity.id
                             ).on_conflict_do_nothing()
@@ -605,11 +605,25 @@ async def get_all_threads(current_user: tuple = Depends(get_current_user)):
             "timestamp": t.timestamp.isoformat() if t.timestamp else None,
         } for t in threads]
 
-@app.get("/threads/{meeting_id}")
+@app.get("/threads/meeting/{meeting_id}")
 async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
+    logger.info(f"Getting threads for meeting {meeting_id} by user {user_id}")
     
     async with get_session() as session:
+        # First check if meeting exists
+        meeting_check = await session.execute(
+            select(Content)
+            .where(and_(
+                Content.id == meeting_id,
+                Content.type == ContentType.MEETING
+            ))
+        )
+        
+        if not meeting_check.scalar_one_or_none():
+            logger.warning(f"Meeting {meeting_id} not found")
+            raise HTTPException(status_code=404, detail="Meeting not found")
+            
         # Check access using UserContent
         access_check = await session.execute(
             select(UserContent)
@@ -621,6 +635,7 @@ async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(ge
         )
         
         if not access_check.scalar_one_or_none():
+            logger.warning(f"User {user_id} has no access to meeting {meeting_id}")
             raise HTTPException(status_code=403, detail="No access to meeting")
             
         # Get threads associated with the content
@@ -633,11 +648,14 @@ async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(ge
             .order_by(ThreadModel.timestamp.desc())
         )
         
-        return [{
+        threads = [{
             "thread_id": t.thread_id,
             "thread_name": t.thread_name,
             "timestamp": t.timestamp
         } for t in result.scalars().all()]
+        
+        logger.info(f"Found {len(threads)} threads for meeting {meeting_id}")
+        return threads
 
 class GoogleAuthRequest(BaseModel):
     utm_source: Optional[str] = None
