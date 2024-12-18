@@ -101,7 +101,7 @@ class UnifiedContextProvider(BaseContextProvider):
         for meeting_id, group in df.groupby('meeting_id'):
             int_meeting_id = self.meeting_map[meeting_id]
             timestamp = pd.to_datetime(group['timestamp'].iloc[0])
-            date_header = f"## Meeting {int_meeting_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
+            date_header = f"## meeting_id {int_meeting_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
             
             content_items = []
             for _, row in group.iterrows():
