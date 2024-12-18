@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from core import Msg
 from psql_models import Thread, content_entity_association, thread_entity_association, Entity
 from psql_helpers import get_session
-from sqlalchemy import select, update, delete, insert, and_
+from sqlalchemy import select, update, delete, insert, and_, func
 from uuid import UUID
 from dataclasses import asdict
 
@@ -194,16 +194,16 @@ class ThreadManager:
                 timestamp=thread.timestamp
             )
 
-    async def get_user_threads(self, user_id: str, meeting_id: Optional[UUID] = None) -> List[dict]:
+    async def get_user_threads(self, user_id: str, content_id: Optional[UUID] = None) -> List[dict]:
         async with get_session() as session:
             # Base query
             query = select(Thread).filter(Thread.user_id == UUID(user_id))
             
-            # Filter by meeting_id if provided, otherwise get global threads
-            if meeting_id:
-                query = query.filter(Thread.meeting_id == meeting_id)
+            # Filter by content_id if provided, otherwise get global threads
+            if content_id:
+                query = query.filter(Thread.content_id == content_id)
             else:
-                query = query.filter(Thread.meeting_id.is_(None))
+                query = query.filter(Thread.content_id.is_(None))
                 
             # Get threads ordered by timestamp
             result = await session.execute(query.order_by(Thread.timestamp.desc()))
@@ -213,7 +213,7 @@ class ThreadManager:
                 "thread_id": thread.thread_id,
                 "thread_name": thread.thread_name,
                 "timestamp": thread.timestamp,
-                "meeting_id": str(thread.meeting_id) if thread.meeting_id else None
+                "content_id": str(thread.content_id) if thread.content_id else None
             } for thread in threads]
 
     async def get_messages_by_thread_id(self, thread_id: str) -> Optional[List[Msg]]:
@@ -238,3 +238,38 @@ class ThreadManager:
             except Exception as e:
                 print(f"Error deleting thread {thread_id}: {str(e)}")
                 return False
+
+    async def get_threads_by_exact_entities(
+        self,
+        user_id: str,
+        entity_names: List[str]
+    ) -> List[dict]:
+        async with get_session() as session:
+            # Subquery to get thread_ids that have exactly these entities
+            thread_count_subquery = (
+                select(
+                    thread_entity_association.c.thread_id,
+                    func.count(thread_entity_association.c.entity_id).label('entity_count')
+                )
+                .join(Entity, thread_entity_association.c.entity_id == Entity.id)
+                .where(Entity.name.in_(entity_names))
+                .group_by(thread_entity_association.c.thread_id)
+                .having(func.count(thread_entity_association.c.entity_id) == len(entity_names))
+            ).subquery()
+            
+            # Main query to get threads
+            query = (
+                select(Thread)
+                .join(thread_count_subquery, Thread.thread_id == thread_count_subquery.c.thread_id)
+                .where(Thread.user_id == UUID(user_id))
+                .order_by(Thread.timestamp.desc())
+            )
+            
+            result = await session.execute(query)
+            threads = result.scalars().all()
+            
+            return [{
+                "thread_id": t.thread_id,
+                "thread_name": t.thread_name,
+                "timestamp": t.timestamp
+            } for t in threads]

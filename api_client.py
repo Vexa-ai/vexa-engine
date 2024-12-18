@@ -6,6 +6,7 @@ from vexa import VexaAPI
 from psql_access import get_token_by_email
 from enum import Enum
 
+from uuid import UUID
 
 import os
 API_PORT = os.getenv('API_PORT')
@@ -176,9 +177,22 @@ class APIClient:
         return requests.get(f"{self.base_url}/indexing_status", headers=self.headers).json()
 
     def get_threads(self, meeting_id: Optional[str] = None) -> Dict:
-        if meeting_id: 
-            return requests.get(f"{self.base_url}/threads/{meeting_id}", headers=self.headers).json()
-        return requests.get(f"{self.base_url}/threads", headers=self.headers).json()
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        
+        if meeting_id:
+            try:
+                UUID(meeting_id)  # Validate UUID format
+                response = requests.get(f"{self.base_url}/threads/{meeting_id}", headers=self.headers)
+            except ValueError:
+                raise ValueError("Invalid meeting ID format - must be a valid UUID")
+        else:
+            response = requests.get(f"{self.base_url}/threads/all", headers=self.headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
 
     def delete_thread(self, thread_id: str) -> Dict:
         return requests.delete(f"{self.base_url}/thread/{thread_id}", headers=self.headers).json()
@@ -193,3 +207,31 @@ class APIClient:
             f"{self.base_url}/meetings/{meeting_id}/revoke-share/{token}",
             headers=self.headers
         ).json()
+
+    def get_global_threads(self) -> Dict:
+        """Get threads that are not associated with any content or entities"""
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        
+        response = requests.get(f"{self.base_url}/threads/global", headers=self.headers)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+
+    def get_threads_by_entities(self, entity_names: List[str]) -> Dict:
+        """Get threads associated with exact set of entities"""
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        
+        response = requests.post(
+            f"{self.base_url}/threads/by-entities",
+            headers=self.headers,
+            json={"entity_names": entity_names}
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")

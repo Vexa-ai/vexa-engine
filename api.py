@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from psql_models import (
     Content, UserContent, ContentType, AccessLevel,
     User, Thread as ThreadModel, ShareLink, Entity,
-    DefaultAccess, EntityType, content_entity_association
+    DefaultAccess, EntityType, content_entity_association,
+    thread_entity_association
 )
 
 from psql_helpers import (
@@ -33,6 +34,8 @@ from psql_sharing import (
 )
 
 import sys
+
+from sqlalchemy.orm import joinedload
 
 from token_manager import TokenManager
 from vexa import VexaAPI, VexaAuth
@@ -577,6 +580,31 @@ async def get_meeting_details(
         return response
 
 
+@app.get("/threads/global")
+async def get_all_threads(current_user: tuple = Depends(get_current_user)):
+    user_id, _ = current_user
+    
+    async with get_session() as session:
+        # Query threads that have no content_id and no entity associations
+        result = await session.execute(
+            select(ThreadModel)
+            .outerjoin(thread_entity_association)
+            .where(and_(
+                ThreadModel.user_id == UUID(user_id),
+                ThreadModel.content_id.is_(None),
+                thread_entity_association.c.thread_id.is_(None)
+            ))
+            .order_by(ThreadModel.timestamp.desc())
+        )
+        
+        threads = result.unique().scalars().all()
+        
+        return [{
+            "thread_id": t.thread_id,
+            "thread_name": t.thread_name,
+            "timestamp": t.timestamp.isoformat() if t.timestamp else None,
+        } for t in threads]
+
 @app.get("/threads/{meeting_id}")
 async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(get_current_user)):
     user_id, _ = current_user
@@ -597,12 +625,12 @@ async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(ge
             
         # Get threads associated with the content
         result = await session.execute(
-            select(Thread)
+            select(ThreadModel)
             .where(and_(
-                Thread.user_id == user_id,
-                Thread.content_id == meeting_id
+                ThreadModel.user_id == user_id,
+                ThreadModel.content_id == meeting_id
             ))
-            .order_by(Thread.timestamp.desc())
+            .order_by(ThreadModel.timestamp.desc())
         )
         
         return [{
@@ -874,6 +902,21 @@ async def index_meeting(
 from analytics.api import router as analytics_router
 
 app.include_router(analytics_router)
+
+class ThreadEntitiesRequest(BaseModel):
+    entity_names: List[str]
+
+@app.post("/threads/by-entities")
+async def get_threads_by_entities(
+    request: ThreadEntitiesRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    threads = await thread_manager.get_threads_by_exact_entities(
+        user_id=user_id,
+        entity_names=request.entity_names
+    )
+    return threads
 
 if __name__ == "__main__":
     import uvicorn
