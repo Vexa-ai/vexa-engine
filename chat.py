@@ -137,8 +137,9 @@ class MeetingContextProvider(BaseContextProvider):
 class ChatManager:
     def __init__(self):
         self.thread_manager = ThreadManager()
-        self.model = "gpt-4-mini"
+        self.model = "gpt-4o-mini"
         self.prompts = Prompts()
+        self.messages = []  # Add messages as instance attribute
         
     async def chat(
         self,
@@ -162,27 +163,32 @@ class ChatManager:
                 raise ValueError(f"Thread with id {thread_id} not found")
             if thread.user_id != user_id:
                 raise ValueError("Thread belongs to different user")
-            messages = thread.messages
+            self.messages = thread.messages  # Update instance messages
             thread_name = thread.thread_name
         else:
-            messages = []
+            self.messages = []  # Reset messages for new thread
             thread_name = query[:50]
 
-        # Get context using all kwargs
+        # Combine historical queries with current query
+        historical_queries = " ".join([msg.content for msg in self.messages if msg.role == 'user'])
+        combined_query = f"{historical_queries} {query}".strip()
+        print(combined_query)
+        # Get context using combined query
         context = await context_provider.get_context(
             user_id=user_id,
-            query=query,
+            query=combined_query,  # Using combined query instead of just current query
             **context_kwargs
         )
         
         prompt = prompt or self.prompts.chat_december
         prompt = prompt.format(user_name=user_name)
+        prompt += "\n\n" + 'now is ' + datetime.now().strftime('%B %d, %Y %H:%M')
         
         context_msg = system_msg(f"Context: {context}")
         messages_context = [
             system_msg(prompt),
             context_msg,
-            *messages,
+            *self.messages,
             user_msg(f'User request: {query}')
         ]
 
@@ -191,26 +197,26 @@ class ChatManager:
             output += chunk
             yield {"chunk": chunk}
 
-        messages.append(user_msg(query))
+        self.messages.append(user_msg(query))
         service_content = {
             'output': output,
             'context': context
         }
-        messages.append(assistant_msg(msg=output, service_content=service_content))
+        self.messages.append(assistant_msg(msg=output, service_content=service_content))
 
         # Use new thread manager methods with content and speaker associations
         if not thread_id:
             thread_id = await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 thread_name=thread_name,
-                messages=messages,
+                messages=self.messages,
                 content_ids=content_ids,
                 speaker_names=speaker_names
             )
         else:
             await self.thread_manager.upsert_thread(
                 user_id=user_id,
-                messages=messages,
+                messages=self.messages,
                 thread_id=thread_id,
                 content_ids=content_ids,
                 speaker_names=speaker_names
