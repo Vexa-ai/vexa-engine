@@ -117,20 +117,59 @@ class UnifiedContextProvider(BaseContextProvider):
     
 class MeetingContextProvider(BaseContextProvider):
     """Provides context from meeting transcripts"""
-    def __init__(self, meeting_ids, max_tokens: int = 30000):
+    def __init__(self, meeting_ids, max_tokens: int = 40000):
         super().__init__(max_tokens)
-        self.meeting_id = meeting_ids[0]
+        self.meeting_ids = meeting_ids
+        self.unified_fallback = None
 
     async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
-        token = await get_meeting_token(self.meeting_id)
-        vexa_api = VexaAPI(token=token)
-        user_id = (await vexa_api.get_user_info())['id']
-        transcription = await vexa_api.get_transcription(meeting_session_id=self.meeting_id, use_index=True)
-        if not transcription:
-            return "No meeting found"
-        df, formatted_input, start_time, _, transcript = transcription
-        
-        return formatted_input
+        combined_context = []
+        total_tokens = 0
+
+        # Try to get transcripts for all meetings
+        for meeting_id in self.meeting_ids:
+            try:
+                token = await get_meeting_token(meeting_id)
+                vexa_api = VexaAPI(token=token)
+                user_id = (await vexa_api.get_user_info())['id']
+                transcription = await vexa_api.get_transcription(meeting_session_id=meeting_id, use_index=True)
+                
+                if not transcription:
+                    logger.warning(f"No transcription found for meeting {meeting_id}")
+                    continue
+
+                df, formatted_input, start_time, _, transcript = transcription
+                
+                # Count tokens for this meeting's context
+                meeting_tokens = count_tokens(formatted_input)
+                
+                # If adding this meeting would exceed the limit, stop here
+                if total_tokens + meeting_tokens > self.max_tokens:
+                    logger.info(f"Token limit reached at {total_tokens} tokens. Falling back to UnifiedContextProvider.")
+                    # Initialize UnifiedContextProvider for fallback
+                    if not self.unified_fallback:
+                        self.unified_fallback = UnifiedContextProvider(
+                            session=session,
+                            qdrant_engine=kwargs.get('qdrant_engine'),
+                            es_engine=kwargs.get('es_engine')
+                        )
+                    # Use UnifiedContextProvider with all meeting_ids
+                    return await self.unified_fallback._get_raw_context(
+                        meeting_ids=self.meeting_ids,
+                        **kwargs
+                    )
+
+                total_tokens += meeting_tokens
+                combined_context.append(formatted_input)
+
+            except Exception as e:
+                logger.error(f"Error getting transcript for meeting {meeting_id}: {str(e)}")
+                continue
+
+        if not combined_context:
+            return "No meeting transcripts found"
+
+        return "\n\n---\n\n".join(combined_context)
 
 
 
@@ -255,7 +294,7 @@ class UnifiedChatManager(ChatManager):
             
         return output
 
-    async def chat(self, user_id: str, query: str, meeting_id: Optional[UUID] = None,
+    async def chat(self, user_id: str, query: str, meeting_ids: Optional[List[UUID]] = None,
                   entities: Optional[List[str]] = None, thread_id: Optional[str] = None,
                   model: Optional[str] = None, temperature: Optional[float] = None,
                   prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -263,8 +302,8 @@ class UnifiedChatManager(ChatManager):
         if model and model not in self.allowed_models:
             model = 'gpt-4o-mini'  # Fallback to default
         
-        # Validate access if meeting_id provided
-        if meeting_id:
+        # Validate access if meeting_ids provided
+        if meeting_ids:
             meetings, _ = await get_accessible_content(
                 session=self.session,
                 user_id=UUID(user_id),
@@ -272,19 +311,20 @@ class UnifiedChatManager(ChatManager):
             )
             accessible_meeting_ids = {str(m['content_id']) for m in meetings}
             
-            if str(meeting_id) not in accessible_meeting_ids:
-                yield {
-                    "error": "No access to specified meeting",
-                    "service_content": {"error": "No access to specified meeting"}
-                }
-                return
+            # Check access for all provided meeting IDs
+            for meeting_id in meeting_ids:
+                if str(meeting_id) not in accessible_meeting_ids:
+                    yield {
+                        "error": f"No access to meeting {meeting_id}",
+                        "service_content": {"error": f"No access to meeting {meeting_id}"}
+                    }
+                    return
 
         output = ""
-        meeting_ids = [meeting_id] if meeting_id else None
         
         # Choose appropriate context provider
         context_provider = (
-            MeetingContextProvider(meeting_ids) if meeting_id 
+            MeetingContextProvider(meeting_ids) if meeting_ids 
             else self.unified_context_provider
         )
         
@@ -313,7 +353,7 @@ class UnifiedChatManager(ChatManager):
                 linked_output = await self._create_linked_output(
                     output, 
                     self.unified_context_provider.meeting_map_reverse
-                ) if not meeting_id else output  # Skip linking if using MeetingContextProvider
+                ) if not meeting_ids else output  # Skip linking if using MeetingContextProvider
                 
                 yield {
                     "thread_id": result['thread_id'],

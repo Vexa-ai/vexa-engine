@@ -85,7 +85,7 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
     model: Optional[str] = None
     temperature: Optional[float] = None
-    meeting_id: Optional[UUID] = None
+    meeting_ids: Optional[List[UUID]] = None
     entities: Optional[List[str]] = None
 
 class TokenRequest(BaseModel):
@@ -222,7 +222,10 @@ qdrant_engine = QdrantSearchEngine(os.getenv('VOYAGE_API_KEY'))
 es_engine = ElasticsearchBM25()
 
 # Initialize chat manager
-chat_manager = UnifiedChatManager(qdrant_engine=qdrant_engine, es_engine=es_engine)
+chat_manager = UnifiedChatManager(
+    qdrant_engine=qdrant_engine,
+    es_engine=es_engine
+)
 
 @app.post("/chat")
 async def chat(
@@ -231,18 +234,20 @@ async def chat(
     session: AsyncSession = Depends(get_session)
 ):
     user_id, _ = current_user
-    chat_manager.session = session  # Set session for this request
     
     try:
+        # Update session for this request
+        chat_manager.session = session
+
         async def stream_response():
             async for item in chat_manager.chat(
                 user_id=str(user_id),
                 query=request.query,
+                meeting_ids=request.meeting_ids,
+                entities=request.entities,
                 thread_id=request.thread_id,
                 model=request.model,
-                temperature=request.temperature,
-                meeting_id=request.meeting_id,
-                entities=request.entities
+                temperature=request.temperature
             ):
                 if "chunk" in item:
                     yield f"data: {json.dumps({'type': 'stream', 'content': item['chunk']})}\n\n"
@@ -257,6 +262,9 @@ async def chat(
         if "Thread with id" in str(e):
             raise HTTPException(status_code=404, detail=str(e))
         raise
+    except Exception as e:
+        logger.error(f"Chat error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/thread/{thread_id}")
 async def delete_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
