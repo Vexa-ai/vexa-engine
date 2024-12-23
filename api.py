@@ -375,9 +375,6 @@ async def get_meetings(
                 func.array_agg(distinct(Entity.name)).label('speakers')
             ]
             
-            if include_summary:
-                select_columns.append(Content.text.label('meeting_summary'))
-            
             base_query = (
                 select(*select_columns)
                 .join(UserContent, Content.id == UserContent.content_id)
@@ -407,8 +404,7 @@ async def get_meetings(
                     Content.timestamp,
                     Content.is_indexed,
                     UserContent.is_owner,
-                    UserContent.access_level,
-                    *([] if not include_summary else [Content.text])
+                    UserContent.access_level
                 )
                 .order_by(Content.timestamp.desc())
             )
@@ -429,7 +425,7 @@ async def get_meetings(
                     "access_level": meeting.access_level,
                     "is_owner": meeting.is_owner,
                     "speakers": [s for s in meeting.speakers if s and s != 'TBD'],
-                    **({"meeting_summary": meeting.meeting_summary} if include_summary else {})
+                    **({"meeting_summary": ""} if include_summary else {})
                 }
                 for meeting in meetings
             ]

@@ -236,7 +236,8 @@ class UnifiedChatManager(ChatManager):
         super().__init__()
         self.session = session
         self.unified_context_provider = UnifiedContextProvider(session, qdrant_engine, es_engine)
-    
+        self.allowed_models = {'gpt-4o-mini', 'gpt-4o', 'claude-3-5-sonnet-20240620'}
+
     async def _create_linked_output(self, output: str, meeting_map_reverse: dict) -> str:
         # Add space between consecutive reference numbers
         output = re.sub(r'\]\[', '] [', output)
@@ -258,6 +259,10 @@ class UnifiedChatManager(ChatManager):
                   entities: Optional[List[str]] = None, thread_id: Optional[str] = None,
                   model: Optional[str] = None, temperature: Optional[float] = None,
                   prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        # Validate model
+        if model and model not in self.allowed_models:
+            model = 'gpt-4o-mini'  # Fallback to default
+        
         # Validate access if meeting_id provided
         if meeting_id:
             meetings, _ = await get_accessible_content(
