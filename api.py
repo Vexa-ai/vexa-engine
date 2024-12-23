@@ -934,6 +934,28 @@ async def get_threads_by_entities(
     )
     return threads
 
+class RenameThreadRequest(BaseModel):
+    thread_name: str
+
+@app.put("/thread/{thread_id}/rename")
+async def rename_thread(
+    thread_id: str, 
+    request: RenameThreadRequest, 
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, _ = current_user
+    thread = await thread_manager.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if thread.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    success = await thread_manager.rename_thread(thread_id, request.thread_name)
+    if success:
+        return {"message": "Thread renamed successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to rename thread")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8010, reload=True)

@@ -211,6 +211,24 @@ class ThreadManager:
                 print(f"Error deleting thread {thread_id}: {str(e)}")
                 return False
 
+    async def rename_thread(self, thread_id: str, new_name: str) -> bool:
+        """Rename a thread with the given ID."""
+        truncated_name = new_name[:125] if new_name else ""
+        
+        async with get_session() as session:
+            async with session.begin():
+                try:
+                    await session.execute(
+                        update(Thread)
+                        .where(Thread.thread_id == thread_id)
+                        .values(thread_name=truncated_name)
+                    )
+                    await session.commit()
+                    return True
+                except Exception as e:
+                    print(f"Error renaming thread: {e}")
+                    return False
+
     async def get_threads_by_exact_entities(
         self,
         user_id: str,
