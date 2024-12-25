@@ -68,6 +68,15 @@ class IndexingWorker:
                 if not token:
                     raise ProcessingError("No token found")
 
+                # In debug mode, validate test user token
+                if self.debug:
+                    test_token = "3ae04e20124d40babc5107e658c666b6"  # Default test user token
+                    if token != test_token:
+                        self.logger.info(f"Debug mode: Skipping non-test token content: {content_id}")
+                        self._cleanup_success(content_id)  # Mark as processed
+                        return
+                    self.logger.info(f"Debug mode: Processing test token content: {content_id}")
+
                 vexa = VexaAPI(token=token)
                 user_id = (await vexa.get_user_info())['id']
                 

@@ -101,7 +101,7 @@ class UnifiedContextProvider(BaseContextProvider):
         for meeting_id, group in df.groupby('meeting_id'):
             int_meeting_id = self.meeting_map[meeting_id]
             timestamp = pd.to_datetime(group['timestamp'].iloc[0])
-            date_header = f"## meeting_id {int_meeting_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
+            date_header = f"##  [{int_meeting_id}] - {timestamp.strftime('%B %d, %Y %H:%M')}"
             
             content_items = []
             for _, row in group.iterrows():
@@ -237,11 +237,20 @@ class ChatManager:
             yield {"chunk": chunk}
 
         self.messages.append(user_msg(query))
+        
+        # Create linked_output if using UnifiedChatManager
+        final_output = output
+        if isinstance(self, UnifiedChatManager) and not context_kwargs.get('meeting_ids'):
+            final_output = await self._create_linked_output(
+                output, 
+                self.unified_context_provider.meeting_map_reverse
+            )
+            
         service_content = {
-            'output': output,
+            'output': final_output,  # Using linked version as output
             'context': context
         }
-        self.messages.append(assistant_msg(msg=output, service_content=service_content))
+        self.messages.append(assistant_msg(msg=final_output, service_content=service_content))
 
         # Use new thread manager methods with content and speaker associations
         if not thread_id:
@@ -263,7 +272,7 @@ class ChatManager:
 
         yield {
             "thread_id": thread_id,
-            "output": output,
+            "output": final_output,
             "service_content": service_content
         }
         
@@ -353,7 +362,10 @@ class UnifiedChatManager(ChatManager):
                 linked_output = await self._create_linked_output(
                     output, 
                     self.unified_context_provider.meeting_map_reverse
-                ) if not meeting_ids else output  # Skip linking if using MeetingContextProvider
+                ) if not meeting_ids else output
+                
+                # Update service content to include linked_output
+                result['service_content']['output'] = linked_output
                 
                 yield {
                     "thread_id": result['thread_id'],
