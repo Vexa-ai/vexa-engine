@@ -59,9 +59,12 @@ from bm25_search import ElasticsearchBM25
 
 from thread_manager import ThreadManager
 
+from analytics.api import router as analytics_router
+from notes.api import router as notes_router
+
 app = FastAPI()
 
-# Move this BEFORE any other middleware or app setup``
+# Move this BEFORE any other middleware or app setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173", "http://localhost:5174","https://vexa.ai"],  # Must be explicit
@@ -916,8 +919,10 @@ async def index_meeting(
         raise HTTPException(status_code=500, detail=str(e))
 
 from analytics.api import router as analytics_router
+from notes.api import router as notes_router
 
 app.include_router(analytics_router)
+app.include_router(notes_router)
 
 class ThreadEntitiesRequest(BaseModel):
     entity_names: List[str]

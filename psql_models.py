@@ -124,6 +124,7 @@ class ContentType(str, Enum):
     TITLE = 'title'
     SUMMARY = 'summary'
     CHUNK = 'chunk'
+    NOTE = 'note'
 
 class Content(Base):
     __tablename__ = 'content'
