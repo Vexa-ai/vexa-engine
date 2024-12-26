@@ -136,14 +136,15 @@ class VexaAPI:
         formatted_output += "Speakers (Always  reference the names EXACTLY as provided with NO changes letter by letter):\n"
         for speaker, initials in speaker_initials.items():
             formatted_output += f"  {initials}: {speaker}\n"
-        formatted_output += "\nMeeting Transcript:\n\n"
+        formatted_output += "\nMeeting Transcript:\n"
         
         for _, row in df.iterrows():
             time_or_index = row['index'] if use_index else row['formatted_time']
-            formatted_output += f"({time_or_index}): {row['content']}\n"
+            speaker = row['speaker'] if row['speaker'] else ''
+            formatted_output += f"\n({time_or_index}): {speaker}: {row['content']}"
         
         df['chunk_number'] = assign_chunk_numbers(df)
-        return df, formatted_output, start_datetime, speakers,transcript
+        return df, formatted_output, start_datetime, speakers, transcript
     
     async def get_user_info(self):
         url = f"{self.base_url}/api/v1/users/me"

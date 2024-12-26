@@ -65,47 +65,53 @@ async def get_notes_by_user(
     parent_id: Optional[UUID] = None,
     limit: int = 100,
     offset: int = 0
-) -> tuple[List[dict], int]:
+) -> List[dict]:
     """Get notes for a user, optionally filtered by parent_id"""
-    # Build base query
-    query = (
-        select(Content)
-        .join(UserContent)
-        .where(and_(
-            UserContent.user_id == user_id,
-            Content.type == ContentType.NOTE.value,
-            UserContent.access_level != AccessLevel.REMOVED.value
-        ))
-    )
+    logger.debug(f"Getting notes for user {user_id}, parent_id={parent_id}")
     
-    if parent_id is not None:
-        query = query.where(Content.parent_id == parent_id)
-    
-    # Get total count
-    count_query = select(func.count()).select_from(query.subquery())
-    total_count = await session.scalar(count_query)
-    
-    # Add ordering and pagination
-    query = (
-        query
-        .order_by(Content.timestamp.desc())
-        .offset(offset)
-        .limit(limit)
-    )
-    
-    result = await session.execute(query)
-    notes = result.scalars().all()
-    
-    return [
-        {
-            "id": str(note.id),
-            "text": note.text,
-            "timestamp": note.timestamp,
-            "parent_id": str(note.parent_id) if note.parent_id else None,
-            "last_update": note.last_update
-        }
-        for note in notes
-    ], total_count
+    try:
+        # Build base query
+        query = (
+            select(Content)
+            .join(UserContent)
+            .where(and_(
+                UserContent.user_id == user_id,
+                Content.type == ContentType.NOTE.value,
+                UserContent.access_level != AccessLevel.REMOVED.value
+            ))
+        )
+        
+        if parent_id is not None:
+            query = query.where(Content.parent_id == parent_id)
+        
+        # Add ordering and pagination
+        query = (
+            query
+            .order_by(Content.timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        
+        logger.debug("Executing database query")
+        result = await session.execute(query)
+        notes = result.scalars().all()
+        logger.debug(f"Found {len(notes)} notes")
+        
+        return [
+            {
+                "id": str(note.id),
+                "text": note.text,
+                "timestamp": note.timestamp,
+                "parent_id": str(note.parent_id) if note.parent_id else None,
+                "last_update": note.last_update,
+                "is_owner": True,  # Since we're only getting notes the user has access to
+                "access_level": AccessLevel.OWNER.value  # Same as above
+            }
+            for note in notes
+        ]
+    except Exception as e:
+        logger.error(f"Error getting notes: {str(e)}", exc_info=True)
+        raise
 
 async def update_note(
     session: AsyncSession,
