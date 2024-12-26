@@ -92,15 +92,15 @@ class QdrantSearchEngine:
         return [
             {
                 "score": hit.score,
-                "content": hit.payload["content"],
-                "contextualized_content": hit.payload["contextualized_content"],
-                "topic": hit.payload["topic"],
-                "meeting_id": hit.payload["meeting_id"],
-                "formatted_time": hit.payload["formatted_time"],
-                "timestamp": hit.payload["timestamp"],
-                "speaker": hit.payload["speaker"],
-                "speakers": hit.payload["speakers"],
-                "chunk_index": hit.payload["chunk_index"]
+                "content": hit.payload.get("content", ""),
+                "contextualized_content": hit.payload.get("contextualized_content", ""),
+                "topic": hit.payload.get("topic", ""),
+                "meeting_id": hit.payload.get("meeting_id", ""),
+                "formatted_time": hit.payload.get("formatted_time", ""),
+                "timestamp": hit.payload.get("timestamp", ""),
+                "speaker": hit.payload.get("speaker", ""),
+                "speakers": hit.payload.get("speakers", []),
+                "chunk_index": hit.payload.get("chunk_index", 0)
             }
             for hit in results
         ]

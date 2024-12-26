@@ -46,3 +46,10 @@ fastapi-cache2
 voyageai
 elasticsearch
 
+
+pytest
+pytest-asyncio
+pydantic
+qdrant-client
+langchain-text-splitters
+

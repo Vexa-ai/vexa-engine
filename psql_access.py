@@ -11,6 +11,24 @@ from psql_models import (
 )
 from psql_helpers import get_session, async_session
 
+__all__ = [
+    'get_user_content_access',
+    'can_access_transcript',
+    'is_content_owner',
+    'get_first_content_timestamp',
+    'get_last_content_timestamp',
+    'get_meeting_token',
+    'get_user_token',
+    'get_token_by_email',
+    'get_content_by_user_id',
+    'get_content_by_ids',
+    'clean_content_data',
+    'get_accessible_content',
+    'get_user_name',
+    'has_content_access',
+    'get_content_token'
+]
+
 # Access Control Functions
 async def get_user_content_access(session: AsyncSession, user_id: UUID, content_id: UUID) -> AccessLevel:
     """Get user's access level for content"""
@@ -403,3 +421,35 @@ async def has_content_access(
         ))
     )
     return result.scalar_one_or_none() is not None
+
+async def get_content_token(content_id: str) -> str | None:
+    """Get token for content access based on content type."""
+    async with get_session() as session:
+        # Get content type
+        content = await session.get(Content, content_id)
+        if not content:
+            return None
+            
+        # Get user with highest access level
+        stmt = select(UserContent).where(and_(
+            UserContent.content_id == content_id,
+            UserContent.access_level != AccessLevel.REMOVED.value
+        )).order_by(UserContent.access_level.desc()).limit(1)
+        
+        user_content = await session.scalar(stmt)
+        if not user_content:
+            return None
+            
+        # Get most recent token for the user
+        token_stmt = select(UserToken).where(
+            UserToken.user_id == user_content.user_id
+        ).order_by(UserToken.last_used_at.desc()).limit(1)
+        token_record = await session.scalar(token_stmt)
+        
+        if token_record:
+            # Update last_used_at timestamp
+            token_record.last_used_at = datetime.now()
+            await session.commit()
+            return token_record.token
+            
+        return None

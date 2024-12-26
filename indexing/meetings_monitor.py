@@ -77,20 +77,32 @@ class MeetingsMonitor:
             self.logger.info(f"Running in test mode for user: {test_user_id}")
     
 
-    def _add_to_queue(self, meeting_id: str, score: float = None):
+    def _add_to_queue(self, content_id: str, score: float = None):
+        # Validate content ID
+        if not content_id:
+            self.logger.error("Attempted to add None/empty content ID to queue")
+            return
+            
+        try:
+            # Validate UUID format
+            UUID(content_id)
+        except ValueError:
+            self.logger.error(f"Invalid content ID format: {content_id}")
+            return
+            
         # Skip if already processing or in queue
-        if self.redis.sismember(RedisKeys.PROCESSING_SET, meeting_id):
-            self.logger.info(f"Skipping queue add for meeting {meeting_id} - already processing")
+        if self.redis.sismember(RedisKeys.PROCESSING_SET, content_id):
+            self.logger.info(f"Skipping queue add for content {content_id} - already processing")
             return
         
-        if self.redis.zscore(RedisKeys.INDEXING_QUEUE, meeting_id) is not None:
-            self.logger.info(f"Skipping queue add for meeting {meeting_id} - already in queue")
+        if self.redis.zscore(RedisKeys.INDEXING_QUEUE, content_id) is not None:
+            self.logger.info(f"Skipping queue add for content {content_id} - already in queue")
             return
 
         if score is None:
             score = datetime.now().timestamp()
-        self.redis.zadd(RedisKeys.INDEXING_QUEUE, {meeting_id: score})
-        self.logger.info(f"Added meeting {meeting_id} to queue with score {datetime.fromtimestamp(score).isoformat()}")
+        self.redis.zadd(RedisKeys.INDEXING_QUEUE, {content_id: score})
+        self.logger.info(f"Added content {content_id} to queue with score {datetime.fromtimestamp(score).isoformat()}")
 
 
     async def _queue_user_content(self, user_id: str, session, days: int = 30):
@@ -102,11 +114,11 @@ class MeetingsMonitor:
         cutoff = (now - timedelta(days=days)).replace(tzinfo=None)
         active_cutoff = (now - timedelta(seconds=self.active_seconds))
         
-        # Query for meetings (Content with type=meeting) that user has access to
-        stmt = select(Content.content_id).join(UserContent)\
+        # Query for content that user has access to
+        stmt = select(Content.content_id, Content.type, Content.last_update).join(UserContent)\
             .where(and_(
                 UserContent.user_id == user_id,
-                Content.type == ContentType.MEETING.value,
+                Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value]),
                 Content.last_update >= cutoff,
                 Content.last_update <= active_cutoff,
                 Content.is_indexed == False,
@@ -121,8 +133,9 @@ class MeetingsMonitor:
             stmt = stmt.order_by(Content.last_update.desc()).limit(50)
         
         contents = await session.execute(stmt)
-        for (content_id,) in contents:
+        for content_id, content_type, last_update in contents:
             self._add_to_queue(str(content_id))
+            logger.info(f"Queued {content_type} content {content_id} from {last_update} for user {user_id}")
 
 
     async def sync_meetings_queue(self, last_days:int=30):
@@ -132,12 +145,12 @@ class MeetingsMonitor:
             cutoff = (now - timedelta(seconds=self.active_seconds))
             
             if self.test_user_id:
-                # In test mode, only get meetings directly through user filter
+                # In test mode, only get content directly through user filter
                 await self._queue_user_content(self.test_user_id, session, days=last_days)
                 return
             
-            # Rest of the method remains unchanged for non-test mode
-            base_query = select(Content.content_id)
+            # Get all unindexed content (both meetings and notes)
+            base_query = select(Content.content_id, Content.type, Content.last_update)
             
             if self.test_user_id:
                 # Add user filter for test mode
@@ -149,7 +162,7 @@ class MeetingsMonitor:
             
             # Add standard filters
             base_query = base_query.where(and_(
-                Content.type == ContentType.MEETING.value,
+                Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value]),
                 Content.last_update >= cutoff_date,
                 Content.last_update <= cutoff,
                 Content.is_indexed == False
@@ -164,15 +177,16 @@ class MeetingsMonitor:
             contents = await session.execute(base_query)
             
             # Queue non-failed contents
-            for (content_id,) in contents:
+            for content_id, content_type, last_update in contents:
                 if str(content_id) not in failed_contents:
                     self._add_to_queue(str(content_id))
+                    logger.info(f"Queued {content_type} content {content_id} from {last_update}")
             
-            # Track active meetings
-            stmt = select(Content.content_id, UserContent.user_id)\
+            # Track active content
+            stmt = select(Content.content_id, Content.type, UserContent.user_id)\
                 .join(UserContent)\
                 .where(and_(
-                    Content.type == ContentType.MEETING.value,
+                    Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value]),
                     Content.last_update > cutoff,
                     Content.is_indexed == False,
                     UserContent.access_level.in_([
@@ -182,10 +196,10 @@ class MeetingsMonitor:
                 ))
             recent_contents = await session.execute(stmt)
             
-            # Update active meetings in Redis
+            # Update active content in Redis
             pipe = self.redis.pipeline()
             pipe.delete(RedisKeys.ACTIVE_MEETINGS)
-            for content_id, user_id in recent_contents:
+            for content_id, content_type, user_id in recent_contents:
                 pipe.zadd(RedisKeys.ACTIVE_MEETINGS, {str(content_id): now.timestamp()})
                 if not self.redis.sismember(RedisKeys.SEEN_USERS, str(user_id)):
                     await self._queue_user_content(str(user_id), session)
@@ -369,9 +383,9 @@ class MeetingsMonitor:
                 await session.commit()
 
     async def _get_stored_max_timestamp(self, session) -> datetime:
-        # Get max timestamp from Content table for meetings
+        # Get max timestamp from Content table for all content types
         stmt = select(func.max(Content.last_update)).where(
-            Content.type == ContentType.MEETING.value
+            Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value])
         )
         result = await session.scalar(stmt)
         return result
@@ -462,10 +476,12 @@ class MeetingsMonitor:
             -1,
             withscores=True
         )
+        
         active_formatted = [
             {
                 'content_id': cid.decode() if isinstance(cid, bytes) else cid,
-                'started_at': datetime.fromtimestamp(score).isoformat()
+                'started_at': datetime.fromtimestamp(score).isoformat(),
+                'type': 'unknown'  # We'll update types in bulk later
             }
             for cid, score in active_contents
         ]
@@ -522,7 +538,7 @@ class MeetingsMonitor:
         
         print("\n=== Active Contents ===")
         for content in status['active_contents']:
-            print(f"Content {content['content_id']} - last updated at {content['started_at']}")
+            print(f"Content {content['content_id']} ({content['type']}) - last updated at {content['started_at']}")
 
     def flush_queues(self):
         """Flush all Redis queues and sets used for indexing"""

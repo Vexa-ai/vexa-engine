@@ -4,6 +4,7 @@ from datetime import datetime
 import uuid
 from qdrant_client.models import PointStruct
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_
 from vexa import VexaAPI
 from elasticsearch import AsyncElasticsearch
 from qdrant_client import AsyncQdrantClient
@@ -11,6 +12,7 @@ from qdrant_client import AsyncQdrantClient
 from core import generic_call, system_msg, user_msg
 from psql_models import Content, ContentType
 from .content_relations import update_child_content
+from .note_processor import NoteProcessor
 
 from pydantic_models import TopicsExtraction
 
@@ -43,6 +45,7 @@ class ContentProcessor:
         self.qdrant_engine = qdrant_engine
         self.es = es_engine
         self.vexa = VexaAPI()
+        self.note_processor = NoteProcessor()
         
     async def process_content(
         self, 
@@ -53,35 +56,80 @@ class ContentProcessor:
     ) -> None:
         """Main processing entry point"""
         try:
-            # 1. Get transcription data
-            self.vexa.token = token
-            df, formatted_output, start_datetime, speakers, transcript = \
-                await self.vexa.get_transcription(meeting_session_id=content_id)
+            # Get content type
+            content = await session.get(Content, content_id)
+            if not content:
+                raise ProcessingError("Content not found")
+                
+            if content.type == ContentType.NOTE.value:
+                await self._process_note_content(content, user_id, session)
+            else:  # Meeting content
+                await self._process_meeting_content(content, user_id, token, session)
             
-            if df.empty:
-                raise ProcessingError("No transcription data available")
-
-            # 2. Create or update main content
-            content = await self._ensure_content(
-                session, content_id, ContentType.MEETING.value,
-                start_datetime, user_id
-            )
-
-            # 3. Process and store chunks
-            es_documents, qdrant_points = await self._process_chunks(
-                df, content_id, start_datetime, speakers
-            )
-            
-            # 4. Index to search engines
-            await self._index_to_search_engines(es_documents, qdrant_points)
-            
-            # 5. Mark content as indexed
+            # Mark content as indexed
             content.is_indexed = True
             await session.commit()
 
         except Exception as e:
             logger.error(f"Processing error for content {content_id}: {str(e)}")
             raise ProcessingError(f"Content processing failed: {str(e)}")
+            
+    async def _process_note_content(
+        self,
+        content: Content,
+        user_id: str,
+        session: AsyncSession
+    ) -> None:
+        """Process note content"""
+        try:
+            # Get note text from content
+            stmt = select(Content.text).where(and_(
+                Content.id == content.id,
+                Content.type == ContentType.NOTE.value
+            ))
+            note_text = await session.scalar(stmt)
+            if not note_text:
+                raise ProcessingError("Note text not found")
+                
+            # Process note using NoteProcessor
+            es_documents, qdrant_points = await self.note_processor.process_note(
+                note_text=note_text,
+                note_id=str(content.id),
+                timestamp=content.timestamp,
+                voyage_client=self.qdrant_engine.voyage,
+                author=str(user_id)
+            )
+            
+            # Index to search engines
+            await self._index_to_search_engines(es_documents, qdrant_points)
+            
+        except Exception as e:
+            logger.error(f"Note processing error for content {content.id}: {str(e)}")
+            raise ProcessingError(f"Note processing failed: {str(e)}")
+            
+    async def _process_meeting_content(
+        self,
+        content: Content,
+        user_id: str,
+        token: str,
+        session: AsyncSession
+    ) -> None:
+        """Process meeting content"""
+        # 1. Get transcription data
+        self.vexa.token = token
+        df, formatted_output, start_datetime, speakers, transcript = \
+            await self.vexa.get_transcription(meeting_session_id=str(content.id))
+        
+        if df.empty:
+            raise ProcessingError("No transcription data available")
+
+        # 2. Process and store chunks
+        es_documents, qdrant_points = await self._process_chunks(
+            df, str(content.id), start_datetime, speakers
+        )
+        
+        # 3. Index to search engines
+        await self._index_to_search_engines(es_documents, qdrant_points)
 
     async def _ensure_content(
         self,

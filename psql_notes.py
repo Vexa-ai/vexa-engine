@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def create_note(
     session: AsyncSession,
-    user_id: int,
+    user_id: UUID,
     text: str,
     parent_id: Optional[UUID] = None
 ) -> Content:
@@ -32,7 +32,8 @@ async def create_note(
             text=text,
             type=ContentType.NOTE,
             parent_id=parent_id,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
+            is_indexed=False  # Set is_indexed to False for new notes
         )
         session.add(content)
         await session.flush()  # Get the content.id
@@ -43,7 +44,8 @@ async def create_note(
         user_content = UserContent(
             user_id=user_id,
             content_id=content.id,
-            access_level=AccessLevel.OWNER
+            access_level=AccessLevel.OWNER,
+            is_owner=True  # Set is_owner to True for the creator
         )
         session.add(user_content)
         
@@ -105,7 +107,8 @@ async def get_notes_by_user(
                 "parent_id": str(note.parent_id) if note.parent_id else None,
                 "last_update": note.last_update,
                 "is_owner": True,  # Since we're only getting notes the user has access to
-                "access_level": AccessLevel.OWNER.value  # Same as above
+                "access_level": AccessLevel.OWNER.value,  # Same as above
+                "is_indexed": note.is_indexed  # Add indexing status
             }
             for note in notes
         ]

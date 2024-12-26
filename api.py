@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Path, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Path, Request, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
@@ -192,10 +192,27 @@ async def get_current_user(authorization: str = Header(...)):
             logger.warning("Invalid token provided")
             raise HTTPException(status_code=401, detail="Invalid token")
         logger.debug(f"Authenticated user: {user_name} ({user_id})")
-        return user_id, user_name
+        return user_id, user_name, token
     except Exception as e:
         logger.error(f"Authentication failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=401, detail="Invalid token")
+
+async def get_user_threads(user_id: str):
+    async with get_session() as session:
+        # Query threads for the user
+        result = await session.execute(
+            select(ThreadModel)
+            .where(ThreadModel.user_id == UUID(user_id))
+            .order_by(ThreadModel.timestamp.desc())
+        )
+        
+        threads = result.scalars().all()
+        
+        return [{
+            "thread_id": thread.thread_id,
+            "thread_name": thread.thread_name,
+            "timestamp": thread.timestamp
+        } for thread in threads]
 
 @app.post("/submit_token")
 async def submit_token(request: TokenRequest):
@@ -206,19 +223,13 @@ async def submit_token(request: TokenRequest):
 
 @app.get("/threads", response_model=List[Thread])
 async def get_threads(current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    threads = await thread_manager.get_user_threads(user_id)
-    return [Thread(**thread) for thread in threads]
+    user_id, user_name, token = current_user
+    return await get_user_threads(user_id)
 
 @app.get("/thread/{thread_id}")
 async def get_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    thread = await thread_manager.get_thread(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    if thread.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-    return thread
+    user_id, user_name, token = current_user
+    return await get_thread_by_id(thread_id, user_id)
 
 # Initialize search engines
 qdrant_engine = QdrantSearchEngine(os.getenv('VOYAGE_API_KEY'))
@@ -232,65 +243,59 @@ chat_manager = UnifiedChatManager(
 
 @app.post("/chat")
 async def chat(
-    request: ChatRequest, 
-    current_user: tuple = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
-    
+    user_id, user_name, token = current_user
+    return await handle_chat_request(request, user_id, background_tasks)
+
+async def handle_chat_request(request: ChatRequest, user_id: str, background_tasks: BackgroundTasks):
+    """Handle chat requests by streaming responses from the chat manager."""
     try:
-        # Update session for this request
-        chat_manager.session = session
+        async def event_generator():
+            try:
+                async for result in chat_manager.chat(
+                    user_id=user_id,
+                    query=request.query,
+                    meeting_ids=request.meeting_ids,
+                    entities=request.entities,
+                    thread_id=request.thread_id,
+                    model=request.model,
+                    temperature=request.temperature
+                ):
+                    if isinstance(result, dict):
+                        yield f"data: {json.dumps(result)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'chunk': result})}\n\n"
+            except Exception as e:
+                logger.error(f"Error in event generator: {str(e)}", exc_info=True)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-        async def stream_response():
-            async for item in chat_manager.chat(
-                user_id=str(user_id),
-                query=request.query,
-                meeting_ids=request.meeting_ids,
-                entities=request.entities,
-                thread_id=request.thread_id,
-                model=request.model,
-                temperature=request.temperature
-            ):
-                if "chunk" in item:
-                    yield f"data: {json.dumps({'type': 'stream', 'content': item['chunk']})}\n\n"
-                elif "error" in item:
-                    yield f"data: {json.dumps({'type': 'error', 'message': item['error']})}\n\n"
-                else:
-                    yield f"data: {json.dumps({'type': 'final', 'thread_id': item['thread_id'], 'output': item.get('linked_output', '')})}\n\n"
-            yield "data: {\"type\": \"done\"}\n\n"
-
-        return StreamingResponse(stream_response(), media_type="text/event-stream")
-    except ValueError as e:
-        if "Thread with id" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
-        raise
+        return StreamingResponse(
+            event_generator(),
+            media_type='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            }
+        )
     except Exception as e:
-        logger.error(f"Chat error: {str(e)}")
+        logger.error(f"Error in chat request: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/thread/{thread_id}")
 async def delete_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
-    thread = await thread_manager.get_thread(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    if thread.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
-    success = await thread_manager.delete_thread(thread_id)
-    if success:
-        return {"message": "Thread deleted successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to delete thread")
-
+    user_id, user_name, token = current_user
+    return await delete_thread_by_id(thread_id, user_id)
 
 @app.post("/share-links", response_model=CreateShareLinkResponse)
 async def create_new_share_link(
     request: CreateShareLinkRequest,
     current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     
     try:
         access_level = AccessLevel(request.access_level)
@@ -320,7 +325,7 @@ async def accept_new_share_link(
     request: AcceptShareLinkRequest,
     current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     
     async with async_session() as session:
         success = await accept_share_link(
@@ -373,7 +378,7 @@ async def get_meetings(
     current_user: tuple = Depends(get_current_user)
 ):
     logger.info(f"Getting meetings with offset={offset}, limit={limit}, include_summary={include_summary}, ownership={ownership}")
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     
     try:
         async with async_session() as session:
@@ -475,7 +480,7 @@ async def get_meeting_details(
     current_user: tuple = Depends(get_current_user),
     authorization: str = Header(...)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     token = authorization.split("Bearer ")[-1]
     
     async with get_session() as session:
@@ -589,7 +594,7 @@ async def get_meeting_details(
 
 @app.get("/threads/global")
 async def get_all_threads(current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     
     async with get_session() as session:
         # Query threads that have no content_id and no entity associations
@@ -614,7 +619,7 @@ async def get_all_threads(current_user: tuple = Depends(get_current_user)):
 
 @app.get("/threads/meeting/{meeting_id}")
 async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     logger.info(f"Getting threads for meeting {meeting_id} by user {user_id}")
     
     async with get_session() as session:
@@ -714,7 +719,7 @@ async def google_auth(request: GoogleAuthRequest):
 
 @app.get("/speakers")
 async def get_speakers(current_user: tuple = Depends(get_current_user)):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     
     try:
         async with async_session() as session:
@@ -770,7 +775,7 @@ async def get_meetings_by_speakers(
     request: SpeakerMeetingsRequest,
     current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     logger.info(f"Getting meetings for speakers: {request.speakers}")
     
     try:
@@ -885,7 +890,7 @@ async def index_meeting(
     meeting_id: UUID,
     current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     meeting_id_str = str(meeting_id)
     
     try:
@@ -932,7 +937,7 @@ async def get_threads_by_entities(
     request: ThreadEntitiesRequest,
     current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     threads = await thread_manager.get_threads_by_exact_entities(
         user_id=user_id,
         entity_names=request.entity_names
@@ -948,7 +953,7 @@ async def rename_thread(
     request: RenameThreadRequest, 
     current_user: tuple = Depends(get_current_user)
 ):
-    user_id, _ = current_user
+    user_id, user_name, token = current_user
     thread = await thread_manager.get_thread(thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
