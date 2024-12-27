@@ -72,6 +72,7 @@ class ContentProcessor:
 
         except Exception as e:
             logger.error(f"Processing error for content {content_id}: {str(e)}")
+            await session.rollback()  # Explicitly rollback the session
             raise ProcessingError(f"Content processing failed: {str(e)}")
             
     async def _process_note_content(

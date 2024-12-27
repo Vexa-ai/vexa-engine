@@ -12,7 +12,8 @@ from qdrant_client.models import (
     SearchParams,
     TextIndexParams,
     TokenizerType,
-    MatchAny
+    MatchAny,
+    PointIdsList
 )
 
 
@@ -111,4 +112,20 @@ class QdrantSearchEngine:
             return True
         except Exception as e:
 
+            return False
+
+    async def delete_points(self, point_ids: List[str]) -> bool:
+        """Delete points from Qdrant collection by their IDs"""
+        try:
+            # Convert string IDs to UUIDs
+            uuids = [UUID(id_str) for id_str in point_ids]
+            
+            # Delete points from collection
+            await self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=PointIdsList(points=uuids)
+            )
+            return True
+        except Exception as e:
+            print(f"Error deleting points from Qdrant: {e}")
             return False

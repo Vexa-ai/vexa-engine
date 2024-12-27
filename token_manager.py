@@ -134,3 +134,17 @@ class TokenManager:
             except SQLAlchemyError as e:
                 print(f"Database error: {e}")
                 return 0
+
+    async def get_user_id(self, token: str) -> uuid.UUID:
+        """Get user ID from token for dependency injection"""
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(UserToken)
+                .filter(UserToken.token == token)
+            )
+            token_record = result.scalar_one_or_none()
+            
+            if not token_record:
+                raise ValueError("Invalid token")
+                
+            return token_record.user_id

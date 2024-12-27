@@ -149,6 +149,28 @@ class ElasticsearchBM25:
             print(f"Error searching: {str(e)}")
             return []
 
+    def delete_documents(self, document_ids: List[str]) -> bool:
+        """Delete documents from Elasticsearch by their IDs"""
+        if not self.es_client:
+            print("No Elasticsearch connection available")
+            return False
+            
+        try:
+            # Delete documents by ID
+            for doc_id in document_ids:
+                self.es_client.delete(
+                    index=self.index_name,
+                    id=doc_id,
+                    ignore=[404]  # Ignore if document doesn't exist
+                )
+            
+            # Refresh index to make changes visible
+            self.es_client.indices.refresh(index=self.index_name)
+            return True
+        except Exception as e:
+            print(f"Error deleting documents from Elasticsearch: {e}")
+            return False
+
 async def hybrid_search(
     query: str,
     qdrant_engine,

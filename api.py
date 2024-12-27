@@ -62,6 +62,18 @@ from thread_manager import ThreadManager
 from analytics.api import router as analytics_router
 from notes.api import router as notes_router
 
+from psql_access import (
+    get_user_content_access, can_access_transcript,
+    is_content_owner, get_first_content_timestamp,
+    get_last_content_timestamp, get_meeting_token,
+    get_user_token, get_token_by_email,
+    get_content_by_user_id, get_content_by_ids,
+    clean_content_data, get_accessible_content,
+    get_user_name, has_content_access,
+    get_content_token, mark_content_deleted,
+    cleanup_search_indices
+)
+
 app = FastAPI()
 
 # Move this BEFORE any other middleware or app setup
@@ -225,6 +237,43 @@ async def submit_token(request: TokenRequest):
 async def get_threads(current_user: tuple = Depends(get_current_user)):
     user_id, user_name, token = current_user
     return await get_user_threads(user_id)
+
+async def get_thread_by_id(thread_id: str, user_id: str) -> dict:
+    """Get a thread by its ID and user ID"""
+    async with get_session() as session:
+        # Query thread for the user
+        result = await session.execute(
+            select(ThreadModel)
+            .where(
+                and_(
+                    ThreadModel.thread_id == thread_id,
+                    ThreadModel.user_id == UUID(user_id)
+                )
+            )
+        )
+        
+        thread = result.scalar_one_or_none()
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+            
+        # Get associated entities
+        entities_result = await session.execute(
+            select(Entity)
+            .join(thread_entity_association)
+            .where(thread_entity_association.c.thread_id == thread.thread_id)
+        )
+        entities = entities_result.scalars().all()
+        
+        # Parse messages from JSON string
+        messages = json.loads(thread.messages) if thread.messages else []
+        
+        return {
+            "thread_id": thread.thread_id,
+            "thread_name": thread.thread_name,
+            "timestamp": thread.timestamp,
+            "entities": [entity.name for entity in entities],
+            "messages": messages
+        }
 
 @app.get("/thread/{thread_id}")
 async def get_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
@@ -965,6 +1014,43 @@ async def rename_thread(
         return {"message": "Thread renamed successfully"}
     else:
         raise HTTPException(status_code=500, detail="Failed to rename thread")
+
+class DeleteContentRequest(BaseModel):
+    content_id: UUID
+
+async def get_current_user_id(token: str = Header(...)) -> UUID:
+    """Get current user ID from token"""
+    try:
+        user_id = await token_manager.get_user_id(token)
+        return user_id
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+@app.delete("/api/content/{content_id}")
+async def delete_content(
+    content_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    user_id: UUID = Depends(get_current_user_id)
+) -> Dict[str, bool]:
+    """Delete content for a user and clean up search indices"""
+    try:
+        # Mark content as deleted in database
+        deleted = await mark_content_deleted(session, user_id, content_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Content not found or no access")
+            
+        # Clean up search indices
+        cleaned = await cleanup_search_indices(session, content_id)
+        if not cleaned:
+            logger.error(f"Failed to clean up search indices for content {content_id}")
+            # Don't fail the request if search cleanup fails
+            
+        return {"success": True}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Error deleting content: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
     import uvicorn

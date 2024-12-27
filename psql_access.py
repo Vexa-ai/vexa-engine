@@ -10,6 +10,14 @@ from psql_models import (
     User, UserToken, Entity, content_entity_association
 )
 from psql_helpers import get_session, async_session
+from qdrant_search import QdrantSearchEngine
+from bm25_search import ElasticsearchBM25
+import os
+
+# Initialize search engines
+voyage_api_key = os.getenv('VOYAGE_API_KEY')
+qdrant_engine = QdrantSearchEngine(voyage_api_key)
+es_engine = ElasticsearchBM25()
 
 __all__ = [
     'get_user_content_access',
@@ -26,7 +34,10 @@ __all__ = [
     'get_accessible_content',
     'get_user_name',
     'has_content_access',
-    'get_content_token'
+    'get_content_token',
+    'mark_content_deleted',
+    'get_content_search_indices',
+    'cleanup_search_indices'
 ]
 
 # Access Control Functions
@@ -453,3 +464,73 @@ async def get_content_token(content_id: str) -> str | None:
             return token_record.token
             
         return None
+
+async def mark_content_deleted(
+    session: AsyncSession,
+    user_id: UUID,
+    content_id: UUID
+) -> bool:
+    """Mark content as deleted for a user by setting access_level to REMOVED"""
+    try:
+        # Check if user has access to the content
+        user_content = await session.execute(
+            select(UserContent)
+            .filter_by(content_id=content_id, user_id=user_id)
+        )
+        user_content = user_content.scalar_one_or_none()
+        
+        if not user_content:
+            return False
+            
+        # Update access level to REMOVED
+        user_content.access_level = AccessLevel.REMOVED.value
+        await session.commit()
+        
+        return True
+    except Exception as e:
+        await session.rollback()
+        raise e
+
+async def get_content_search_indices(
+    session: AsyncSession,
+    content_id: UUID
+) -> Tuple[List[str], List[str]]:
+    """Get Qdrant and Elasticsearch indices for content"""
+    try:
+        # Get content and its chunks
+        content_query = select(Content).filter(
+            or_(
+                Content.id == content_id,
+                Content.content_id == content_id
+            )
+        )
+        result = await session.execute(content_query)
+        contents = result.scalars().all()
+        
+        # Extract IDs for search indices
+        qdrant_ids = [str(c.id) for c in contents]
+        es_ids = [str(c.id) for c in contents]
+        
+        return qdrant_ids, es_ids
+    except Exception as e:
+        raise e
+
+async def cleanup_search_indices(
+    session: AsyncSession,
+    content_id: UUID
+) -> bool:
+    """Remove content from search indices"""
+    try:
+        # Get indices to remove
+        qdrant_ids, es_ids = await get_content_search_indices(session, content_id)
+        
+        # Remove from Qdrant
+        qdrant_success = await qdrant_engine.delete_points(qdrant_ids)
+        
+        # Remove from Elasticsearch
+        es_success = es_engine.delete_documents(es_ids)
+        
+        return qdrant_success and es_success
+    except Exception as e:
+        print(f"Error cleaning up search indices: {e}")
+        return False
