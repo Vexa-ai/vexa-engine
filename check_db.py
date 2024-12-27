@@ -1,0 +1,1 @@
+import sys; sys.path.append("/app"); import asyncio; from psql_models import Content, engine; from sqlalchemy import select; from sqlalchemy.ext.asyncio import AsyncSession; async def check_content(): async with AsyncSession(engine) as session: result = await session.execute(select(Content.content_id, Content.type)); for row in result: print(row); asyncio.run(check_content())

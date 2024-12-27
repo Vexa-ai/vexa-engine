@@ -1,105 +1,69 @@
 import pytest
-import asyncio
 import pytest_asyncio
-from typing import AsyncGenerator, Generator
-from unittest.mock import AsyncMock, MagicMock
-from datetime import datetime
+import asyncio
+import logging
+import os
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
-class MockEmbeddingResponse:
-    def __init__(self, embeddings):
-        self.embeddings = embeddings
+from psql_models import Base
 
-# Mock Voyage Client
-@pytest.fixture
-def mock_voyage_client() -> MagicMock:
-    client = MagicMock()
-    def mock_embed(texts, model):
-        # Return embeddings based on input size
-        return MockEmbeddingResponse(
-            embeddings=[[0.1] * 768 for _ in range(len(texts))]
-        )
-    client.embed = mock_embed
-    return client
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
-# Mock Redis
-@pytest.fixture
-def mock_redis() -> MagicMock:
-    redis = MagicMock()
-    redis.zrevrangebyscore = MagicMock(return_value=[])
-    redis.zadd = MagicMock(return_value=True)
-    redis.zrem = MagicMock(return_value=True)
-    return redis
+# Configure pytest-asyncio
+pytest.asyncio_fixture_loop_scope = "function"
 
-# Mock Elasticsearch
-@pytest.fixture
-def mock_elasticsearch() -> MagicMock:
-    es = MagicMock()
-    es.index = MagicMock(return_value={"result": "created"})
-    es.search = MagicMock(return_value=[])
-    return es
+# Test database setup
+DB_HOST = os.getenv('POSTGRES_HOST', 'postgres')
+DB_PORT = os.getenv('POSTGRES_PORT', '5432')
+DB_USER = os.getenv('POSTGRES_USER', 'postgres')
+DB_PASS = os.getenv('POSTGRES_PASSWORD', 'postgres')
+DB_NAME = os.getenv('POSTGRES_DB', 'postgres')
 
-# Mock Qdrant
-@pytest.fixture
-def mock_qdrant() -> MagicMock:
-    qdrant = MagicMock()
-    qdrant.upsert = AsyncMock(return_value=True)
-    qdrant.search = AsyncMock(return_value=[])
-    qdrant.voyage = MagicMock()
-    def mock_embed(texts, model):
-        # Return embeddings based on input size
-        return MockEmbeddingResponse(
-            embeddings=[[0.1] * 768 for _ in range(len(texts))]
-        )
-    qdrant.voyage.embed = mock_embed
-    qdrant.client = MagicMock()
-    qdrant.client.upsert = AsyncMock(return_value=True)
-    qdrant.collection_name = "test_collection"
-    return qdrant
+TEST_DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+logger.info(f"Using database URL: {TEST_DATABASE_URL}")
 
-# Mock Database Session
-@pytest_asyncio.fixture
-async def mock_db_session() -> MagicMock:
-    session = MagicMock()
-    session.commit = AsyncMock()
-    session.rollback = AsyncMock()
-    session.close = AsyncMock()
-    session.get = AsyncMock()
-    session.scalar = AsyncMock()
-    
-    async def mock_execute(*args, **kwargs):
-        return []
-    
-    session.execute = AsyncMock(side_effect=mock_execute)
-    return session
-
-# Test Data Fixtures
-@pytest.fixture
-def sample_note_text() -> str:
-    return """This is a sample note for testing.
-    It contains multiple lines and paragraphs.
-    
-    This is a new paragraph with some technical terms:
-    - Python programming
-    - Machine learning
-    - Data structures
-    
-    And some special characters: @#$%^&*()
-    """
-
-@pytest.fixture
-def sample_meeting_text() -> str:
-    return """Meeting Transcript
-    Date: 2024-03-19
-    
-    John: Hi everyone, welcome to the meeting.
-    Jane: Thanks for having us.
-    John: Let's discuss the project timeline.
-    Jane: I think we should focus on the MVP first.
-    """
-
-# Event Loop
 @pytest.fixture(scope="session")
-def event_loop() -> Generator:
+def event_loop():
+    """Create an instance of the default event loop for the test session."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
-    loop.close() 
+    loop.close()
+
+@pytest_asyncio.fixture(scope="session")
+async def engine():
+    """Create a test database engine."""
+    engine = create_async_engine(TEST_DATABASE_URL, echo=True)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+@pytest.fixture(scope="session")
+def async_session_maker(engine):
+    """Create a session maker for test database."""
+    return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+@pytest_asyncio.fixture
+async def test_session(async_session_maker):
+    """Create a test database session."""
+    async with async_session_maker() as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+            await session.close()
+
+@pytest_asyncio.fixture(autouse=True)
+async def setup_database(engine):
+    """Create test database tables before each test and drop them after."""
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all) 

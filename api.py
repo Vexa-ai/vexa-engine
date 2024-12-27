@@ -74,7 +74,18 @@ from psql_access import (
     cleanup_search_indices
 )
 
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize FastAPI cache with Redis backend
+    FastAPICache.init(
+        backend=RedisBackend(redis_client),
+        prefix="fastapi-cache"
+    )
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # Move this BEFORE any other middleware or app setup
 app.add_middleware(
@@ -139,16 +150,6 @@ REDIS_PORT=int(os.getenv('REDIS_PORT', 6379))
 
 # Initialize Redis connection
 redis_client = redis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}")
-
-# Setup FastAPI cache with Redis backend
-@app.on_event("startup")
-async def startup():
-    FastAPICache.init(
-        backend=RedisBackend(redis_client),
-        prefix="fastapi-cache"
-    )
-
-
 
 # Add logging configuration after the imports and before app initialization
 def setup_logger():
