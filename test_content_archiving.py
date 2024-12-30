@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 from psql_models import Content, UserContent, ContentType, AccessLevel, User
 from psql_helpers import get_session
-from psql_access import mark_content_deleted, cleanup_search_indices, get_accessible_content
+from psql_access import mark_content_deleted, cleanup_search_indices, get_accessible_content, archive_content, get_archived_content, restore_content
 from unittest.mock import patch, AsyncMock
 
 @pytest.fixture(scope="session")
@@ -179,3 +179,56 @@ async def test_error_cases(test_users, test_session):
     # Try archiving non-existent content
     result = await mark_content_deleted(test_session, test_users[0], non_existent_content)
     assert result is False 
+
+@pytest.mark.asyncio
+async def test_archive_management(test_users, test_content, test_session):
+    owner_id = test_users[0]
+    
+    # Archive content
+    result = await archive_content(test_session, owner_id, test_content, cleanup_search=False)
+    assert result is True
+    
+    # Get archived content
+    archived_contents, count = await get_archived_content(owner_id, session=test_session)
+    assert count == 1
+    assert any(c['content_id'] == str(test_content) for c in archived_contents)
+    
+    # Get archived content with type filter
+    archived_contents, count = await get_archived_content(
+        owner_id,
+        content_type=ContentType.NOTE,
+        session=test_session
+    )
+    assert count == 1
+    assert any(c['content_id'] == str(test_content) for c in archived_contents)
+    
+    # Get archived content with wrong type filter
+    archived_contents, count = await get_archived_content(
+        owner_id,
+        content_type=ContentType.MEETING,
+        session=test_session
+    )
+    assert count == 0
+    assert len(archived_contents) == 0
+    
+    # Restore content
+    result = await restore_content(
+        test_session,
+        owner_id,
+        test_content,
+        restore_access_level=AccessLevel.TRANSCRIPT
+    )
+    assert result is True
+    
+    # Verify content is accessible again
+    contents, _ = await get_accessible_content(
+        owner_id,
+        content_type=ContentType.NOTE,
+        session=test_session
+    )
+    assert any(c['content_id'] == str(test_content) for c in contents)
+    
+    # Verify content is no longer in archive
+    archived_contents, count = await get_archived_content(owner_id, session=test_session)
+    assert count == 0
+    assert not any(c['content_id'] == str(test_content) for c in archived_contents) 

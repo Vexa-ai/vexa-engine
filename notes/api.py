@@ -39,6 +39,14 @@ class NoteResponse(BaseModel):
     access_level: str
     is_indexed: bool = False
 
+class ArchivedNoteResponse(BaseModel):
+    id: UUID
+    text: str
+    parent_id: Optional[UUID]
+    timestamp: datetime
+    type: str
+    is_indexed: bool = False
+
 async def get_current_user(authorization: str = Header(...)):
     token = authorization.split("Bearer ")[-1]
     try:
@@ -253,4 +261,137 @@ async def delete_note(
         raise
     except Exception as e:
         logger.error(f"Unexpected error in note deletion: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/{note_id}/archive")
+async def archive_note(
+    note_id: UUID,
+    current_user: tuple = Depends(get_current_user),
+):
+    user_id, user_name, token = current_user
+    logger.info(f"Archiving note {note_id} for user {user_id} ({user_name})")
+    
+    try:
+        async with async_session() as session:
+            # Verify ownership
+            has_access = await has_content_access(session, user_id, note_id)
+            if not has_access:
+                logger.warning(f"User {user_id} attempted to archive unauthorized note {note_id}")
+                raise HTTPException(status_code=403, detail="No access to note")
+            
+            # Archive note
+            try:
+                success = await archive_content(
+                    session=session,
+                    user_id=user_id,
+                    content_id=note_id,
+                    cleanup_search=True
+                )
+                if success:
+                    logger.info(f"Note {note_id} archived successfully")
+                    return {"message": "Note archived successfully"}
+                else:
+                    logger.error(f"Failed to archive note {note_id}")
+                    raise HTTPException(status_code=404, detail="Note not found")
+                
+            except Exception as db_error:
+                logger.error(f"Database error while archiving note: {str(db_error)}", exc_info=True)
+                raise
+                
+    except HTTPException as http_error:
+        logger.error(f"HTTP error in note archiving: {str(http_error)}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in note archiving: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/archive", response_model=List[ArchivedNoteResponse])
+async def get_archived_notes(
+    current_user: tuple = Depends(get_current_user),
+    limit: int = 50,
+    offset: int = 0
+):
+    user_id, user_name, token = current_user
+    logger.info(f"Fetching archived notes for user {user_id} ({user_name})")
+    
+    try:
+        async with async_session() as session:
+            logger.debug("Starting database query")
+            archived_notes, total = await get_archived_content(
+                user_id=user_id,
+                content_type=ContentType.NOTE,
+                limit=limit,
+                offset=offset,
+                session=session
+            )
+            logger.debug(f"Found {len(archived_notes)} archived notes")
+            
+            # Get full note data for each archived note
+            response = []
+            for note in archived_notes:
+                note_query = select(Content).where(
+                    Content.id == UUID(note['content_id'])
+                )
+                result = await session.execute(note_query)
+                note_data = result.scalar_one()
+                
+                response.append(ArchivedNoteResponse(
+                    id=UUID(note['content_id']),
+                    text=note_data.text,
+                    parent_id=note_data.parent_id,
+                    timestamp=note['timestamp'],
+                    type=note['type'],
+                    is_indexed=note['is_indexed']
+                ))
+            
+            logger.debug(f"Returning {len(response)} archived notes")
+            return response
+            
+    except Exception as e:
+        logger.error(f"Error fetching archived notes: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/{note_id}/restore")
+async def restore_note(
+    note_id: UUID,
+    current_user: tuple = Depends(get_current_user),
+):
+    user_id, user_name, token = current_user
+    logger.info(f"Restoring note {note_id} for user {user_id} ({user_name})")
+    
+    try:
+        async with async_session() as session:
+            # Verify note exists in archive
+            archived_notes, _ = await get_archived_content(
+                user_id=user_id,
+                session=session
+            )
+            if not any(n['content_id'] == str(note_id) for n in archived_notes):
+                logger.warning(f"User {user_id} attempted to restore non-archived note {note_id}")
+                raise HTTPException(status_code=404, detail="Note not found in archive")
+            
+            # Restore note
+            try:
+                success = await restore_content(
+                    session=session,
+                    user_id=user_id,
+                    content_id=note_id,
+                    restore_access_level=AccessLevel.TRANSCRIPT
+                )
+                if success:
+                    logger.info(f"Note {note_id} restored successfully")
+                    return {"message": "Note restored successfully"}
+                else:
+                    logger.error(f"Failed to restore note {note_id}")
+                    raise HTTPException(status_code=500, detail="Failed to restore note")
+                
+            except Exception as db_error:
+                logger.error(f"Database error while restoring note: {str(db_error)}", exc_info=True)
+                raise
+                
+    except HTTPException as http_error:
+        logger.error(f"HTTP error in note restoration: {str(http_error)}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in note restoration: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) 

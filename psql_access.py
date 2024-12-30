@@ -37,7 +37,10 @@ __all__ = [
     'get_content_token',
     'mark_content_deleted',
     'get_content_search_indices',
-    'cleanup_search_indices'
+    'cleanup_search_indices',
+    'get_archived_content',
+    'restore_content',
+    'archive_content'
 ]
 
 # Access Control Functions
@@ -555,3 +558,99 @@ async def cleanup_search_indices(
     except Exception as e:
         print(f"Error cleaning up search indices: {e}")
         return False
+
+async def get_archived_content(
+    user_id: UUID,
+    content_type: Optional[ContentType] = None,
+    limit: int = 50,
+    offset: int = 0,
+    session: AsyncSession = None
+) -> tuple[List[dict], int]:
+    """Get archived content for a user with optional content type filter"""
+    async with (session or get_session()) as session:
+        # Build base query
+        query = (
+            select(Content, UserContent.access_level)
+            .join(UserContent, or_(
+                UserContent.content_id == Content.id,
+                UserContent.content_id == Content.content_id
+            ))
+            .where(and_(
+                UserContent.user_id == user_id,
+                UserContent.access_level == AccessLevel.REMOVED.value
+            ))
+        )
+        
+        # Add content type filter if specified
+        if content_type:
+            query = query.where(Content.type == content_type.value)
+            
+        # Get total count
+        count_query = select(func.count()).select_from(query.subquery())
+        total_count = await session.scalar(count_query)
+        
+        # Add ordering and pagination
+        query = (
+            query
+            .order_by(Content.timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        
+        result = await session.execute(query)
+        rows = result.all()
+        
+        contents = [{
+            "content_id": str(row.Content.content_id or row.Content.id),
+            "timestamp": row.Content.timestamp,
+            "type": row.Content.type,
+            "access_level": row.access_level,
+            "is_indexed": row.Content.is_indexed
+        } for row in rows]
+        
+        return contents, total_count
+
+async def restore_content(
+    session: AsyncSession,
+    user_id: UUID,
+    content_id: UUID,
+    restore_access_level: AccessLevel = AccessLevel.TRANSCRIPT
+) -> bool:
+    """Restore archived content for a user with specified access level"""
+    # Check if user has the content archived
+    user_content = await session.execute(
+        select(UserContent)
+        .filter_by(
+            content_id=content_id,
+            user_id=user_id,
+            access_level=AccessLevel.REMOVED.value
+        )
+    )
+    user_content = user_content.scalar_one_or_none()
+    
+    if not user_content:
+        return False
+        
+    # Restore with specified access level
+    user_content.access_level = restore_access_level.value
+    await session.commit()
+    
+    return True
+
+async def archive_content(
+    session: AsyncSession,
+    user_id: UUID,
+    content_id: UUID,
+    cleanup_search: bool = True
+) -> bool:
+    """Archive content for a user with optional search index cleanup"""
+    # Mark content as deleted
+    success = await mark_content_deleted(session, user_id, content_id)
+    if not success:
+        return False
+        
+    # Optionally clean up search indices
+    if cleanup_search:
+        await cleanup_search_indices(session, content_id)
+        
+    return True
