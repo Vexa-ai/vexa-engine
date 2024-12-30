@@ -1,0 +1,1223 @@
+# Meeting Monitoring and Indexing System Documentation
+
+# Content Processing Cycles Documentation
+
+# Chapter 0: Files and Components Overview
+
+## 1. Core Files
+
+### 1.1 Shared Infrastructure
+- `back/indexing/processor.py`: Main content processing
+- `back/indexing/redis_keys.py`: Redis key definitions
+- `back/psql_models.py`: Database models
+- `back/psql_helpers.py`: Database utilities
+- `back/psql_access.py`: Database access layer
+
+### 1.2 Meeting-Specific Files
+- `back/indexing/meetings_monitor.py`: Meeting monitoring
+- `back/run_monitor.py`: Monitor execution
+- `back/vexa.py`: Vexa API integration
+- `back/indexing/content_relations.py`: Meeting relations
+
+### 1.3 Note-Specific Files
+- `back/indexing/note_processor.py`: Note processing
+- `back/indexing/worker.py`: Processing worker
+
+### 1.4 Search Integration
+- `back/qdrant_search.py`: Vector search
+- `back/bm25_search.py`: Text search
+- `back/indexing/content_relations.py`: Content relationships
+
+# Chapter 1: System Comparison
+
+## 1. Similarities
+
+### 1.1 Infrastructure
+- Both use Redis for queue management
+- Both use dual search engines (Elasticsearch + Qdrant)
+- Both implement retry mechanisms
+- Both use the same monitoring patterns
+
+### 1.2 Processing Flow
+- Both follow queue-based architecture
+- Both implement chunking strategies
+- Both generate embeddings
+- Both use dual indexing
+
+### 1.3 Error Handling
+- Similar retry mechanisms
+- Similar logging patterns
+- Similar queue management
+- Similar status tracking
+
+## 2. Key Differences
+
+### 2.1 Content Source
+- Meetings: External API (VexaAPI)
+- Notes: Internal database changes
+
+### 2.2 Chunking Strategy
+- Meetings: Speaker + Topic based
+- Notes: Character-based with RecursiveCharacterTextSplitter
+
+### 2.3 Metadata
+- Meetings: Speakers, timestamps, topics
+- Notes: Author, creation time, document context
+
+### 2.4 Processing Steps
+- Meetings: Transcription → Topics → Chunks
+- Notes: Raw Text → Chunks → Context
+
+# Chapter 2: Usage Flow
+
+## 1. Search Layer
+
+### 1.1 Entry Points
+- Direct API queries
+- Frontend search interface
+- Chat-based queries
+- Integration endpoints
+
+### 1.2 Hybrid Search Process
+```
+User Query → Parallel Search Execution
+            ├─→ Semantic Search (Qdrant)
+            │   └─→ Vector Similarity
+            └─→ Text Search (Elasticsearch)
+                └─→ BM25 Ranking
+            └─→ Results Merger
+                └─→ Hybrid Ranking
+```
+
+### 1.3 Search Types
+1. **Full-Text Search**
+   - BM25-based ranking
+   - Keyword matching
+   - Field-specific queries
+   - Filters and facets
+
+2. **Semantic Search**
+   - Vector embeddings
+   - Similarity matching
+   - Context-aware results
+   - Semantic relevance
+
+3. **Hybrid Search**
+   - Combined ranking
+   - Weighted results
+   - Best of both approaches
+   - Configurable balance
+
+## 2. Chat Integration
+
+### 2.1 Chat Flow
+```
+User Message → Context Retrieval → LLM Processing → Response Generation
+              └─→ Hybrid Search   └─→ Context Integration
+```
+
+### 2.2 Key Features
+1. **Context Management**
+   - Historical context
+   - Retrieved content
+   - User preferences
+   - Session state
+
+2. **Query Processing**
+   - Intent detection
+   - Query expansion
+   - Context injection
+   - Search parameterization
+
+3. **Response Generation**
+   - Content synthesis
+   - Source attribution
+   - Confidence scoring
+   - Follow-up suggestions
+
+## 3. API Layer
+
+### 3.1 Core Endpoints
+1. **Search API**
+   - `/search/hybrid`
+   - `/search/semantic`
+   - `/search/fulltext`
+   - `/search/suggest`
+
+2. **Chat API**
+   - `/chat/message`
+   - `/chat/context`
+   - `/chat/stream`
+   - `/chat/feedback`
+
+3. **Content API**
+   - `/content/meetings`
+   - `/content/notes`
+   - `/content/metadata`
+   - `/content/relations`
+
+### 3.2 Integration Features
+1. **Authentication & Authorization**
+   - Token-based auth
+   - Role-based access
+   - Content permissions
+   - Usage quotas
+
+2. **Response Formats**
+   - JSON structure
+   - Pagination
+   - Error handling
+   - Status codes
+
+3. **Performance Features**
+   - Caching
+   - Rate limiting
+   - Request batching
+   - Response compression
+
+## 4. Usage Examples
+
+### 4.1 Direct Search
+```python
+# Hybrid search example
+response = await client.search.hybrid({
+    "query": "project deadlines",
+    "content_types": ["meeting", "note"],
+    "date_range": {"start": "2023-01-01"},
+    "weights": {
+        "semantic": 0.7,
+        "text": 0.3
+    }
+})
+```
+
+### 4.2 Chat Interaction
+```python
+# Chat with search context
+response = await client.chat.message({
+    "message": "What was discussed about the API design?",
+    "context": {
+        "search_depth": 5,
+        "content_types": ["meeting"],
+        "recency_boost": true
+    }
+})
+```
+
+### 4.3 API Integration
+```python
+# Content retrieval with relations
+response = await client.content.get({
+    "content_id": "meeting-123",
+    "include_relations": true,
+    "include_chunks": true
+})
+```
+
+# Chapter 3: Data Structures Flow
+
+## 1. Content Base Structure
+
+### 1.1 Core Content Model
+```python
+class Content:
+    id: UUID
+    type: ContentType  # MEETING or NOTE
+    timestamp: datetime
+    created_by: UUID
+    is_indexed: bool
+    metadata: Dict
+```
+
+### 1.2 Content Types
+```python
+class ContentType(Enum):
+    MEETING = "meeting"
+    NOTE = "note"
+```
+
+## 2. Meeting Data Flow
+
+### 2.1 Raw Meeting Data
+```python
+class MeetingData:
+    session_id: str
+    start_time: datetime
+    end_time: datetime
+    participants: List[str]
+    transcript_available: bool
+```
+
+### 2.2 Transcript Data
+```python
+class TranscriptChunk:
+    formatted_time: str
+    speaker: str
+    content: str
+    
+class Transcript:
+    chunks: List[TranscriptChunk]
+    speakers: List[str]
+    start_datetime: datetime
+```
+
+### 2.3 Processed Meeting
+```python
+class ProcessedMeeting:
+    content_id: UUID
+    chunks: List[Dict]
+    topics: List[str]
+    metadata: Dict
+    embeddings: List[List[float]]
+    search_texts: List[str]
+```
+
+## 3. Note Data Flow
+
+### 3.1 Raw Note Data
+```python
+class NoteData:
+    content_id: UUID
+    text: str
+    author: str
+    timestamp: datetime
+    metadata: Dict
+```
+
+### 3.2 Processed Note
+```python
+class ProcessedNote:
+    content_id: UUID
+    chunks: List[str]
+    contexts: List[str]
+    metadata: Dict
+    embeddings: List[List[float]]
+    search_texts: List[str]
+```
+
+## 4. Search Structures
+
+### 4.1 Search Request
+```python
+class SearchRequest:
+    query: str
+    content_types: List[ContentType]
+    filters: Dict
+    weights: Dict[str, float]  # semantic vs text
+    pagination: Dict
+```
+
+### 4.2 Vector Point
+```python
+class QdrantPoint:
+    id: str
+    vector: List[float]
+    payload: Dict
+```
+
+### 4.3 Search Document
+```python
+class ESDocument:
+    content_id: str
+    chunk_id: str
+    text: str
+    metadata: Dict
+    timestamp: datetime
+```
+
+## 5. Chat Structures
+
+### 5.1 Chat Message
+```python
+class ChatMessage:
+    role: str  # user/assistant
+    content: str
+    timestamp: datetime
+    metadata: Dict
+```
+
+### 5.2 Chat Context
+```python
+class ChatContext:
+    messages: List[ChatMessage]
+    search_results: List[Dict]
+    user_info: Dict
+    settings: Dict
+```
+
+## 6. Queue Structures
+
+### 6.1 Queue Item
+```python
+class QueueItem:
+    content_id: UUID
+    type: ContentType
+    priority: int
+    retry_count: int
+    last_error: Optional[str]
+```
+
+### 6.2 Processing Status
+```python
+class ProcessingStatus:
+    content_id: UUID
+    status: str  # pending/processing/completed/failed
+    start_time: datetime
+    end_time: Optional[datetime]
+    error: Optional[str]
+```
+
+## 7. Data Flow Examples
+
+### 7.1 Meeting Processing Flow
+```
+MeetingData → Transcript → ProcessedMeeting → (QdrantPoint, ESDocument)
+```
+
+### 7.2 Note Processing Flow
+```
+NoteData → ProcessedNote → (QdrantPoint, ESDocument)
+```
+
+### 7.3 Search Flow
+```
+SearchRequest → (QdrantPoint[], ESDocument[]) → Merged Results
+```
+
+### 7.4 Chat Flow
+```
+ChatMessage → SearchRequest → ChatContext → Response
+```
+
+## 8. Storage Mappings
+
+### 8.1 Elasticsearch Mapping
+```json
+{
+  "content": {
+    "properties": {
+      "content_id": {"type": "keyword"},
+      "chunk_id": {"type": "keyword"},
+      "text": {"type": "text"},
+      "type": {"type": "keyword"},
+      "timestamp": {"type": "date"},
+      "metadata": {"type": "object"}
+    }
+  }
+}
+```
+
+### 8.2 Qdrant Collection
+```python
+{
+    "name": "content_vectors",
+    "vectors": {
+        "size": 1024,
+        "distance": "Cosine"
+    },
+    "shard_number": 6,
+    "replication_factor": 2
+}
+```
+
+### 8.3 Redis Structures
+```
+ZSET indexing_queue: {content_id: priority_score}
+SET processing_set: {content_id1, content_id2, ...}
+HASH failed_set: {content_id: error_message}
+```
+
+# Chapter 4: DRY Opportunities
+
+## 1. Code Level
+
+### 1.1 Queue Management
+- Potential for shared queue handler class
+- Common retry logic extraction
+- Unified status tracking
+
+### 1.2 Processing Pipeline
+- Abstract base processor class
+- Common embedding generation
+- Shared indexing logic
+
+### 1.3 Error Handling
+- Unified error tracking
+- Common retry mechanisms
+- Shared logging infrastructure
+
+## 2. Infrastructure Level
+
+### 2.1 Search Integration
+- Unified search client initialization
+- Common index management
+- Shared bulk operations
+
+### 2.2 Monitoring
+- Common health check mechanisms
+- Unified status reporting
+- Shared maintenance tasks
+
+## 3. Implementation Priorities
+
+1. High Priority
+   - Queue management abstraction
+   - Error handling unification
+   - Search client wrapper
+
+2. Medium Priority
+   - Processing pipeline base class
+   - Monitoring consolidation
+   - Status tracking unification
+
+3. Low Priority
+   - Logging standardization
+   - Configuration management
+   - Maintenance task automation
+
+# Part 1: Meeting Cycle
+
+## 1. System Overview
+
+The system consists of two main components in order of data flow:
+1. Meeting Monitoring System (Source of meeting metadata)
+2. Meeting Indexing System (Processing and search enablement)
+
+These components work together in a pipeline where the monitoring system discovers and tracks meetings, which are then processed by the indexing system for search and analysis.
+
+## 2. Meeting Monitoring System
+
+### 2.1 Components
+- `MeetingsMonitor`: Main monitoring class
+- `run_monitor.py`: Continuous monitoring loop
+- Redis: Queue management system
+- VexaAuth: Meeting data retrieval
+
+### 2.2 Monitoring Flow
+```
+Monitor Loop → Sync Meetings → Update Queue → Trigger Indexing
+```
+
+### 2.3 Key Features
+
+1. **Sync Process**
+   - Cursor-based meeting retrieval
+   - Incremental updates
+   - Overlap window for reliability
+   - Batch processing support
+
+2. **Queue Management**
+   - Redis-based queuing
+   - Processing status tracking
+   - Failed item handling
+   - Retry mechanism with backoff
+
+3. **Error Handling**
+   - Failed meeting tracking
+   - Automatic retries
+   - Comprehensive logging
+   - Queue health monitoring
+   - Error recovery procedures
+
+## 3. Meeting Indexing System
+
+### 3.1 Components
+- `ContentProcessor`: Main processing class
+- `IndexingWorker`: Queue processing worker
+- Storage Systems:
+  - Elasticsearch (BM25 text search)
+  - Qdrant (vector/semantic search)
+
+### 3.2 Processing Flow
+```
+Monitor Queue → Raw Meeting Data → VexaAPI Transcription → Topic Extraction → 
+Chunking → Contextualization → Embedding → Dual Indexing
+```
+
+### 3.3 Key Processing Steps
+1. **Transcription Retrieval**
+   - Uses VexaAPI
+   - Returns DataFrame with:
+     - Timestamps
+     - Speakers
+     - Content
+
+2. **Chunk Processing**
+   - Topic extraction using LLM
+   - Topic-speaker based chunking
+   - Content contextualization
+   - Speaker prefix addition
+
+3. **Indexing**
+   - Voyage model embeddings
+   - Dual-engine indexing:
+     - Elasticsearch documents
+     - Qdrant vector points
+
+## 4. Integration Points
+
+### 4.1 Data Flow
+```
+Meeting Monitor                     Indexing System
+---------------                     ---------------
+1. Discover Meetings  --→  VexaAuth API
+2. Sync Meetings     --→  Database
+3. Queue Items       --→  Redis     --→  Indexing Worker
+4. Track Status      <--  Redis     <--  Processing Results
+```
+
+### 4.2 Key Integration Features
+- Asynchronous operations
+- Queue-based architecture
+- Status tracking
+- Error propagation
+- Recovery mechanisms
+
+## 5. Performance Considerations
+
+1. **Monitoring Optimization**
+   - Cursor-based pagination
+   - Overlap windows
+   - Batch processing
+   - Incremental updates
+   - Queue management
+
+2. **Indexing Optimization**
+   - Smart chunking (speaker + topic based)
+   - Context preservation
+   - Parallel indexing
+   - Batch processing
+   - Dual search engine optimization
+
+3. **Reliability Features**
+   - Automatic retries
+   - Queue monitoring
+   - Status tracking
+   - Error recovery
+   - Data consistency checks
+
+## 6. System Requirements
+
+1. **Dependencies**
+   - Redis for queue management
+   - Elasticsearch for text search
+   - Qdrant for vector search
+   - VexaAPI for meeting data
+   - Voyage for embeddings
+
+2. **Configuration**
+   - Redis connection settings
+   - API credentials
+   - Queue parameters
+   - Retry settings
+   - Monitoring intervals
+
+## 7. Monitoring and Maintenance
+
+1. **Health Checks**
+   - Meeting discovery monitoring
+   - Queue status monitoring
+   - Processing status tracking
+   - Error rate monitoring
+   - System performance metrics
+
+2. **Maintenance Tasks**
+   - Failed meeting recovery
+   - Queue cleanup
+   - Log rotation
+   - Performance optimization
+   - System updates
+
+# Part 2: Note Cycle
+
+## 1. System Overview
+
+The system consists of two main components in order of data flow:
+1. Note Creation/Update Detection
+2. Note Indexing System (Processing and search enablement)
+
+These components work together to ensure notes are properly processed, indexed, and searchable alongside meetings.
+
+## 2. Note Detection System
+
+### 2.1 Components
+- `ContentProcessor`: Main processing class
+- `NoteProcessor`: Specialized note processing
+- Redis: Queue management system
+- Database: Note storage and tracking
+
+### 2.2 Detection Flow
+```
+Database Change → Note Creation/Update → Queue Update → Trigger Indexing
+```
+
+### 2.3 Key Features
+
+1. **Change Detection**
+   - Database triggers for note changes
+   - Real-time update monitoring
+   - Immediate queue updates
+   - Change type detection (create/update/delete)
+
+2. **Queue Management**
+   - Redis-based queuing
+   - Processing status tracking
+   - Failed note handling
+   - Retry mechanism with backoff
+
+3. **Error Handling**
+   - Failed note tracking
+   - Automatic retries
+   - Comprehensive logging
+   - Queue health monitoring
+   - Error recovery procedures
+
+## 3. Note Indexing System
+
+### 3.1 Components
+- `NoteProcessor`: Specialized note processing class
+- `ContentProcessor`: Main processing class
+- Storage Systems:
+  - Elasticsearch (BM25 text search)
+  - Qdrant (vector/semantic search)
+
+### 3.2 Processing Flow
+```
+Monitor Queue → Raw Note Data → Chunk Creation → Context Generation → 
+Embedding → Dual Indexing
+```
+
+### 3.3 Key Processing Steps
+1. **Text Chunking**
+   - RecursiveCharacterTextSplitter
+   - Configurable chunk size (default 1000)
+   - Configurable overlap (default 200)
+   - Smart separator hierarchy
+
+2. **Chunk Processing**
+   - Context generation for each chunk
+   - Document-level context preservation
+   - Metadata enrichment
+   - Author attribution
+
+3. **Indexing**
+   - Voyage model embeddings
+   - Dual-engine indexing:
+     - Elasticsearch documents
+     - Qdrant vector points
+
+## 4. Integration Points
+
+### 4.1 Data Flow
+```
+Note System                        Indexing System
+-----------                       ---------------
+1. Detect Changes    --→  Database
+2. Queue Updates     --→  Redis
+3. Process Notes     --→  NoteProcessor
+4. Index Results     --→  Search Engines
+5. Track Status      <--  Processing Results
+```
+
+### 4.2 Key Integration Features
+- Real-time processing
+- Queue-based architecture
+- Status tracking
+- Error propagation
+- Recovery mechanisms
+
+## 5. Performance Considerations
+
+1. **Processing Optimization**
+   - Smart text chunking
+   - Efficient context generation
+   - Batch processing
+   - Caching mechanisms
+   - Queue optimization
+
+2. **Indexing Optimization**
+   - Parallel indexing
+   - Batch embeddings
+   - Efficient metadata handling
+   - Search engine optimization
+   - Index management
+
+3. **Reliability Features**
+   - Automatic retries
+   - Queue monitoring
+   - Status tracking
+   - Error recovery
+   - Data consistency checks
+
+## 6. System Requirements
+
+1. **Dependencies**
+   - Redis for queue management
+   - Elasticsearch for text search
+   - Qdrant for vector search
+   - LangChain for text splitting
+   - Voyage for embeddings
+
+2. **Configuration**
+   - Chunk size settings
+   - Overlap parameters
+   - Queue configuration
+   - Retry settings
+   - Processing intervals
+
+## 7. Monitoring and Maintenance
+
+1. **Health Checks**
+   - Note change monitoring
+   - Queue status tracking
+   - Processing status monitoring
+   - Error rate tracking
+   - System performance metrics
+
+2. **Maintenance Tasks**
+   - Failed note recovery
+   - Queue cleanup
+   - Log rotation
+   - Performance optimization
+   - System updates
+
+# Chapter 5: System Data Flow Diagrams
+
+## 1. High-Level System Overview
+```
+                                     ┌──────────────────┐
+                                     │                  │
+                                     │    Front-end     │
+                                     │    Interface     │
+                                     │                  │
+                                     └─────────┬────────┘
+                                               │
+                                               ▼
+┌──────────────────┐               ┌──────────────────┐               ┌──────────────────┐
+│                  │               │                  │               │                  │
+│  Meeting Source  │──────────────▶│      API        │◀──────────────│    Note Source   │
+│    (VexaAPI)     │               │     Layer       │               │   (Database)     │
+│                  │               │                  │               │                  │
+└────────┬─────────┘               └────────┬─────────┘               └────────┬─────────┘
+         │                                  │                                  │
+         │                                  ▼                                  │
+         │                         ┌──────────────────┐                       │
+         │                         │                  │                       │
+         └────────────────────────▶│  Queue System   │◀──────────────────────┘
+                                  │    (Redis)       │
+                                  │                  │
+                                  └────────┬─────────┘
+                                          │
+                                          ▼
+                                 ┌──────────────────┐
+                                 │   Processing     │
+                                 │     Layer        │
+                                 │                  │
+                                 └────────┬─────────┘
+                                          │
+                                          ▼
+                              ┌─────────────────────┐
+                              │   Search Layer      │
+                              │                     │
+                     ┌────────┤  (Dual Indexing)    ├───────┐
+                     │        │                     │       │
+                     ▼        └─────────────────────┘       ▼
+         ┌──────────────────┐                    ┌──────────────────┐
+         │                  │                    │                  │
+         │  Elasticsearch   │                    │     Qdrant       │
+         │  (Text Search)   │                    │(Semantic Search) │
+         │                  │                    │                  │
+         └──────────────────┘                    └──────────────────┘
+```
+
+## 2. Meeting Processing Flow
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│              │    │              │    │              │    │              │
+│  VexaAPI     │───▶│  Monitor     │───▶│  Queue       │───▶│  Processor   │
+│              │    │              │    │              │    │              │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────┬───────┘
+                                                                    │
+                                                                    ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│              │◀───│              │◀───│              │◀───│              │
+│  Search      │    │  Embeddings  │    │  Topics      │    │ Transcription │
+│  Engines     │    │              │    │              │    │              │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+```
+
+## 3. Note Processing Flow
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│              │    │              │    │              │    │              │
+│  Database    │───▶│  Monitor     │───▶│  Queue       │───▶│  Processor   │
+│              │    │              │    │              │    │              │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────┬───────┘
+                                                                    │
+                                                                    ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│              │◀───│              │◀───│              │◀───│              │
+│  Search      │    │  Embeddings  │    │  Context     │    │   Chunks     │
+│  Engines     │    │              │    │              │    │              │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+```
+
+## 4. Search and Chat Flow
+```
+┌──────────────┐
+│   Client     │
+│   Request    │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐    ┌───────────────────────────────┐
+│              │    │        Hybrid Search          │
+│   API        │───▶│                               │
+│   Layer      │    │    ┌─────────┐   ┌─────────┐  │
+└──────────────┘    │    │Semantic │   │  Text   │  │
+                    │    │ Search  │   │ Search  │  │
+                    │    └────┬────┘   └────┬────┘  │
+                    │         │             │       │
+                    │         └──────┬──────┘       │
+                    │                │              │
+                    └────────────────┼──────────────┘
+                                    │
+                                    ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│              │    │              │    │              │
+│  Response    │◀───│    Chat     │◀───│   Context    │
+│              │    │    LLM      │    │  Integration │
+└──────────────┘    └──────────────┘    └──────────────┘
+```
+
+## 5. Data Structure Flow
+```
+┌─────────────────┐
+│   Raw Content   │
+├─────────┬───────┤
+│ Meeting │ Note  │
+└────┬────┴───┬───┘
+     │        │
+     ▼        ▼
+┌─────────────────┐
+│   Processing    │
+├─────────┬───────┤
+│Transcript│Chunks │
+└────┬────┴───┬───┘
+     │        │
+     ▼        ▼
+┌─────────────────┐
+│   Enrichment    │
+├─────────┬───────┤
+│ Topics  │Context│
+└────┬────┴───┬───┘
+     │        │
+     ▼        ▼
+┌─────────────────┐
+│Search Documents │
+├─────────┬───────┤
+│Vector   │Text   │
+└─────────┴───────┘
+```
+
+## 6. Queue Management Flow
+```
+┌──────────────┐
+│  New Content │
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│              │    │              │    │              │
+│  Queue Add   │───▶│  Processing  │───▶│  Completed   │
+│              │    │              │    │              │
+└──────┬───────┘    └──────┬───────┘    └──────────────┘
+       │                   │
+       │                   ▼
+       │            ┌──────────────┐
+       │            │              │
+       └───────────▶│   Failed     │
+                    │   Retry      │
+                    └──────────────┘
+```
+
+These diagrams provide a comprehensive view of:
+1. Overall system architecture
+2. Meeting processing pipeline
+3. Note processing pipeline
+4. Search and chat flow
+5. Data structure transformations
+6. Queue management system
+
+Each diagram shows the key components and their interactions, making it easier to understand how data flows through the system.
+
+
+
+
+# Chapter 6: Content Processing Refactoring
+
+## 1. Current Issues
+
+### 1.1 Identified Problems
+- Different chunking strategies not properly separated
+- Duplicate processing logic
+- Non-standardized search data
+- Mixed source-specific and processing logic
+
+### 1.2 Key Insights
+- Topics are used only for meeting chunking (speaker + topic changes)
+- Notes use character-based chunking
+- Meeting metadata in DB, content via API is correct approach
+- Final search data should be homogeneous
+- Processing should be source-agnostic
+
+## 2. New Architecture
+
+### 2.1 Source Handlers
+```python
+class SourceHandler(ABC):
+    @abstractmethod
+    async def get_raw_content(self, content_id: UUID) -> RawContent:
+        pass
+
+class NoteHandler(SourceHandler):
+    async def get_raw_content(self, content_id: UUID) -> RawContent:
+        # Direct DB access for notes
+        pass
+
+class MeetingHandler(SourceHandler):
+    async def get_raw_content(self, content_id: UUID) -> RawContent:
+        # VexaAPI call + metadata from DB
+        pass
+```
+
+### 2.2 Core Data Structures
+```python
+class RawContent:
+    content_id: UUID
+    source_type: ContentType
+    raw_text: str
+    metadata: Dict
+
+class Chunk:
+    chunk_id: UUID
+    content_id: UUID
+    text: str
+    context: str
+    metadata: Dict
+
+class SearchDocument:
+    id: UUID
+    content_id: UUID
+    chunk_id: UUID
+    text: str
+    vector: List[float]
+    metadata: Dict
+```
+
+### 2.3 Processing Components
+```python
+class ChunkProcessor:
+    async def process(self, raw_content: RawContent) -> List[Chunk]:
+        if raw_content.source_type == ContentType.MEETING:
+            return self._process_meeting(raw_content)
+        return self._process_note(raw_content)
+
+class SearchIndexer:
+    async def index(self, chunks: List[Chunk]) -> None:
+        # Common indexing logic for both types
+        pass
+```
+
+## 3. Implementation Plan
+
+### 3.1 Phase 1: Data Structures
+1. Create unified data structures
+2. Update existing code to use new structures
+3. Add validation and conversion utilities
+
+### 3.2 Phase 2: Source Handlers
+1. Create abstract base handler
+2. Implement note handler
+3. Implement meeting handler
+4. Add source-specific tests
+
+### 3.3 Phase 3: Processing
+1. Create unified chunk processor
+2. Implement standardized indexer
+3. Add processing utilities
+4. Create processing tests
+
+### 3.4 Phase 4: Integration
+1. Update existing processors
+2. Modify search integration
+3. Add end-to-end tests
+4. Update documentation
+
+## 4. Migration Strategy
+
+### 4.1 Step-by-Step Migration
+1. Create new components alongside existing
+2. Gradually move processing to new system
+3. Validate results in parallel
+4. Switch over when verified
+
+### 4.2 Validation Points
+1. Chunk consistency
+2. Search result quality
+3. Processing performance
+4. Error handling
+
+## 5. Expected Benefits
+
+### 5.1 Code Quality
+- Reduced duplication
+- Clear separation of concerns
+- Better testability
+- Simplified maintenance
+
+### 5.2 Performance
+- Unified caching
+- Optimized processing
+- Standardized indexing
+- Better resource usage
+
+### 5.3 Functionality
+- Consistent search results
+- Unified error handling
+- Easier feature additions
+- Better monitoring
+
+## 6. Risk Mitigation
+
+### 6.1 Technical Risks
+- Data migration complexity
+- Performance impact
+- Search quality changes
+- Integration issues
+
+### 6.2 Mitigation Strategies
+1. Comprehensive testing
+2. Parallel validation
+3. Gradual rollout
+4. Monitoring and metrics
+
+# Chapter 7: Critical Files for Research
+
+## 1. Core Processing Files
+
+### 1.1 Content Processing
+- `back/indexing/processor.py`:
+  - Current content processing implementation
+  - Meeting vs note handling
+  - Integration with search engines
+  - **Research Need**: Understand current chunking strategies
+
+### 1.2 Note Processing
+- `back/indexing/note_processor.py`:
+  - Character-based chunking implementation
+  - Context generation
+  - **Research Need**: Examine context generation logic
+
+### 1.3 Meeting Processing
+- `back/indexing/meetings_monitor.py`:
+  - Meeting metadata handling
+  - Queue management
+  - **Research Need**: Study metadata storage patterns
+
+## 2. Search Integration Files
+
+### 2.1 Search Engines
+- `back/qdrant_search.py`:
+  - Vector search implementation
+  - Collection management
+  - **Research Need**: Understand payload structure
+
+- `back/bm25_search.py`:
+  - Text search implementation
+  - Document structure
+  - **Research Need**: Study document mapping
+
+### 2.2 Hybrid Search
+- `back/hybrid_search.py`:
+  - Result merging logic
+  - Scoring mechanisms
+  - **Research Need**: Examine ranking algorithms
+
+## 3. Data Access Files
+
+### 3.1 Database Models
+- `back/psql_models.py`:
+  - Content and metadata models
+  - Relationships
+  - **Research Need**: Study content relationships
+
+### 3.2 Queue Management
+- `back/indexing/worker.py`:
+  - Processing workflow
+  - Error handling
+  - **Research Need**: Understand retry mechanisms
+
+## 4. Research Priorities
+
+### 4.1 High Priority
+1. Content Processing Logic:
+   - Current chunking implementations
+   - Context generation methods
+   - Metadata handling
+
+2. Search Integration:
+   - Document structures
+   - Payload formats
+   - Ranking mechanisms
+
+### 4.2 Medium Priority
+1. Queue Management:
+   - Retry logic
+   - Error handling
+   - Status tracking
+
+2. Database Models:
+   - Content relationships
+   - Metadata storage
+   - Access patterns
+
+### 4.3 Low Priority
+1. Monitoring:
+   - Status reporting
+   - Health checks
+   - Performance metrics
+
+## 5. Key Questions to Answer
+
+### 5.1 Processing Logic
+1. How is context currently generated for notes vs meetings?
+2. What metadata is stored for each content type?
+3. How are chunks currently validated?
+
+### 5.2 Search Integration
+1. What are the current payload structures?
+2. How is ranking currently implemented?
+3. What search features need to be preserved?
+
+### 5.3 Data Management
+1. How are content relationships maintained?
+2. What is the current retry strategy?
+3. How is processing status tracked?
+
+## 6. Research Approach
+
+### 6.1 Code Analysis
+1. Review current implementations
+2. Document data flows
+3. Identify shared patterns
+
+### 6.2 Testing Analysis
+1. Study existing tests
+2. Document test coverage
+3. Identify testing gaps
+
+### 6.3 Performance Analysis
+1. Review current bottlenecks
+2. Document optimization opportunities
+3. Identify monitoring needs

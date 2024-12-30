@@ -114,28 +114,45 @@ class MeetingsMonitor:
         cutoff = (now - timedelta(days=days)).replace(tzinfo=None)
         active_cutoff = (now - timedelta(seconds=self.active_seconds))
         
-        # Query for content that user has access to
-        stmt = select(Content.content_id, Content.type, Content.last_update).join(UserContent)\
+        # Query for content that user has access to - separate handling for notes and meetings
+        base_stmt = select(Content.content_id, Content.type, Content.last_update).join(UserContent)\
             .where(and_(
                 UserContent.user_id == user_id,
-                Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value]),
                 Content.last_update >= cutoff,
-                Content.last_update <= active_cutoff,
                 Content.is_indexed == False,
                 UserContent.access_level.in_([
                     AccessLevel.OWNER.value,
                     AccessLevel.TRANSCRIPT.value
                 ])
             ))
+
+        # Notes - process immediately
+        notes_stmt = base_stmt.where(and_(
+            Content.type == ContentType.NOTE.value
+        ))
+        
+        # Meetings - wait until inactive
+        meetings_stmt = base_stmt.where(and_(
+            Content.type == ContentType.MEETING.value,
+            Content.last_update <= active_cutoff
+        ))
         
         # Add order and limit for test mode
         if self.test_user_id:
-            stmt = stmt.order_by(Content.last_update.desc()).limit(50)
+            notes_stmt = notes_stmt.order_by(Content.last_update.desc()).limit(50)
+            meetings_stmt = meetings_stmt.order_by(Content.last_update.desc()).limit(50)
         
-        contents = await session.execute(stmt)
-        for content_id, content_type, last_update in contents:
+        # Process notes
+        notes = await session.execute(notes_stmt)
+        for content_id, content_type, last_update in notes:
             self._add_to_queue(str(content_id))
-            logger.info(f"Queued {content_type} content {content_id} from {last_update} for user {user_id}")
+            logger.info(f"Queued note {content_id} from {last_update} for user {user_id}")
+            
+        # Process meetings
+        meetings = await session.execute(meetings_stmt)
+        for content_id, content_type, last_update in meetings:
+            self._add_to_queue(str(content_id))
+            logger.info(f"Queued meeting {content_id} from {last_update} for user {user_id}")
 
 
     async def sync_meetings_queue(self, last_days:int=30):
@@ -149,38 +166,51 @@ class MeetingsMonitor:
                 await self._queue_user_content(self.test_user_id, session, days=last_days)
                 return
             
-            # Get all unindexed content (both meetings and notes)
-            base_query = select(Content.content_id, Content.type, Content.last_update)
-            
-            if self.test_user_id:
-                # Add user filter for test mode
-                base_query = base_query.join(UserContent).where(
-                    UserContent.user_id == self.test_user_id
-                )
-                # Add order and limit for test mode
-                base_query = base_query.order_by(Content.last_update.desc()).limit(50)
-            
-            # Add standard filters
-            base_query = base_query.where(and_(
-                Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value]),
-                Content.last_update >= cutoff_date,
-                Content.last_update <= cutoff,
-                Content.is_indexed == False
-            ))
-            
             # Get failed content IDs
             failed_contents = set(
                 m.decode() if isinstance(m, bytes) else m 
                 for m in self.redis.hkeys(RedisKeys.FAILED_SET)
             )
             
-            contents = await session.execute(base_query)
+            # Base query for both content types
+            base_query = select(Content.content_id, Content.type, Content.last_update)\
+                .where(and_(
+                    Content.last_update >= cutoff_date,
+                    Content.is_indexed == False
+                ))
             
-            # Queue non-failed contents
-            for content_id, content_type, last_update in contents:
+            if self.test_user_id:
+                # Add user filter for test mode
+                base_query = base_query.join(UserContent).where(
+                    UserContent.user_id == self.test_user_id
+                )
+            
+            # Notes - process immediately
+            notes_query = base_query.where(Content.type == ContentType.NOTE.value)
+            if self.test_user_id:
+                notes_query = notes_query.order_by(Content.last_update.desc()).limit(25)
+            
+            # Meetings - wait until inactive
+            meetings_query = base_query.where(and_(
+                Content.type == ContentType.MEETING.value,
+                Content.last_update <= cutoff
+            ))
+            if self.test_user_id:
+                meetings_query = meetings_query.order_by(Content.last_update.desc()).limit(25)
+            
+            # Process notes
+            notes = await session.execute(notes_query)
+            for content_id, content_type, last_update in notes:
                 if str(content_id) not in failed_contents:
                     self._add_to_queue(str(content_id))
-                    logger.info(f"Queued {content_type} content {content_id} from {last_update}")
+                    logger.info(f"Queued note {content_id} from {last_update}")
+            
+            # Process meetings
+            meetings = await session.execute(meetings_query)
+            for content_id, content_type, last_update in meetings:
+                if str(content_id) not in failed_contents:
+                    self._add_to_queue(str(content_id))
+                    logger.info(f"Queued meeting {content_id} from {last_update}")
             
             # Track active content
             stmt = select(Content.content_id, Content.type, UserContent.user_id)\
