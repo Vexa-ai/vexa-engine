@@ -11,9 +11,9 @@ Version: 0.1
 #--------------------------------------
 # STAGE TRACKING
 #--------------------------------------
-Current Iteration: 2
-Current Stage (Workflow Ref): 2.1
-Confidence Score: 85   # Ranges 0–100
+Current Iteration: 1
+Current Stage (Workflow Ref): 1.1
+Confidence Score: 0   # Ranges 0–100
 
 #--------------------------------------
 # LAYER 0: HIGH-LEVEL GOAL
@@ -23,15 +23,14 @@ Confidence Score: 85   # Ranges 0–100
 #   No mention of assets or code specifics.
 
 0.1_SummaryOfGoal: >
-  Refactor content processing system to eliminate duplication, standardize chunking and contextualization, and improve maintainability while preserving functionality.
+  Verify content archiving functionality works correctly by implementing minimal but comprehensive test suite
 
 0.2_ConstraintsOrConsiderations: >
-  - Must maintain existing search quality
-  - Must handle both meeting and note content types
-  - Must preserve existing metadata structures
-  - Must maintain performance characteristics
+  - Focus on core archiving functionality
+  - Test both database and search index aspects
+  - Ensure per-user archiving works correctly
 
-0.3_Confidence: 75
+0.3_Confidence: 70
 
 #--------------------------------------
 # LAYER 1: DOMAIN & BUSINESS
@@ -41,25 +40,21 @@ Confidence Score: 85   # Ranges 0–100
 #   Summarize or reference 'business_mapping.txt'
 
 1.1_DomainDetails: >
-  - Two content types: Meetings and Notes
-  - Different source handling:
-    * Meetings: External VexaAPI + DB metadata
-    * Notes: Direct DB access
-  - Common output format for search engines
-  - Shared contextualization needs
+  - Content archiving should make content unavailable in search/listings
+  - Archived content should remain in database
+  - Archiving is per-user (content can be archived for one user but visible to others)
+  - Search indices should be cleaned up
 
 1.2_BusinessConstraints: >
-  - Must maintain search quality
-  - Must preserve all metadata
-  - Must handle both content types efficiently
-  - Must support existing monitoring
+  - Must not affect other users' access
+  - Must handle both meetings and notes
+  - Must clean up search indices properly
 
 1.3_QuestionsOrAmbiguities: >
-  - Impact on search quality after standardization
-  - Performance implications of unified processing
-  - Migration strategy for existing data
+  - Should we test edge cases like re-archiving already archived content?
+  - Should we test archiving content with multiple user access levels?
 
-1.4_Confidence: 85
+1.4_Confidence: 80
 
 #--------------------------------------
 # LAYER 2: ARCHITECTURE / TECH RESEARCH
@@ -68,44 +63,16 @@ Confidence Score: 85   # Ranges 0–100
 #   Investigate possible structural/technical approaches, no code yet.
 
 2.1_ArchitectureOptions: >
-  Current Architecture:
-  1. Content Processing:
-     - Duplicated DOCUMENT_CONTEXT_PROMPT and CHUNK_CONTEXT_PROMPT
-     - Opposite chunking strategies:
-       * Notes: SPLIT into smaller chunks (RecursiveCharacterTextSplitter)
-       * Meetings: MERGE into larger chunks (speaker + topic based)
-     - Common final output format
-  
-  2. Processing Flow:
-     - Notes: Raw Text → Split into Chunks → Add Document Context
-     - Meetings: Transcription → Topic Extraction → Merge into Chunks
-     - Both: Final contextualization → Embeddings → Search indices
-
-  Proposed Architecture:
-  1. Unified Content Processing:
-     - Shared prompts in common module
-     - Single processor with multiple chunking strategies:
-       * NoteSplitter: Splits text into smaller chunks
-       * MeetingMerger: Merges transcript parts by topic/speaker
-     - Common search document format
-
-  2. Source-specific Handlers:
-     - MeetingSourceHandler: VexaAPI + metadata
-     - NoteSourceHandler: Direct DB access
-     - Common interface for content retrieval
+  Test structure:
+  - Use pytest for async testing
+  - Create test fixtures for users and content
+  - Test both API endpoint and direct function calls
+  - Mock search engine calls to avoid external dependencies
 
 2.2_TradeoffsConstraints: >
-  Advantages:
-  - Reduced code duplication
-  - Clearer separation of concerns
-  - Easier testing and maintenance
-  - Standardized processing pipeline
-
-  Challenges:
-  - Migration complexity
-  - Maintaining source-specific optimizations
-  - Preserving existing functionality
-  - Performance impact consideration
+  - Balance between test coverage and complexity
+  - Need to handle async operations properly
+  - Mock vs real search engine interactions
 
 2.3_Confidence: 90
 
@@ -116,22 +83,18 @@ Confidence Score: 85   # Ranges 0–100
 #   Narrow down a chosen approach, define how the system’s major components interact.
 
 3.1_ChosenApproach: >
-  1. Create shared prompts module
-  2. Implement abstract chunking strategy
-  3. Unify contextualization logic
-  4. Create source-specific handlers
-  5. Standardize search document creation
+  Create test file with:
+  1. Fixtures for test data setup
+  2. Core archiving tests
+  3. Search index cleanup tests
+  4. Multi-user access tests
 
 3.2_DetailedComponents: >
-  1. Shared Components:
-     - Prompts (DOCUMENT_CONTEXT_PROMPT, CHUNK_CONTEXT_PROMPT)
-     - Contextualization logic
-     - Search document creation
-  
-  2. Source-specific Components:
-     - Meeting chunking (speaker + topic based)
-     - Note chunking (character-based)
-     - Content retrieval handlers
+  Test cases:
+  - Basic archiving functionality
+  - Search index cleanup verification
+  - Multi-user access verification
+  - Error cases handling
 
 3.3_Confidence: 85
 
@@ -143,21 +106,20 @@ Confidence Score: 85   # Ranges 0–100
 #   STILL no direct coding, just a blueprint.
 
 4.1_CodeOutline: >
-  1. New Files:
-     - prompts.py: Shared prompts
-     - chunk_strategies.py: NoteSplitter and MeetingMerger
-     - source_handlers.py: Content retrieval
-     - context_processor.py: Unified contextualization
-  
-  2. Modified Files:
-     - processor.py: Unified processor with multiple strategies
-     - meetings_monitor.py: Use source handler
+  test_content_archiving.py:
+  - setup_test_data fixture
+  - test_basic_archiving
+  - test_search_cleanup
+  - test_multi_user_access
+  - test_error_cases
 
 4.2_DependenciesAndTools: >
-  - Existing: sqlalchemy, qdrant_client, elasticsearch
-  - New: None required
+  - pytest
+  - pytest-asyncio
+  - sqlalchemy
+  - mock/pytest-mock
 
-4.3_Confidence: 80
+4.3_Confidence: 90
 
 #--------------------------------------
 # (OPTIONAL) LAYER 5, LAYER 6...
@@ -169,71 +131,7 @@ Confidence Score: 85   # Ranges 0–100
 # LOG & NEXT STEPS
 #--------------------------------------
 log_of_updates: |
-  2024-01-24: Initial research and architecture planning
-  - Identified duplicate prompts
-  - Analyzed chunking strategies
-  - Mapped processing flows
-  - Documented current architecture
-
-  2024-01-24: Phase 1 - Prompts Extraction Complete
-  - Created prompts.py with shared prompts
-  - Removed duplicate prompts from processor.py and note_processor.py
-  - Removed redundant mock functions
-  - No functional changes, only code organization
-
-  2024-01-24: Phase 2 - Processor Consolidation Complete
-  - Moved note processing into ContentProcessor
-  - Renamed methods to clarify split vs merge operations
-  - Removed note_processor.py
-  - Preserved all functionality
-
-  2024-01-24: Phase 3 - Document Preparation Implementation
-  - Created SearchDocument class with validation
-  - Implemented shared document preparation
-  - Found and fixed issues:
-    1. Runtime warning in worker (_cleanup_success not awaited)
-    2. Added validation in SearchDocument:
-       - Non-empty content_id, chunk, context, topic, speaker
-       - Valid timestamp
-       - Non-negative chunk_index
-       - Speaker must be in speakers list
-       - Valid embedding for Qdrant points
+  2024-01-20: Initial test planning for content archiving functionality
 
 next_immediate_steps: >
-  1. Fix worker async issue:
-     ```python
-     # In worker.py
-     await self._cleanup_success(content_id)  # Add await
-     ```
-  
-  2. Add error handling in processor for SearchDocumentError:
-     ```python
-     try:
-         search_docs = [SearchDocument(...)]
-     except SearchDocumentError as e:
-         logger.error(f"Invalid search document: {e}")
-         raise ProcessingError(f"Failed to create search document: {e}")
-     ```
-  
-  3. Add tests for SearchDocument validation:
-     - Test all validation rules
-     - Test error messages
-     - Test valid cases
-     - Test edge cases (empty strings, None values)
-
-Rationale:
-- Proper async/await handling prevents memory leaks
-- Input validation ensures data quality
-- Error handling provides clear feedback
-- Tests ensure reliability
-
-Questions to Address:
-1. Should we add more validation rules?
-2. How to handle partial failures in document batch?
-3. Should we add retry logic for failed documents?
-
-Confidence: 85%
-- Core functionality works
-- Added validation improves reliability
-- Need to verify worker fix
-- Need to add tests
+  Implement test_content_archiving.py with core test cases

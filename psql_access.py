@@ -343,51 +343,76 @@ async def get_accessible_content(
     offset: int = 0,
     session: AsyncSession = None
 ) -> tuple[List[dict], int]:
-    async with (session or get_session()) as session:
-        # Build base query
-        query = (
-            select(Content, UserContent.access_level)
-            .join(UserContent)
-            .where(and_(
-                UserContent.user_id == user_id,
-                Content.type == content_type.value,
-                UserContent.access_level != AccessLevel.REMOVED.value
-            ))
+    """Get content items accessible to a user"""
+    if session is not None:
+        # Use existing session
+        return await _get_accessible_content(
+            user_id, content_type, access_level, limit, offset, session
         )
-
-        # Add access level filter if specified
-        if access_level:
-            query = query.where(
-                UserContent.access_level.in_([
-                    level.value for level in AccessLevel 
-                    if level.value >= access_level.value
-                ])
+    else:
+        # Create new session
+        async with get_session() as session:
+            return await _get_accessible_content(
+                user_id, content_type, access_level, limit, offset, session
             )
 
-        # Get total count
-        count_query = select(func.count()).select_from(query.subquery())
-        total_count = await session.scalar(count_query)
+async def _get_accessible_content(
+    user_id: UUID,
+    content_type: ContentType,
+    access_level: Optional[AccessLevel],
+    limit: int,
+    offset: int,
+    session: AsyncSession
+) -> tuple[List[dict], int]:
+    """Internal function to get accessible content with an existing session"""
+    # Build base query
+    query = (
+        select(Content, UserContent.access_level)
+        .join(UserContent, or_(
+            UserContent.content_id == Content.id,
+            UserContent.content_id == Content.content_id
+        ))
+        .where(and_(
+            UserContent.user_id == user_id,
+            Content.type == content_type.value,
+            UserContent.access_level != AccessLevel.REMOVED.value
+        ))
+    )
 
-        # Add ordering and pagination
-        query = (
-            query
-            .order_by(Content.timestamp.desc())
-            .offset(offset)
-            .limit(limit)
+    # Add access level filter if specified
+    if access_level:
+        query = query.where(
+            UserContent.access_level.in_([
+                level.value for level in AccessLevel 
+                if level.value >= access_level.value
+                and level.value != AccessLevel.REMOVED.value
+            ])
         )
 
-        result = await session.execute(query)
-        rows = result.all()
-        
-        contents = [{
-            "content_id": str(row.Content.content_id),
-            "timestamp": row.Content.timestamp,
-            "type": row.Content.type,
-            "access_level": row.access_level,
-            "is_indexed": row.Content.is_indexed
-        } for row in rows]
+    # Get total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total_count = await session.scalar(count_query)
 
-        return contents, total_count
+    # Add ordering and pagination
+    query = (
+        query
+        .order_by(Content.timestamp.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    result = await session.execute(query)
+    rows = result.all()
+    
+    contents = [{
+        "content_id": str(row.Content.content_id or row.Content.id),
+        "timestamp": row.Content.timestamp,
+        "type": row.Content.type,
+        "access_level": row.access_level,
+        "is_indexed": row.Content.is_indexed
+    } for row in rows]
+
+    return contents, total_count
 
 async def get_user_name(user_id: str, session: Optional[AsyncSession] = None) -> Optional[str]:
     query = select(User.first_name, User.last_name, User.username).where(User.id == UUID(user_id))
@@ -471,25 +496,21 @@ async def mark_content_deleted(
     content_id: UUID
 ) -> bool:
     """Mark content as deleted for a user by setting access_level to REMOVED"""
-    try:
-        # Check if user has access to the content
-        user_content = await session.execute(
-            select(UserContent)
-            .filter_by(content_id=content_id, user_id=user_id)
-        )
-        user_content = user_content.scalar_one_or_none()
+    # Check if user has access to the content
+    user_content = await session.execute(
+        select(UserContent)
+        .filter_by(content_id=content_id, user_id=user_id)
+    )
+    user_content = user_content.scalar_one_or_none()
+    
+    if not user_content:
+        return False
         
-        if not user_content:
-            return False
-            
-        # Update access level to REMOVED
-        user_content.access_level = AccessLevel.REMOVED.value
-        await session.commit()
-        
-        return True
-    except Exception as e:
-        await session.rollback()
-        raise e
+    # Update access level to REMOVED
+    user_content.access_level = AccessLevel.REMOVED.value
+    await session.commit()
+    
+    return True
 
 async def get_content_search_indices(
     session: AsyncSession,
