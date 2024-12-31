@@ -276,7 +276,97 @@ class ChatManager:
             "service_content": service_content
         }
         
-    
+    async def edit_and_continue(
+        self,
+        user_id: str,
+        thread_id: str,
+        message_index: int,
+        new_content: str,
+        context_provider: BaseContextProvider,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        prompt: Optional[str] = None,
+        **context_kwargs
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Edit a message and continue the chat from that point.
+        
+        Args:
+            user_id: The ID of the user
+            thread_id: The ID of the thread
+            message_index: The index of the message to edit
+            new_content: The new content for the message
+            context_provider: Provider for chat context
+            model: Optional model override
+            temperature: Optional temperature override
+            prompt: Optional prompt override
+        """
+        # Get user name
+        user_name = await get_user_name(user_id, self.session) or "User"
+        
+        # Edit message in thread
+        updated_messages = await self.thread_manager.edit_message(
+            thread_id=thread_id,
+            message_index=message_index,
+            new_content=new_content
+        )
+        if not updated_messages:
+            yield {
+                "error": "Failed to edit message",
+                "service_content": {"error": "Failed to edit message"}
+            }
+            return
+            
+        self.messages = updated_messages
+        
+        # Get context using all user messages up to edit point
+        historical_queries = " ".join([
+            msg.content 
+            for msg in self.messages[:message_index+1] 
+            if msg.role == 'user'
+        ])
+        
+        context = await context_provider.get_context(
+            user_id=user_id,
+            query=historical_queries,
+            **context_kwargs
+        )
+        
+        prompt = prompt or self.prompts.chat_december
+        prompt = prompt.format(user_name=user_name)
+        prompt += "\n\n" + 'now is ' + datetime.now().strftime('%B %d, %Y %H:%M')
+        
+        context_msg = system_msg(f"Context: {context}")
+        messages_context = [
+            system_msg(prompt),
+            context_msg,
+            *self.messages
+        ]
+
+        output = ""
+        async for chunk in generic_call_(messages_context, streaming=True):
+            output += chunk
+            yield {"chunk": chunk}
+            
+        # Create final response
+        service_content = {
+            'output': output,
+            'context': context
+        }
+        self.messages.append(assistant_msg(msg=output, service_content=service_content))
+        
+        # Update thread with new messages
+        thread_id = await self.thread_manager.upsert_thread(
+            user_id=user_id,
+            messages=self.messages,
+            thread_id=thread_id
+        )
+        
+        yield {
+            "thread_id": thread_id,
+            "output": output,
+            "service_content": service_content
+        }
+
 
 class UnifiedChatManager(ChatManager):
     def __init__(self, session: AsyncSession = None, qdrant_engine: Optional[QdrantSearchEngine] = None, 

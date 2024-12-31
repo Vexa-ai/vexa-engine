@@ -5,133 +5,120 @@
 #--------------------------------------
 # META-INFO
 #--------------------------------------
-File Name: [e.g. project_planstate.txt]
-Version: 0.1
+File Name: plan_state.txt
+Version: 0.3
 
 #--------------------------------------
 # STAGE TRACKING
 #--------------------------------------
-Current Iteration: 1
-Current Stage (Workflow Ref): 1.1
-Confidence Score: 0   # Ranges 0–100
+Current Iteration: 2
+Current Stage (Workflow Ref): 3.1
+Confidence Score: 85
 
 #--------------------------------------
 # LAYER 0: HIGH-LEVEL GOAL
 #--------------------------------------
-## Purpose:
-#   Describe the overarching goal/problem in broad strokes.
-#   No mention of assets or code specifics.
-
 0.1_SummaryOfGoal: >
-  Verify content archiving functionality works correctly by implementing minimal but comprehensive test suite
+  Test and verify that speaker-based search functionality works correctly when only speakers are provided (without meeting IDs) through the API -> Chat -> Search flow.
 
 0.2_ConstraintsOrConsiderations: >
-  - Focus on core archiving functionality
-  - Test both database and search index aspects
-  - Ensure per-user archiving works correctly
+  - Must verify search works with only speakers parameter
+  - Need to test both semantic and BM25 search components
+  - Should verify speaker filtering at each layer
 
-0.3_Confidence: 70
+0.3_Confidence: 85
 
 #--------------------------------------
 # LAYER 1: DOMAIN & BUSINESS
 #--------------------------------------
-## Purpose:
-#   Outline domain specifics and business logic
-#   Summarize or reference 'business_mapping.txt'
-
 1.1_DomainDetails: >
-  - Content archiving should make content unavailable in search/listings
-  - Archived content should remain in database
-  - Archiving is per-user (content can be archived for one user but visible to others)
-  - Search indices should be cleaned up
+  - API endpoint /chat accepts entities (speakers) parameter
+  - Chat manager uses UnifiedContextProvider when no meeting_ids provided
+  - Search should filter results by specified speakers
+  - Results should be ranked by relevance
 
 1.2_BusinessConstraints: >
-  - Must not affect other users' access
-  - Must handle both meetings and notes
-  - Must clean up search indices properly
+  - Search must be accurate and relevant
+  - Speaker filtering must be exact match
+  - Results must include speaker information
 
 1.3_QuestionsOrAmbiguities: >
-  - Should we test edge cases like re-archiving already archived content?
-  - Should we test archiving content with multiple user access levels?
+  - How to handle case sensitivity in speaker names? [RESOLVED: Exact match required]
+  - What happens if speaker doesn't exist? [RESOLVED: Returns empty results]
+  - How to handle partial speaker name matches? [RESOLVED: Not supported, exact match only]
 
-1.4_Confidence: 80
+1.4_Confidence: 90
 
 #--------------------------------------
 # LAYER 2: ARCHITECTURE / TECH RESEARCH
 #--------------------------------------
-## Purpose:
-#   Investigate possible structural/technical approaches, no code yet.
+2.1_TestComponents: >
+  1. API Layer Test: [IMPLEMENTED]
+     - Test /chat endpoint with only speakers parameter
+     - Verify correct parameter passing to chat manager
+  
+  2. Chat Manager Test: [IMPLEMENTED]
+     - Verify UnifiedContextProvider selection
+     - Check speaker parameter propagation
+  
+  3. Search Layer Test: [IMPLEMENTED]
+     - Test hybrid_search with only speakers filter
+     - Verify both semantic and BM25 results filtered
+     - Check ranking and relevance
 
-2.1_ArchitectureOptions: >
-  Test structure:
-  - Use pytest for async testing
-  - Create test fixtures for users and content
-  - Test both API endpoint and direct function calls
-  - Mock search engine calls to avoid external dependencies
-
-2.2_TradeoffsConstraints: >
-  - Balance between test coverage and complexity
-  - Need to handle async operations properly
-  - Mock vs real search engine interactions
+2.2_TestScenarios: >
+  1. Basic speaker filter test [IMPLEMENTED]
+  2. Multiple speakers test [IMPLEMENTED]
+  3. Non-existent speaker test [IMPLEMENTED]
+  4. Case sensitivity test [IMPLEMENTED]
+  5. Empty speakers list test [IMPLEMENTED]
 
 2.3_Confidence: 90
 
 #--------------------------------------
 # LAYER 3: SOLUTION PROPOSAL
 #--------------------------------------
-## Purpose:
-#   Narrow down a chosen approach, define how the system’s major components interact.
+3.1_TestImplementation: >
+  Test suite implemented covering:
+  1. Unit tests for hybrid_search speaker filtering [DONE]
+     - Basic filtering
+     - Multiple speakers
+     - Empty list
+     - Non-existent speakers
+     - Result ranking
+  
+  2. Integration tests for chat manager [DONE]
+     - Context provider selection
+     - Speaker parameter handling
+     - Output linking
+  
+  3. End-to-end API tests [DONE]
+     - Chat endpoint
+     - Authentication
+     - Response streaming
+  
+  4. Edge case handling tests [DONE]
+     - Invalid auth
+     - Empty speakers
+     - Missing parameters
 
-3.1_ChosenApproach: >
-  Create test file with:
-  1. Fixtures for test data setup
-  2. Core archiving tests
-  3. Search index cleanup tests
-  4. Multi-user access tests
+3.2_TestData: >
+  - Sample meetings with known speakers [IMPLEMENTED]
+  - Test queries with expected results [IMPLEMENTED]
+  - Edge case speaker names [IMPLEMENTED]
 
-3.2_DetailedComponents: >
-  Test cases:
-  - Basic archiving functionality
-  - Search index cleanup verification
-  - Multi-user access verification
-  - Error cases handling
-
-3.3_Confidence: 85
-
-#--------------------------------------
-# LAYER 4: IMPLEMENTATION PREP
-#--------------------------------------
-## Purpose:
-#   Plan your code structure, major classes/functions, and dependencies.
-#   STILL no direct coding, just a blueprint.
-
-4.1_CodeOutline: >
-  test_content_archiving.py:
-  - setup_test_data fixture
-  - test_basic_archiving
-  - test_search_cleanup
-  - test_multi_user_access
-  - test_error_cases
-
-4.2_DependenciesAndTools: >
-  - pytest
-  - pytest-asyncio
-  - sqlalchemy
-  - mock/pytest-mock
-
-4.3_Confidence: 90
-
-#--------------------------------------
-# (OPTIONAL) LAYER 5, LAYER 6...
-#--------------------------------------
-#   Add more layers as needed for advanced planning (e.g. specialized frameworks,
-#   security modeling, performance testing strategies, etc.)
+3.3_Confidence: 90
 
 #--------------------------------------
 # LOG & NEXT STEPS
 #--------------------------------------
 log_of_updates: |
-  2024-01-20: Initial test planning for content archiving functionality
+  2024-03-21: Initial test plan created for speaker-based search
+  2024-03-21: Implemented test suite covering all layers
+  2024-03-21: Running tests to verify implementation
 
 next_immediate_steps: >
-  Implement test_content_archiving.py with core test cases
+  1. Run pytest suite
+  2. Fix any failing tests
+  3. Add any missing edge cases identified during testing
+  4. Document test coverage and results

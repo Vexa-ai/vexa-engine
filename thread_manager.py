@@ -229,6 +229,71 @@ class ThreadManager:
                     print(f"Error renaming thread: {e}")
                     return False
 
+    async def edit_message(
+        self,
+        thread_id: str,
+        message_index: int,
+        new_content: str
+    ) -> Optional[List[Msg]]:
+        """Edit a message in a thread and truncate subsequent messages.
+        
+        Args:
+            thread_id: The ID of the thread containing the message
+            message_index: The index of the message to edit (0-based)
+            new_content: The new content for the message
+            
+        Returns:
+            The updated list of messages if successful, None if failed
+        """
+        async with get_session() as session:
+            async with session.begin():
+                try:
+                    # Get thread
+                    result = await session.execute(
+                        select(Thread).where(Thread.thread_id == thread_id)
+                    )
+                    thread = result.scalar_one_or_none()
+                    if not thread:
+                        return None
+                    
+                    # Parse messages
+                    messages_dicts = json.loads(thread.messages)
+                    if message_index >= len(messages_dicts):
+                        return None
+                        
+                    # Convert to Msg objects up to the edit point
+                    messages = [
+                        Msg(
+                            role=msg["role"],
+                            content=msg["content"],
+                            service_content=msg.get("service_content")
+                        ) 
+                        for msg in messages_dicts[:message_index]
+                    ]
+                    
+                    # Add edited message
+                    edited_msg = messages_dicts[message_index]
+                    messages.append(Msg(
+                        role=edited_msg["role"],
+                        content=new_content,
+                        service_content=edited_msg.get("service_content")
+                    ))
+                    
+                    # Update thread with truncated messages
+                    messages_json = json.dumps([asdict(msg) for msg in messages])
+                    await session.execute(
+                        update(Thread)
+                        .where(Thread.thread_id == thread_id)
+                        .values(messages=messages_json)
+                    )
+                    await session.commit()
+                    
+                    return messages
+                    
+                except Exception as e:
+                    print(f"Error editing message: {e}")
+                    return None
+
     async def get_threads_by_exact_entities(
         self,
         user_id: str,
