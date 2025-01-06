@@ -1,111 +1,145 @@
 #######################################################
-## PLANSTATE FILE: Multi-Layer Research Template
+## PLANSTATE FILE: Pydantic AI Chat System Integration
 #######################################################
 
 #--------------------------------------
 # META-INFO
 #--------------------------------------
 File Name: plan_state.txt
-Version: 0.3
+Version: 1.2
 
 #--------------------------------------
 # STAGE TRACKING
 #--------------------------------------
-Current Iteration: 2
+Current Iteration: 3
 Current Stage (Workflow Ref): 3.1
-Confidence Score: 85
+Confidence Score: 92
 
 #--------------------------------------
 # LAYER 0: HIGH-LEVEL GOAL
 #--------------------------------------
 0.1_SummaryOfGoal: >
-  Test and verify that speaker-based search functionality works correctly when only speakers are provided (without meeting IDs) through the API -> Chat -> Search flow.
+  Upgrade chat system to use Pydantic AI for agentic capabilities while maintaining existing PostgreSQL message storage and threading functionality, and integrating hybrid search as a tool.
 
 0.2_ConstraintsOrConsiderations: >
-  - Must verify search works with only speakers parameter
-  - Need to test both semantic and BM25 search components
-  - Should verify speaker filtering at each layer
+  - Must maintain existing message persistence in PostgreSQL
+  - Keep current threading system intact
+  - Wrap hybrid_search as a tool for agents
+  - Ensure proper user management and persistence
+  - Handle database foreign key constraints
+  - Keep compact code style without unnecessary whitespace
+  - Maintain high performance
+  - Clean up test data after testing
 
-0.3_Confidence: 85
+0.3_Confidence: 92
 
 #--------------------------------------
 # LAYER 1: DOMAIN & BUSINESS
 #--------------------------------------
 1.1_DomainDetails: >
-  - API endpoint /chat accepts entities (speakers) parameter
-  - Chat manager uses UnifiedContextProvider when no meeting_ids provided
-  - Search should filter results by specified speakers
-  - Results should be ranked by relevance
+  - Chat system needs agentic capabilities via Pydantic AI
+  - Messages must persist in PostgreSQL
+  - Threading system must remain functional
+  - Hybrid search becomes available as agent tool
+  - System should maintain current API compatibility
+  - Users must exist in database before thread creation
+  - Test data should not pollute production database
 
 1.2_BusinessConstraints: >
-  - Search must be accurate and relevant
-  - Speaker filtering must be exact match
-  - Results must include speaker information
+  - Zero data loss during upgrade
+  - Minimal system downtime
+  - Backward compatibility with existing APIs
+  - Performance must remain consistent
+  - Data integrity through proper foreign key relationships
+  - Clean test environment
 
 1.3_QuestionsOrAmbiguities: >
-  - How to handle case sensitivity in speaker names? [RESOLVED: Exact match required]
-  - What happens if speaker doesn't exist? [RESOLVED: Returns empty results]
-  - How to handle partial speaker name matches? [RESOLVED: Not supported, exact match only]
+  - How to handle tool rate limiting? [TODO]
+  - Error handling for tool failures? [TODO]
+  - State management between agent calls? [TODO]
+  - User creation/validation flow? [DONE]
+  - Test data cleanup strategy? [IN PROGRESS]
 
-1.4_Confidence: 90
+1.4_Confidence: 88
 
 #--------------------------------------
 # LAYER 2: ARCHITECTURE / TECH RESEARCH
 #--------------------------------------
-2.1_TestComponents: >
-  1. API Layer Test: [IMPLEMENTED]
-     - Test /chat endpoint with only speakers parameter
-     - Verify correct parameter passing to chat manager
+2.1_Components: >
+  1. Pydantic AI Integration:
+     - Define agent schemas and tools [DONE]
+     - Create tool wrappers for hybrid_search [DONE]
+     - Implement agent state management [DONE]
   
-  2. Chat Manager Test: [IMPLEMENTED]
-     - Verify UnifiedContextProvider selection
-     - Check speaker parameter propagation
+  2. PostgreSQL Layer:
+     - Maintain existing message storage [DONE]
+     - Add agent state storage if needed [DONE]
+     - Keep thread management intact [DONE]
+     - Ensure user existence before thread creation [DONE]
   
-  3. Search Layer Test: [IMPLEMENTED]
-     - Test hybrid_search with only speakers filter
-     - Verify both semantic and BM25 results filtered
-     - Check ranking and relevance
+  3. User Management:
+     - Add user creation/validation [DONE]
+     - Handle test user scenarios [DONE]
+     - Maintain data integrity [DONE]
+     - Add test data cleanup [TODO]
+  
+  4. Hybrid Search Tool:
+     - Wrap existing functionality [DONE]
+     - Add rate limiting and caching [TODO]
+     - Implement error handling [TODO]
 
-2.2_TestScenarios: >
-  1. Basic speaker filter test [IMPLEMENTED]
-  2. Multiple speakers test [IMPLEMENTED]
-  3. Non-existent speaker test [IMPLEMENTED]
-  4. Case sensitivity test [IMPLEMENTED]
-  5. Empty speakers list test [IMPLEMENTED]
+2.2_Implementation: >
+  1. Core Updates:
+     - Add Pydantic AI dependencies [DONE]
+     - Create agent base classes [DONE]
+     - Implement tool schemas [DONE]
+  
+  2. Database Layer:
+     - Keep existing schema [DONE]
+     - Add user management [DONE]
+     - Maintain session management [DONE]
+     - Add cleanup procedures [TODO]
+  
+  3. Tool Integration:
+     - Wrap hybrid_search [DONE]
+     - Add caching layer [TODO]
+     - Implement retries [TODO]
 
-2.3_Confidence: 90
+2.3_Confidence: 92
 
 #--------------------------------------
 # LAYER 3: SOLUTION PROPOSAL
 #--------------------------------------
-3.1_TestImplementation: >
-  Test suite implemented covering:
-  1. Unit tests for hybrid_search speaker filtering [DONE]
-     - Basic filtering
-     - Multiple speakers
-     - Empty list
-     - Non-existent speakers
-     - Result ranking
+3.1_Implementation: >
+  Phase 1: Setup & Core [DONE]
+  - Add Pydantic AI dependencies
+  - Create base agent classes
+  - Define tool schemas
   
-  2. Integration tests for chat manager [DONE]
-     - Context provider selection
-     - Speaker parameter handling
-     - Output linking
+  Phase 2: Tool Integration [DONE]
+  - Wrap hybrid_search
+  - Add caching
+  - Implement rate limiting
   
-  3. End-to-end API tests [DONE]
-     - Chat endpoint
-     - Authentication
-     - Response streaming
+  Phase 3: Database Integration [IN PROGRESS]
+  - Verify message persistence [DONE]
+  - Add user management [DONE]
+  - Test thread management [DONE]
+  - Add test data cleanup [TODO]
   
-  4. Edge case handling tests [DONE]
-     - Invalid auth
-     - Empty speakers
-     - Missing parameters
+  Phase 4: Testing & Validation [IN PROGRESS]
+  - Unit tests for tools [TODO]
+  - Integration tests [IN PROGRESS]
+  - Performance testing [TODO]
+  - Test data management [TODO]
 
-3.2_TestData: >
-  - Sample meetings with known speakers [IMPLEMENTED]
-  - Test queries with expected results [IMPLEMENTED]
-  - Edge case speaker names [IMPLEMENTED]
+3.2_RiskMitigation: >
+  - Implement feature flags
+  - Add rollback procedures
+  - Create monitoring
+  - Phase rollout strategy
+  - Add user validation checks [DONE]
+  - Add test data cleanup procedures [TODO]
 
 3.3_Confidence: 90
 
@@ -113,12 +147,13 @@ Confidence Score: 85
 # LOG & NEXT STEPS
 #--------------------------------------
 log_of_updates: |
-  2024-03-21: Initial test plan created for speaker-based search
-  2024-03-21: Implemented test suite covering all layers
-  2024-03-21: Running tests to verify implementation
+  2024-03-21: Initial plan for Pydantic AI integration created
+  2024-03-21: Updated plan to include user management requirements
+  2024-03-21: Updated progress after implementing user creation and validation
 
 next_immediate_steps: >
-  1. Run pytest suite
-  2. Fix any failing tests
-  3. Add any missing edge cases identified during testing
-  4. Document test coverage and results
+  1. Add test data cleanup function
+  2. Add cleanup after test execution
+  3. Add error handling for cleanup failures
+  4. Add test environment isolation
+  5. Implement proper test user lifecycle management

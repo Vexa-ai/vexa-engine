@@ -23,6 +23,7 @@ numpy
 pydantic
 python-jose[cryptography]
 passlib[bcrypt]
+python-dotenv
 
 # Development
 jupyter
@@ -52,4 +53,5 @@ pytest-asyncio
 pydantic
 qdrant-client
 langchain-text-splitters
+pydantic-ai>=0.0.15
 
