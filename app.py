@@ -1055,8 +1055,7 @@ async def delete_content(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8010, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8010, reload=True)
     
-    
-    # conda activate langchain && uvicorn api:app --host 0.0.0.0 --port 8765 --workers 1 --loop uvloop --reload
+    # conda activate langchain && uvicorn app:app --host 0.0.0.0 --port 8765 --workers 1 --loop uvloop --reload
 
