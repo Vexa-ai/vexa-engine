@@ -107,12 +107,12 @@ class Thread(BaseModel):
     timestamp: datetime
 
 class ChatRequest(BaseModel):
-    query: str
-    thread_id: Optional[str] = None
-    model: Optional[str] = None
-    temperature: Optional[float] = None
-    meeting_ids: Optional[List[UUID]] = None
-    entities: Optional[List[str]] = None
+    query: str = Field(..., description="The chat message or query from the user")
+    thread_id: Optional[str] = Field(None, description="Optional thread ID to continue a conversation")
+    model: Optional[str] = Field(None, description="Optional model name to use for chat")
+    temperature: Optional[float] = Field(None, description="Optional temperature parameter for model response randomness")
+    meeting_ids: Optional[List[UUID]] = Field(None, description="Optional list of meeting IDs to provide context")
+    entities: Optional[List[str]] = Field(None, description="Optional list of entity names to provide context")
 
 class TokenRequest(BaseModel):
     token: str
@@ -291,7 +291,19 @@ chat_manager = UnifiedChatManager(
     es_engine=es_engine
 )
 
-@app.post("/chat")
+@app.post("/chat", 
+    response_class=StreamingResponse,
+    summary="Chat endpoint",
+    description="Streaming chat endpoint that handles real-time chat interactions with context from meetings and entities",
+    response_description="Server-sent events stream containing chat responses",
+    responses={
+        200: {
+            "description": "Successful chat response stream",
+            "content": {"text/event-stream": {}}
+        },
+        500: {"description": "Internal server error"}
+    }
+)
 async def chat(
     request: ChatRequest,
     background_tasks: BackgroundTasks,

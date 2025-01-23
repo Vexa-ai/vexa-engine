@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock, patch
-from api import app
+from app import app
 from chat import UnifiedChatManager
 from qdrant_search import QdrantSearchEngine
 from bm25_search import ElasticsearchBM25
@@ -11,7 +11,7 @@ TEST_UUID = '12345678-1234-5678-1234-567812345678'
 
 @pytest.fixture
 def mock_token_manager():
-    with patch('api.token_manager') as mock:
+    with patch('app.token_manager') as mock:
         async def check_token(token):
             if token == "test_token":
                 return UUID(TEST_UUID), "Test User"
@@ -22,7 +22,7 @@ def mock_token_manager():
 
 @pytest.fixture
 def mock_chat_manager():
-    with patch('api.chat_manager') as mock:
+    with patch('app.chat_manager') as mock:
         async def mock_chat(*args, **kwargs):
             yield {"chunk": "Test response chunk"}
             yield {
@@ -35,7 +35,7 @@ def mock_chat_manager():
 
 @pytest.fixture
 def mock_get_user_name():
-    with patch('api.get_user_name') as mock:
+    with patch('app.get_user_name') as mock:
         mock.return_value = "Test User"
         yield mock
 
