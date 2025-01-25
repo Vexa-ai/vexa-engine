@@ -5,8 +5,8 @@ from typing import Optional, List, Dict, Any, Generator
 from vexa import VexaAPI
 from psql_access import get_token_by_email
 from enum import Enum
-
 from uuid import UUID
+from psql_models import ContentType
 
 import os
 API_PORT = os.getenv('API_PORT')
@@ -275,3 +275,259 @@ class APIClient:
             if "invalid literal for UUID" in str(e):
                 raise ValueError("Invalid meeting ID format - must be a valid UUID")
             raise
+
+    async def get_contents(
+        self,
+        content_type: Optional[str] = None,
+        filters: Optional[List[Dict[str, List[str]]]] = None,
+        parent_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 20,
+        ownership: MeetingOwnership = MeetingOwnership.ALL
+    ) -> Dict:
+        """Get contents with optional filters
+        
+        Args:
+            content_type: Optional type filter (meeting, note, etc)
+            filters: List of filter dicts with format {"type": str, "values": List[str]}
+            parent_id: Optional parent content ID
+            offset: Pagination offset
+            limit: Pagination limit
+            ownership: Filter by ownership (MY, SHARED, ALL)
+        """
+        await self._ensure_initialized()
+        
+        params = {
+            "offset": offset,
+            "limit": limit,
+            "ownership": ownership
+        }
+        
+        if content_type:
+            params["content_type"] = content_type
+            
+        if parent_id:
+            params["parent_id"] = parent_id
+            
+        if filters:
+            params["filters"] = json.dumps(filters)
+        
+        response = requests.get(
+            f"{self.base_url}/contents/all",
+            headers=self.headers,
+            params=params
+        )
+        
+        if response.status_code == 401:
+            raise ValueError("Unauthorized. Please check your authentication token.")
+        elif response.status_code != 200:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+        return response.json()
+
+    async def add_content(
+        self,
+        body: str,
+        content_type: str,
+        parent_id: Optional[UUID] = None,
+        entities: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        """Add new content with optional parent and entities
+        
+        Args:
+            body: Content text
+            content_type: Type of content (e.g. 'note', 'meeting')
+            parent_id: Optional UUID of parent content
+            entities: Optional list of entities with type and name
+            
+        Returns:
+            Dict with content_id, timestamp, type, and parent_id
+        """
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+            
+        # Convert string content type to enum - keep original case
+        try:
+            content_type_enum = ContentType(content_type)
+        except ValueError:
+            raise ValueError(f"Invalid content type: {content_type}. Must be one of: {[t.value for t in ContentType]}")
+            
+        data = {
+            "body": body,
+            "type": content_type_enum.value,
+            "parent_id": str(parent_id) if parent_id else None,
+            "entities": entities or []
+        }
+        
+        response = requests.post(
+            f"{self.base_url}/api/content",
+            headers=self.headers,
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+
+    async def modify_content(
+        self,
+        content_id: UUID,
+        body: str,
+        entities: Optional[List[Dict[str, str]]] = None
+    ) -> Dict[str, Any]:
+        """Modify existing content with new text and entities
+        
+        Args:
+            content_id: UUID of content to modify
+            body: New content text
+            entities: Optional list of entities with type and name
+            
+        Returns:
+            Dict with content_id, timestamp, type, and parent_id
+        """
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+            
+        data = {
+            "content_id": str(content_id),
+            "body": body,
+            "entities": entities or []
+        }
+        
+        response = requests.post(
+            f"{self.base_url}/api/content/modify",
+            headers=self.headers,
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+    async def archive_content(self, content_id: UUID) -> bool:
+        """Archive content
+        
+        Args:
+            content_id: UUID of content to archive
+            
+        Returns:
+            True if successful
+        """
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+            
+        data = {"content_id": str(content_id)}
+        
+        response = requests.post(
+            f"{self.base_url}/api/content/archive",
+            headers=self.headers,
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return response.json()["success"]
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+    async def restore_content(self, content_id: UUID) -> bool:
+        """Restore archived content
+        
+        Args:
+            content_id: UUID of content to restore
+            
+        Returns:
+            True if successful
+        """
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+            
+        data = {"content_id": str(content_id)}
+        
+        response = requests.post(
+            f"{self.base_url}/api/content/restore",
+            headers=self.headers,
+            json=data
+        )
+        
+        if response.status_code == 200:
+            return response.json()["success"]
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+
+    async def get_content(self, content_id: UUID) -> Dict[str, Any]:
+        """Get content by ID including children and entities
+        
+        Args:
+            content_id: UUID of content to retrieve
+            
+        Returns:
+            Dict with content details including text, entities, and children
+            
+        Raises:
+            ValueError: If content not found or no access
+            Exception: For other API errors
+        """
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+            
+        url = f"{self.base_url}/api/content/{content_id}"
+        print(f"Making GET request to: {url}")  # Debug log
+        
+        response = requests.get(url, headers=self.headers)
+        print(f"Response status: {response.status_code}")  # Debug log
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            print(f"Content not found: {content_id}")  # Debug log
+            raise ValueError("Content not found or no access")
+        else:
+            print(f"API error: {response.text}")  # Debug log
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+
+    async def get_entities(
+        self,
+        entity_type: str,
+        offset: int = 0,
+        limit: int = 20
+    ) -> Dict[str, Any]:
+        """Get entities by type with pagination and last seen timestamp
+        
+        Args:
+            entity_type: Type of entities to get (e.g. 'speaker', 'tag')
+            offset: Pagination offset
+            limit: Pagination limit
+            
+        Returns:
+            Dict with total count and list of entities with name, last_seen, and content_count
+            
+        Raises:
+            ValueError: If client not initialized or invalid entity type
+            Exception: For other API errors
+        """
+        await self._ensure_initialized()
+        
+        params = {
+            "offset": offset,
+            "limit": limit
+        }
+        
+        response = requests.get(
+            f"{self.base_url}/api/entities/{entity_type}",
+            headers=self.headers,
+            params=params
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code in [400, 500]:
+            # Handle both 400 and 500 status codes that contain error details
+            error_detail = response.json().get("detail", str(response.text))
+            if "Invalid entity type" in error_detail:
+                raise ValueError(error_detail)
+            else:
+                raise Exception(f"API request failed: {error_detail}")
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")

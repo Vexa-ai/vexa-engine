@@ -105,6 +105,7 @@ class UserToken(Base):
 
 class EntityType(str, Enum):
     SPEAKER = 'speaker'
+    TAG = 'tag'
 
 
 class Entity(Base):
@@ -114,23 +115,27 @@ class Entity(Base):
     name = Column(String(100), nullable=False)
     type = Column(String(50), nullable=False)
     
+    __table_args__ = (
+        CheckConstraint(
+            type.in_([e.value for e in EntityType]),
+            name='valid_entity_type'
+        ),
+    )
+    
     content = relationship('Content', secondary=content_entity_association, back_populates='entities')
     threads = relationship('Thread', secondary=thread_entity_association, back_populates='entities')
 
 
 class ContentType(str, Enum):
     MEETING = 'meeting'
-    DOCUMENT = 'document'
     TITLE = 'title'
     SUMMARY = 'summary'
-    CHUNK = 'chunk'
     NOTE = 'note'
 
 class Content(Base):
     __tablename__ = 'content'
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    content_id = Column(PostgresUUID(as_uuid=True))
     type = Column(String)
     text = Column(String)
     timestamp = Column(DateTime)
