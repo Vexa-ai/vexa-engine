@@ -1,159 +1,394 @@
-#######################################################
-## PLANSTATE FILE: Pydantic AI Chat System Integration
-#######################################################
+# Content Management System - Current State and Migration Plan
 
-#--------------------------------------
-# META-INFO
-#--------------------------------------
-File Name: plan_state.txt
-Version: 1.2
+## 1. Current State Analysis
 
-#--------------------------------------
-# STAGE TRACKING
-#--------------------------------------
-Current Iteration: 3
-Current Stage (Workflow Ref): 3.1
-Confidence Score: 92
+### 1.1 Core Components
 
-#--------------------------------------
-# LAYER 0: HIGH-LEVEL GOAL
-#--------------------------------------
-0.1_SummaryOfGoal: >
-  Upgrade chat system to use Pydantic AI for agentic capabilities while maintaining existing PostgreSQL message storage and threading functionality, and integrating hybrid search as a tool.
+1. **Content Management**
+   - SQLAlchemy models in `app/models/psql_models.py`
+   - Content types: meetings, documents, notes
+   - Parent-child relationships
+   - Entity associations
 
-0.2_ConstraintsOrConsiderations: >
-  - Must maintain existing message persistence in PostgreSQL
-  - Keep current threading system intact
-  - Wrap hybrid_search as a tool for agents
-  - Ensure proper user management and persistence
-  - Handle database foreign key constraints
-  - Keep compact code style without unnecessary whitespace
-  - Maintain high performance
-  - Clean up test data after testing
+2. **LLM Core** (root level)
+   - `llm_core.py` (core LLM functionality)
+   - `prompts.py` (prompt management)
+   - `pydantic_models.py` (LLM models)
 
-0.3_Confidence: 92
+3. **Services Structure**
+   ```
+   app/services/
+   ├── analytics/
+   │   ├── api.py
+   │   ├── export.py
+   │   ├── init_db.py
+   │   └── models.py
+   ├── auth/
+   │   └── tokens.py
+   ├── chat/
+   │   ├── chat.py
+   │   └── manager.py
+   ├── content/
+   │   ├── access.py
+   │   ├── manager.py
+   │   ├── notes.py
+   │   ├── notes_api.py
+   │   ├── processor.py
+   │   └── sharing.py
+   ├── indexing/
+   │   ├── content_relations.py
+   │   ├── decorators.py
+   │   ├── models.py
+   │   ├── monitor.py
+   │   ├── processor.py
+   │   ├── redis/
+   │   │   ├── keys.py
+   │   │   └── monitor.py
+   │   └── worker.py
+   └── search/
+       ├── elastic.py
+       ├── hybrid.py
+       └── qdrant.py
+   ```
 
-#--------------------------------------
-# LAYER 1: DOMAIN & BUSINESS
-#--------------------------------------
-1.1_DomainDetails: >
-  - Chat system needs agentic capabilities via Pydantic AI
-  - Messages must persist in PostgreSQL
-  - Threading system must remain functional
-  - Hybrid search becomes available as agent tool
-  - System should maintain current API compatibility
-  - Users must exist in database before thread creation
-  - Test data should not pollute production database
+4. **API Structure**
+   ```
+   app/api/
+   ├── v1/
+   │   ├── analytics.py
+   │   ├── auth.py
+   │   ├── content.py
+   │   ├── entities.py
+   │   ├── chat.py
+   │   └── share.py
+   └── deps.py
+   ```
 
-1.2_BusinessConstraints: >
-  - Zero data loss during upgrade
-  - Minimal system downtime
-  - Backward compatibility with existing APIs
-  - Performance must remain consistent
-  - Data integrity through proper foreign key relationships
-  - Clean test environment
+## 2. Content API Endpoints Plan
 
-1.3_QuestionsOrAmbiguities: >
-  - How to handle tool rate limiting? [TODO]
-  - Error handling for tool failures? [TODO]
-  - State management between agent calls? [TODO]
-  - User creation/validation flow? [DONE]
-  - Test data cleanup strategy? [IN PROGRESS]
+### 2.1 Pydantic Models
 
-1.4_Confidence: 88
+```python
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from datetime import datetime
+from uuid import UUID
+from enum import Enum
 
-#--------------------------------------
-# LAYER 2: ARCHITECTURE / TECH RESEARCH
-#--------------------------------------
-2.1_Components: >
-  1. Pydantic AI Integration:
-     - Define agent schemas and tools [DONE]
-     - Create tool wrappers for hybrid_search [DONE]
-     - Implement agent state management [DONE]
-  
-  2. PostgreSQL Layer:
-     - Maintain existing message storage [DONE]
-     - Add agent state storage if needed [DONE]
-     - Keep thread management intact [DONE]
-     - Ensure user existence before thread creation [DONE]
-  
-  3. User Management:
-     - Add user creation/validation [DONE]
-     - Handle test user scenarios [DONE]
-     - Maintain data integrity [DONE]
-     - Add test data cleanup [TODO]
-  
-  4. Hybrid Search Tool:
-     - Wrap existing functionality [DONE]
-     - Add rate limiting and caching [TODO]
-     - Implement error handling [TODO]
+class ContentType(str, Enum):
+    MEETING = 'meeting'
+    DOCUMENT = 'document'
+    TITLE = 'title'
+    SUMMARY = 'summary'
+    NOTE = 'note'
 
-2.2_Implementation: >
-  1. Core Updates:
-     - Add Pydantic AI dependencies [DONE]
-     - Create agent base classes [DONE]
-     - Implement tool schemas [DONE]
-  
-  2. Database Layer:
-     - Keep existing schema [DONE]
-     - Add user management [DONE]
-     - Maintain session management [DONE]
-     - Add cleanup procedures [TODO]
-  
-  3. Tool Integration:
-     - Wrap hybrid_search [DONE]
-     - Add caching layer [TODO]
-     - Implement retries [TODO]
+class EntityRef(BaseModel):
+    name: str
+    type: str
 
-2.3_Confidence: 92
+class ContentFilter(BaseModel):
+    content_type: Optional[ContentType] = None
+    entity_type: Optional[str] = None
+    entity_names: Optional[List[str]] = None
+    parent_id: Optional[UUID] = None
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
 
-#--------------------------------------
-# LAYER 3: SOLUTION PROPOSAL
-#--------------------------------------
-3.1_Implementation: >
-  Phase 1: Setup & Core [DONE]
-  - Add Pydantic AI dependencies
-  - Create base agent classes
-  - Define tool schemas
-  
-  Phase 2: Tool Integration [DONE]
-  - Wrap hybrid_search
-  - Add caching
-  - Implement rate limiting
-  
-  Phase 3: Database Integration [IN PROGRESS]
-  - Verify message persistence [DONE]
-  - Add user management [DONE]
-  - Test thread management [DONE]
-  - Add test data cleanup [TODO]
-  
-  Phase 4: Testing & Validation [IN PROGRESS]
-  - Unit tests for tools [TODO]
-  - Integration tests [IN PROGRESS]
-  - Performance testing [TODO]
-  - Test data management [TODO]
+class ContentListRequest(BaseModel):
+    filter: Optional[ContentFilter] = None
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
-3.2_RiskMitigation: >
-  - Implement feature flags
-  - Add rollback procedures
-  - Create monitoring
-  - Phase rollout strategy
-  - Add user validation checks [DONE]
-  - Add test data cleanup procedures [TODO]
+class ContentCreate(BaseModel):
+    type: ContentType
+    text: str
+    parent_id: Optional[UUID] = None
+    entities: Optional[List[EntityRef]] = None
 
-3.3_Confidence: 90
+class ContentUpdate(BaseModel):
+    text: Optional[str] = None
+    entities: Optional[List[EntityRef]] = None
 
-#--------------------------------------
-# LOG & NEXT STEPS
-#--------------------------------------
-log_of_updates: |
-  2024-03-21: Initial plan for Pydantic AI integration created
-  2024-03-21: Updated plan to include user management requirements
-  2024-03-21: Updated progress after implementing user creation and validation
+class ContentResponse(BaseModel):
+    content_id: UUID
+    type: ContentType
+    text: str
+    timestamp: datetime
+    parent_id: Optional[UUID]
+    entities: List[EntityRef]
+    is_indexed: bool
+    metadata: dict
+```
 
-next_immediate_steps: >
-  1. Add test data cleanup function
-  2. Add cleanup after test execution
-  3. Add error handling for cleanup failures
-  4. Add test environment isolation
-  5. Implement proper test user lifecycle management
+### 2.2 API Endpoints
+
+1. **List Contents**
+   ```
+   GET /api/v1/contents
+   Query Parameters:
+   - type: Optional[ContentType]
+   - entity_type: Optional[str]
+   - entity_names: Optional[List[str]]
+   - parent_id: Optional[UUID]
+   - limit: int = 20
+   - offset: int = 0
+   - date_from: Optional[datetime]
+   - date_to: Optional[datetime]
+   ```
+
+2. **Create Content**
+   ```
+   POST /api/v1/contents
+   Body: ContentCreate
+   Notes: 
+   - Cannot create MEETING type
+   - Parent ID must be validated
+   - Entity references must exist
+   ```
+
+3. **Update Content**
+   ```
+   PUT /api/v1/contents/{content_id}
+   Body: ContentUpdate
+   Notes:
+   - Cannot update MEETING type
+   - Entity references must exist
+   ```
+
+4. **Archive/Restore Content**
+   ```
+   POST /api/v1/contents/{content_id}/archive
+   POST /api/v1/contents/{content_id}/restore
+   Notes:
+   - Soft delete implementation
+   - Keep relationships intact
+   ```
+
+5. **Content Indexing**
+   ```
+   POST /api/v1/contents/{content_id}/index
+   GET /api/v1/contents/{content_id}/index
+   Notes:
+   - Check indexing status
+   - Queue for indexing
+   ```
+
+6. **Get Content Details**
+   ```
+   GET /api/v1/contents/{content_id}
+   Query Parameters:
+   - include_parent: bool = False
+   Notes:
+   - Include metadata based on type
+   - Handle meeting transcripts differently
+   ```
+
+### 2.3 Implementation Notes
+
+1. **Access Control**
+   - Check user permissions for each operation
+   - Handle shared content access
+   - Maintain ownership information
+
+2. **Validation Rules**
+   - Content type restrictions
+   - Entity reference validation
+   - Parent-child relationship validation
+   - Date range validation
+
+3. **Error Handling**
+   - Clear error messages
+   - Proper HTTP status codes
+   - Validation error responses
+
+4. **Performance**
+   - Pagination for lists
+   - Efficient entity filtering
+   - Caching where appropriate
+
+## 3. Migration Goals
+
+### 3.1 Primary Objectives
+
+1. **Clean Architecture**
+   - Clear separation of concerns
+   - Logical module organization
+   - Consistent naming conventions
+
+2. **Maintainability**
+   - Centralized SQLAlchemy models
+   - Isolated LLM functionality
+   - Organized test suite
+
+3. **Minimal Disruption**
+   - Keep core functionality intact
+   - Preserve existing APIs
+   - Maintain backward compatibility
+
+### 3.2 Non-Goals
+
+1. **Avoid Over-engineering**
+   - No unnecessary abstractions
+   - Keep related code together
+   - Maintain simple imports
+
+2. **Preserve Working Systems**
+   - Keep LLM core in root
+   - Maintain API client location
+   - Keep SQLAlchemy models unified
+
+## 4. New Project Structure
+
+### 4.1 Root Level
+```
+/
+├── llm_core.py          # Core LLM functionality
+├── prompts.py           # LLM prompts
+├── pydantic_models.py   # LLM models
+├── api_client.py        # Testing client
+├── app.py              # FastAPI application
+├── alembic.ini         # Database migrations
+└── requirements.txt    # Dependencies
+```
+
+### 4.2 Application Structure
+```
+app/
+├── api/                 # API routes
+│   ├── v1/
+│   │   ├── content.py
+│   │   ├── entities.py
+│   │   ├── chat.py     # Renamed from threads.py
+│   │   ├── auth.py
+│   │   └── share.py
+│   └── deps.py
+│
+├── models/
+│   ├── psql_models.py  # All SQLAlchemy models
+│   └── schema/         # API Pydantic models
+│
+├── services/
+│   ├── content/
+│   ├── entity/
+│   ├── chat/          # Renamed from thread/
+│   ├── search/
+│   └── indexing/
+│
+├── core/
+│   ├── config.py
+│   └── security.py
+│
+└── utils/
+    ├── db.py
+    └── redis.py
+```
+
+### 4.3 Test Organization
+```
+tests/
+├── api/
+├── chat/
+├── content/
+└── search/
+```
+
+## 5. Migration Plan
+
+### 5.1 Files to Move
+
+1. **Database Related**
+   - `psql_models.py` → `app/models/psql_models.py`
+   - `psql_helpers.py` → `app/utils/db.py`
+   - `psql_notes.py` → `app/services/content/notes.py`
+   - `psql_sharing.py` → `app/services/content/sharing.py`
+   - `psql_access.py` → `app/services/content/access.py`
+
+2. **Search Related**
+   - `qdrant_search.py` → `app/services/search/qdrant.py`
+   - `bm25_search.py` → `app/services/search/elastic.py`
+   - `hybrid_search.py` → `app/services/search/hybrid.py`
+
+3. **Chat & Auth**
+   - `thread_manager.py` → `app/services/chat/manager.py`
+   - `chat.py` → `app/services/chat/chat.py`
+   - `token_manager.py` → `app/services/auth/tokens.py`
+
+### 5.2 Files to Keep in Root
+
+1. **LLM Core**
+   - `core.py` → Rename to `llm_core.py`
+   - `prompts.py`
+   - `pydantic_models.py`
+
+2. **API & Testing**
+   - `api_client.py`
+
+3. **Configuration**
+   - `app.py`
+   - `alembic.ini`
+   - `requirements.txt`
+   - Setup scripts
+   - `Dockerfile`
+
+### 5.3 Implementation Phases
+
+1. **Phase 1: Test Organization**
+   - Create test directory structure
+   - Move test files
+   - Update imports
+   - Verify all tests pass
+
+2. **Phase 2: Core Models**
+   - Move database models
+   - Update imports
+   - Test functionality
+
+3. **Phase 3: Services**
+   - Rename thread to chat
+   - Move service files
+   - Update imports
+   - Test each service
+
+4. **Phase 4: Cleanup**
+   - Update documentation
+   - Remove unused imports
+   - Final testing
+
+## 6. Migration Guidelines
+
+### 6.1 Code Movement Rules
+
+1. **File Moves**
+   - Copy file to new location
+   - Update imports
+   - Test functionality
+   - Remove old file
+
+2. **Import Updates**
+   - Use relative imports in app
+   - Keep root imports absolute
+   - Update dependent files
+
+### 6.2 Testing Strategy
+
+1. **Test Suite**
+   - Organize by feature
+   - Maintain existing tests
+   - Add missing coverage
+
+2. **Verification**
+   - Run tests after each move
+   - Check API functionality
+   - Verify LLM operations
+
+### 6.3 Rollback Plan
+
+1. **Backup**
+   - Git branches
+   - Documented changes
+   - Revert scripts
+
+2. **Verification Points**
+   - After each phase
+   - Before major changes
+   - After import updates

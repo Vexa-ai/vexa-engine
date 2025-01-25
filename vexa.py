@@ -4,18 +4,21 @@ import os
 from datetime import datetime
 import pandas as pd
 import asyncio
-from google_client import GoogleClient, GoogleError
-from typing import Optional
+from typing import List, Optional, Tuple, Dict, Any
+from uuid import UUID
 from pydantic import BaseModel
 from urllib.parse import urlparse, parse_qs
-from psql_models import User, UserToken, async_session, UTMParams
 from pytz import timezone
-from models import VexaAPIError
 import uuid
-from sqlalchemy import select
-from typing import List, Tuple
-from uuid import UUID
+import requests
+import json
+from app.models.schema.errors import VexaAPIError
+from enum import Enum
 
+from app.models.psql_models import (
+    User, UserToken, async_session, UTMParams
+)
+from app.services.auth.google_client import GoogleClient, GoogleError
 
 VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
 API_URL = os.getenv('API_URL', 'http://127.0.0.1:8765')
