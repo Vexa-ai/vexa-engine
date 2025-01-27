@@ -4,7 +4,7 @@ from typing import List, Optional, Dict
 import uuid
 from pydantic import BaseModel, Field
 from core import Msg
-from psql_models import Thread, content_entity_association, thread_entity_association, Entity
+from psql_models import Thread, content_entity_association, Entity
 from psql_helpers import get_session
 from sqlalchemy import select, update, delete, insert, and_, func
 from uuid import UUID
@@ -15,8 +15,10 @@ class SearchAssistantThread(BaseModel):
     user_id: str
     thread_name: str
     messages: List[Msg] = []
-    meeting_id: Optional[UUID] = None
+    content_id: Optional[UUID] = None
+    entity_id: Optional[int] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    meta: Optional[Dict] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -35,22 +37,32 @@ class ThreadManager:
         messages: List[Msg], 
         thread_name: Optional[str] = None, 
         thread_id: Optional[str] = None,
+        content_id: Optional[UUID] = None,
+        entity_id: Optional[int] = None,
         content_ids: Optional[List[UUID]] = None,
-        speaker_names: Optional[List[str]] = None
+        entities: Optional[List[str]] = None,
+        meta: Optional[Dict] = None
     ) -> str:
         truncated_thread_name = (thread_name or "")[:125] if thread_name else ""
         messages_json = json.dumps([asdict(msg) for msg in messages])
         
+        thread_meta = meta or {}
+        if content_ids:
+            thread_meta['content_ids'] = [str(cid) for cid in content_ids]
+        if entities:
+            thread_meta['entities'] = entities
+        
         async with get_session() as session:
             async with session.begin():
                 if thread_id:
-                    # Update existing thread
                     await session.execute(
                         update(Thread)
                         .where(Thread.thread_id == thread_id)
                         .values(
                             messages=messages_json,
-                            content_id=content_ids[0] if content_ids else None
+                            content_id=content_id,
+                            entity_id=entity_id,
+                            meta=thread_meta if thread_meta else None
                         )
                     )
                     thread = await session.execute(
@@ -58,47 +70,17 @@ class ThreadManager:
                     )
                     thread = thread.scalar_one()
                 else:
-                    # Create new thread
                     thread = Thread(
                         thread_id=str(uuid.uuid4()),
                         user_id=UUID(user_id),
                         thread_name=truncated_thread_name,
                         messages=messages_json,
-                        content_id=content_ids[0] if content_ids else None
+                        content_id=content_id,
+                        entity_id=entity_id,
+                        meta=thread_meta if thread_meta else None
                     )
                     session.add(thread)
                     await session.flush()
-                
-                # Add speaker entity associations
-                if speaker_names:
-                    # First clear existing
-                    await session.execute(
-                        delete(thread_entity_association).where(
-                            thread_entity_association.c.thread_id == thread.thread_id
-                        )
-                    )
-                    # Then add new speakers
-                    for speaker in speaker_names:
-                        entity = await session.execute(
-                            select(Entity).where(
-                                and_(
-                                    Entity.name == speaker,
-                                    Entity.type == "speaker"
-                                )
-                            )
-                        )
-                        entity = entity.scalar_one_or_none()
-                        if not entity:
-                            entity = Entity(name=speaker, type="speaker")
-                            session.add(entity)
-                            await session.flush()
-                        
-                        await session.execute(
-                            insert(thread_entity_association).values({
-                                "thread_id": thread.thread_id,
-                                "entity_id": entity.id
-                            })
-                        )
                 
                 await session.commit()
                 return thread.thread_id
@@ -107,26 +89,17 @@ class ThreadManager:
         self,
         user_id: str,
         content_ids: Optional[List[UUID]] = None,
-        speaker_names: Optional[List[str]] = None
+        entities: Optional[List[str]] = None
     ) -> List[dict]:
         async with get_session() as session:
             query = select(Thread).where(Thread.user_id == UUID(user_id))
             
             if content_ids:
-                query = query.join(content_entity_association)
-                query = query.where(
-                    content_entity_association.c.content_id.in_(content_ids)
-                )
+                content_ids_str = [str(cid) for cid in content_ids]
+                query = query.where(Thread.meta['content_ids'].contains(content_ids_str))
             
-            if speaker_names:
-                query = query.join(thread_entity_association)
-                query = query.join(Entity)
-                query = query.where(
-                    and_(
-                        Entity.name.in_(speaker_names),
-                        Entity.type == "speaker"
-                    )
-                )
+            if entities:
+                query = query.where(Thread.meta['entities'].contains(entities))
             
             result = await session.execute(query)
             threads = result.scalars().all()
@@ -134,7 +107,10 @@ class ThreadManager:
             return [{
                 "thread_id": t.thread_id,
                 "thread_name": t.thread_name,
-                "timestamp": t.timestamp
+                "timestamp": t.timestamp,
+                "content_id": str(t.content_id) if t.content_id else None,
+                "entity": t.entity,
+                "meta": t.meta
             } for t in threads]
 
     async def get_thread(self, thread_id: str) -> Optional[SearchAssistantThread]:
@@ -146,7 +122,6 @@ class ThreadManager:
             if not thread:
                 return None
             
-            # Convert stored dict messages back to Msg objects
             messages_dicts = json.loads(thread.messages)
             messages = [
                 Msg(
@@ -162,22 +137,28 @@ class ThreadManager:
                 user_id=str(thread.user_id),
                 thread_name=thread.thread_name,
                 messages=messages,
-                meeting_id=thread.content_id,
-                timestamp=thread.timestamp
+                content_id=thread.content_id,
+                entity_id=thread.entity_id,
+                timestamp=thread.timestamp,
+                meta=thread.meta
             )
 
-    async def get_user_threads(self, user_id: str, content_id: Optional[UUID] = None) -> List[dict]:
+    async def get_user_threads(
+        self, 
+        user_id: str, 
+        content_id: Optional[UUID] = None,
+        entity_id: Optional[int] = None
+    ) -> List[dict]:
         async with get_session() as session:
-            # Base query
             query = select(Thread).filter(Thread.user_id == UUID(user_id))
             
-            # Filter by content_id if provided, otherwise get global threads
             if content_id:
                 query = query.filter(Thread.content_id == content_id)
+            elif entity_id:
+                query = query.filter(Thread.entity_id == entity_id)
             else:
-                query = query.filter(Thread.content_id.is_(None))
+                query = query.filter(Thread.content_id.is_(None), Thread.entity_id.is_(None))
                 
-            # Get threads ordered by timestamp
             result = await session.execute(query.order_by(Thread.timestamp.desc()))
             threads = result.scalars().all()
             
@@ -185,7 +166,9 @@ class ThreadManager:
                 "thread_id": thread.thread_id,
                 "thread_name": thread.thread_name,
                 "timestamp": thread.timestamp,
-                "content_id": str(thread.content_id) if thread.content_id else None
+                "content_id": str(thread.content_id) if thread.content_id else None,
+                "entity_id": thread.entity_id,
+                "meta": thread.meta
             } for thread in threads]
 
     async def get_messages_by_thread_id(self, thread_id: str) -> Optional[List[Msg]]:
@@ -248,7 +231,6 @@ class ThreadManager:
         async with get_session() as session:
             async with session.begin():
                 try:
-                    # Get thread
                     result = await session.execute(
                         select(Thread).where(Thread.thread_id == thread_id)
                     )
@@ -256,12 +238,10 @@ class ThreadManager:
                     if not thread:
                         return None
                     
-                    # Parse messages
                     messages_dicts = json.loads(thread.messages)
                     if message_index >= len(messages_dicts):
                         return None
                         
-                    # Convert to Msg objects up to the edit point
                     messages = [
                         Msg(
                             role=msg["role"],
@@ -271,7 +251,6 @@ class ThreadManager:
                         for msg in messages_dicts[:message_index]
                     ]
                     
-                    # Add edited message
                     edited_msg = messages_dicts[message_index]
                     messages.append(Msg(
                         role=edited_msg["role"],
@@ -279,7 +258,6 @@ class ThreadManager:
                         service_content=edited_msg.get("service_content")
                     ))
                     
-                    # Update thread with truncated messages
                     messages_json = json.dumps([asdict(msg) for msg in messages])
                     await session.execute(
                         update(Thread)
@@ -299,25 +277,16 @@ class ThreadManager:
         user_id: str,
         entity_names: List[str]
     ) -> List[dict]:
+        """Get threads that have exactly these entities in meta"""
         async with get_session() as session:
-            # Subquery to get thread_ids that have exactly these entities
-            thread_count_subquery = (
-                select(
-                    thread_entity_association.c.thread_id,
-                    func.count(thread_entity_association.c.entity_id).label('entity_count')
-                )
-                .join(Entity, thread_entity_association.c.entity_id == Entity.id)
-                .where(Entity.name.in_(entity_names))
-                .group_by(thread_entity_association.c.thread_id)
-                .having(func.count(thread_entity_association.c.entity_id) == len(entity_names))
-            ).subquery()
-            
-            # Main query to get threads
             query = (
                 select(Thread)
-                .join(thread_count_subquery, Thread.thread_id == thread_count_subquery.c.thread_id)
-                .where(Thread.user_id == UUID(user_id))
-                .order_by(Thread.timestamp.desc())
+                .where(
+                    and_(
+                        Thread.user_id == UUID(user_id),
+                        Thread.meta['entities'].contains(entity_names)
+                    )
+                )
             )
             
             result = await session.execute(query)
@@ -326,5 +295,8 @@ class ThreadManager:
             return [{
                 "thread_id": t.thread_id,
                 "thread_name": t.thread_name,
-                "timestamp": t.timestamp
+                "timestamp": t.timestamp,
+                "content_id": str(t.content_id) if t.content_id else None,
+                "entity": t.entity,
+                "meta": t.meta
             } for t in threads]

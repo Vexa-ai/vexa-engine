@@ -1,20 +1,28 @@
 import requests
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Generator
+from typing import Optional, List, Dict, Any, Generator, AsyncGenerator
 from vexa import VexaAPI
 from psql_access import get_token_by_email
 from enum import Enum
 from uuid import UUID
 from psql_models import ContentType
+import aiohttp
+import logging
 
 import os
 API_PORT = os.getenv('API_PORT')
+
+logger = logging.getLogger(__name__)
 
 class MeetingOwnership(str, Enum):
     MY = "my"
     SHARED = "shared"
     ALL = "all"
+
+class APIError(Exception):
+    """Custom exception for API errors"""
+    pass
 
 class APIClient:
     def __init__(self, email: Optional[str] = None, base_url: str = f"http://127.0.0.1:{API_PORT}"):
@@ -103,44 +111,94 @@ class APIClient:
         print(f"User ID: {result.get('user_id')}\nUser Name: {result.get('user_name')}\nImage URL: {result.get('image')}")
         return result
 
-    def chat(
-        self, 
-        query: str, 
-        meeting_id: Optional[str] = None,
+    async def chat(
+        self,
+        query: str,
+        content_id: Optional[UUID] = None,
+        entity: Optional[str] = None,
+        content_ids: Optional[List[UUID]] = None,
         entities: Optional[List[str]] = None,
-        thread_id: Optional[str] = None, 
-        model: str = "gpt-4o-mini", 
-        temperature: float = 0.7
-    ) -> Dict:
-        """Unified chat method that supports both general and meeting-specific queries"""
-        response = requests.post(
-            f"{self.base_url}/chat", 
-            headers=self.headers, 
-            json={
-                "query": query,
-                "meeting_id": meeting_id,
-                "entities": entities,
-                "thread_id": thread_id,
-                "model": model,
-                "temperature": temperature
-            },
-            stream=True
-        )
+        thread_id: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        meta: Optional[dict] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        logger.debug("Starting chat method")
         
-        final_response = None
-        for line in response.iter_lines():
-            if line:
-                try:
-                    data = json.loads(line.decode('utf-8').replace('data: ', ''))
-                    if data.get('type') == 'stream':
-                        print(data.get('content', ''), end='', flush=True)
-                    elif data.get('type') == 'done':
-                        break
-                    else:
-                        final_response = data
-                except json.JSONDecodeError:
-                    continue
-        return final_response or {"error": "No response received"}
+        # Validate ID combinations
+        if content_id and entity:
+            logger.error("Cannot specify both content_id and entity")
+            raise ValueError("Cannot specify both content_id and entity")
+        if content_ids and entities:
+            logger.error("Cannot specify both content_ids and entities")
+            raise ValueError("Cannot specify both content_ids and entities")
+        if (content_id and content_ids) or (entity and entities):
+            logger.error("Cannot specify both single and multiple values of same type")
+            raise ValueError("Cannot specify both single and multiple values of the same type")
+
+        # Prepare payload
+        payload = {
+            "query": query,
+            "content_id": str(content_id) if content_id else None,
+            "entity": entity,
+            "content_ids": [str(cid) for cid in content_ids] if content_ids else None,
+            "entities": entities,
+            "thread_id": thread_id,
+            "model": model,
+            "temperature": temperature,
+            "meta": meta
+        }
+        logger.debug(f"Prepared payload: {payload}")
+
+        async with aiohttp.ClientSession() as session:
+            logger.debug(f"Making POST request to {self.base_url}/chat")
+            try:
+                async with session.post(f"{self.base_url}/chat", json=payload, headers=self.headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Chat request failed with status {response.status}: {error_text}")
+                        raise APIError(f"Chat request failed: {error_text}")
+
+                    logger.debug("Starting to process response stream")
+                    buffer = ""
+                    
+                    # Read the full response
+                    response_data = await response.read()
+                    if not response_data:
+                        return
+                        
+                    # Process response in chunks
+                    chunks = response_data.split(b'\n\n')
+                    for chunk in chunks:
+                        if not chunk:
+                            continue
+                            
+                        chunk_data = chunk.decode('utf-8').strip()
+                        if chunk_data.startswith('data: '):
+                            try:
+                                data = json.loads(chunk_data[6:])
+                                logger.debug(f"Parsed JSON data: {data}")
+                                
+                                if 'error' in data:
+                                    logger.error(f"Error in response: {data['error']}")
+                                    yield data
+                                    return
+                                elif 'chunk' in data:
+                                    logger.debug(f"Yielding chunk: {data['chunk']}")
+                                    yield {'chunk': data['chunk']}
+                                else:
+                                    logger.debug(f"Yielding final data: {data}")
+                                    yield data
+                            except json.JSONDecodeError as e:
+                                logger.error(f"JSON decode error: {e}")
+                                continue
+                                    
+            except aiohttp.ClientError as e:
+                logger.error(f"Network error during chat: {str(e)}")
+                raise APIError(f"Network error: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error during chat: {str(e)}")
+                raise APIError(f"Unexpected error: {str(e)}")
 
     async def get_meeting_details(self, meeting_id: str) -> Dict:
         await self._ensure_initialized()
@@ -176,23 +234,53 @@ class APIClient:
     def get_indexing_status(self) -> Dict:
         return requests.get(f"{self.base_url}/indexing_status", headers=self.headers).json()
 
-    def get_threads(self, meeting_id: Optional[str] = None) -> Dict:
+    async def get_threads(
+        self,
+        content_id: Optional[UUID] = None,
+        entity: Optional[str] = None,
+        content_ids: Optional[List[UUID]] = None,
+        entities: Optional[List[str]] = None
+    ) -> Dict:
+        """Get threads for content or entity
+        
+        Args:
+            content_id: Single content ID for direct thread mapping
+            entity: Single entity name for direct thread mapping
+            content_ids: Multiple content IDs for metadata search
+            entities: Multiple entity names for metadata search
+        """
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
+
+        if content_id and entity:
+            raise ValueError("Cannot specify both content_id and entity for thread mapping")
+            
+        if content_ids and entities:
+            raise ValueError("Cannot specify both content_ids and entities for search")
+            
+        if (content_id and content_ids) or (entity and entities):
+            raise ValueError("Cannot specify both single and multiple values of the same type")
         
-        if meeting_id:
-            try:
-                UUID(meeting_id)  # Validate UUID format
-                response = requests.get(f"{self.base_url}/threads/{meeting_id}", headers=self.headers)
-            except ValueError:
-                raise ValueError("Invalid meeting ID format - must be a valid UUID")
-        else:
-            response = requests.get(f"{self.base_url}/threads/all", headers=self.headers)
+        params = {}
+        if content_id:
+            params['content_id'] = str(content_id)
+        if entity:
+            params['entity'] = entity
+        if content_ids:
+            params['content_ids'] = [str(cid) for cid in content_ids]
+        if entities:
+            params['entities'] = entities
         
-        if response.status_code == 200:
-            return response.json()
-        else:
-            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/threads",
+                headers=self.headers,
+                params=params
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    raise Exception(f"API request failed with status {response.status}: {await response.text()}")
 
     def delete_thread(self, thread_id: str) -> Dict:
         return requests.delete(f"{self.base_url}/thread/{thread_id}", headers=self.headers).json()
@@ -356,7 +444,8 @@ class APIClient:
             "body": body,
             "type": content_type_enum.value,
             "parent_id": str(parent_id) if parent_id else None,
-            "entities": entities or []
+            "entities": entities or [],
+            "access_level": "owner"  # Set owner access level for created content
         }
         
         response = requests.post(
@@ -460,31 +549,27 @@ class APIClient:
         """Get content by ID including children and entities
         
         Args:
-            content_id: UUID of content to retrieve
+            content_id: UUID of content to get
             
         Returns:
             Dict with content details including text, entities, and children
             
         Raises:
             ValueError: If content not found or no access
-            Exception: For other API errors
         """
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
             
-        url = f"{self.base_url}/api/content/{content_id}"
-        print(f"Making GET request to: {url}")  # Debug log
-        
-        response = requests.get(url, headers=self.headers)
-        print(f"Response status: {response.status_code}")  # Debug log
+        response = requests.get(
+            f"{self.base_url}/api/content/{content_id}",
+            headers=self.headers
+        )
         
         if response.status_code == 200:
             return response.json()
         elif response.status_code == 404:
-            print(f"Content not found: {content_id}")  # Debug log
             raise ValueError("Content not found or no access")
         else:
-            print(f"API error: {response.text}")  # Debug log
             raise Exception(f"API request failed with status {response.status_code}: {response.text}")
 
     async def get_entities(
@@ -493,41 +578,34 @@ class APIClient:
         offset: int = 0,
         limit: int = 20
     ) -> Dict[str, Any]:
-        """Get entities by type with pagination and last seen timestamp
+        """Get entities of a specific type
         
         Args:
-            entity_type: Type of entities to get (e.g. 'speaker', 'tag')
+            entity_type: Type of entities to get (e.g. 'tag', 'speaker')
             offset: Pagination offset
             limit: Pagination limit
             
         Returns:
-            Dict with total count and list of entities with name, last_seen, and content_count
+            Dict with total count and list of entities
             
         Raises:
-            ValueError: If client not initialized or invalid entity type
-            Exception: For other API errors
+            ValueError: If invalid entity type
         """
-        await self._ensure_initialized()
-        
-        params = {
-            "offset": offset,
-            "limit": limit
-        }
-        
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+            
         response = requests.get(
             f"{self.base_url}/api/entities/{entity_type}",
             headers=self.headers,
-            params=params
+            params={
+                "offset": offset,
+                "limit": limit
+            }
         )
         
         if response.status_code == 200:
             return response.json()
-        elif response.status_code in [400, 500]:
-            # Handle both 400 and 500 status codes that contain error details
-            error_detail = response.json().get("detail", str(response.text))
-            if "Invalid entity type" in error_detail:
-                raise ValueError(error_detail)
-            else:
-                raise Exception(f"API request failed: {error_detail}")
+        elif response.status_code == 400:
+            raise ValueError(f"Invalid entity type: {entity_type}")
         else:
             raise Exception(f"API request failed with status {response.status_code}: {response.text}")

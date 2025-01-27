@@ -33,6 +33,7 @@ class IndexingWorker:
         self.debug = debug
         self.error_delay = 5
         self.processing_delay = 1
+        self.test_user_id = "ef7c085b-fdb5-4c94-b7b6-a61a3d04c210" if debug else None
         
         self.logger = logging.getLogger('indexing_worker')
         self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
@@ -59,6 +60,22 @@ class IndexingWorker:
                     if not content:
                         raise ProcessingError(f"Content {content_id} not found")
 
+                    # Check test user ownership first if in debug mode
+                    if self.debug:
+                        user_content = await session.execute(
+                            select(UserContent)
+                            .where(and_(
+                                UserContent.content_id == content_uuid,
+                                UserContent.access_level != AccessLevel.REMOVED.value,
+                                UserContent.user_id == UUID(self.test_user_id)
+                            ))
+                            .limit(1)
+                        )
+                        if not user_content.scalar_one_or_none():
+                            self.logger.debug(f"Skipping content {content_id} - does not belong to test user")
+                            await self._cleanup_success(content_id)
+                            return
+
                 token = await self._get_token(content_uuid, content)
                 vexa = VexaAPI(token=token)
                 user_id = (await vexa.get_user_info())['id']
@@ -71,30 +88,20 @@ class IndexingWorker:
 
     async def _get_token(self, content_uuid: UUID, content: Content) -> str:
         if self.debug:
-            async with get_session() as session:
-                user_content = await session.execute(
-                    select(UserContent)
-                    .where(and_(UserContent.content_id == content_uuid, UserContent.access_level != AccessLevel.REMOVED.value))
-                    .order_by(UserContent.access_level.desc())
-                    .limit(1)
-                )
-                user_content = user_content.scalar_one_or_none()
-                if not user_content:
-                    raise ProcessingError("No user content found")
-                test_token = await get_user_token(user_content.user_id)
-                if not test_token:
-                    raise ProcessingError("Failed to get test token")
-                if test_token != "3ae04e20124d40babc5107e658c666b6":
-                    await self._cleanup_success(str(content_uuid))
-                    raise ProcessingError("Invalid test token")
-                return test_token
+            test_token = await get_user_token(UUID(self.test_user_id))
+            if not test_token:
+                raise ProcessingError("Failed to get test token")
+            return test_token
         else:
             token = await get_content_token(str(content_uuid))
             if not token and content.type == ContentType.NOTE.value:
                 async with get_session() as session:
                     user_content = await session.execute(
                         select(UserContent)
-                        .where(and_(UserContent.content_id == content_uuid, UserContent.access_level != AccessLevel.REMOVED.value))
+                        .where(and_(
+                            UserContent.content_id == content_uuid, 
+                            UserContent.access_level != AccessLevel.REMOVED.value
+                        ))
                         .order_by(UserContent.access_level.desc())
                         .limit(1)
                     )
@@ -153,7 +160,24 @@ class IndexingWorker:
     @with_redis_ops("refill pending")
     async def _refill_pending_meetings(self, pending_meetings: deque, processing_tasks: set):
         if len(pending_meetings) < self.max_concurrent * 2:
-            next_contents = self.redis.zrangebyscore(RedisKeys.INDEXING_QUEUE, '-inf', datetime.now().timestamp(), start=0, num=self.max_concurrent * 2)
+            # If in debug mode, only get content for test user
+            if self.debug:
+                async with get_session() as session:
+                    # Get content IDs that belong to test user
+                    test_user_content = await session.execute(
+                        select(UserContent.content_id)
+                        .where(and_(
+                            UserContent.user_id == UUID(self.test_user_id),
+                            UserContent.access_level != AccessLevel.REMOVED.value
+                        ))
+                    )
+                    test_content_ids = {str(c[0]) for c in test_user_content}
+                    
+                    # Get content from Redis that belongs to test user
+                    next_contents = self.redis.zrangebyscore(RedisKeys.INDEXING_QUEUE, '-inf', datetime.now().timestamp())
+                    next_contents = [m for m in next_contents if (m.decode() if isinstance(m, bytes) else m) in test_content_ids][:self.max_concurrent * 2]
+            else:
+                next_contents = self.redis.zrangebyscore(RedisKeys.INDEXING_QUEUE, '-inf', datetime.now().timestamp(), start=0, num=self.max_concurrent * 2)
             
             for m in next_contents:
                 content_id = m.decode() if isinstance(m, bytes) else m
@@ -171,7 +195,7 @@ class IndexingWorker:
 
     @with_redis_ops("cleanup stale")
     async def _cleanup_stale_processing(self, processing_tasks: set):
-        stale_timeout = 30 * 60
+        stale_timeout = 3
         now = datetime.now().timestamp()
         processing = self.redis.smembers(RedisKeys.PROCESSING_SET)
         
@@ -181,3 +205,15 @@ class IndexingWorker:
                 retry_score = self.redis.zscore(RedisKeys.INDEXING_QUEUE, content_id)
                 if not retry_score or (now - retry_score) > stale_timeout:
                     self.redis.srem(RedisKeys.PROCESSING_SET, content_id)
+
+    @classmethod
+    async def create(cls, redis: Redis, qdrant_api_key: str, max_concurrent: int = 1, retry_delay: int = 300, debug: bool = False):
+        worker = cls(redis, qdrant_api_key, max_concurrent, retry_delay, debug)
+        # Initialize ES engine asynchronously
+        worker.es_engine = await ElasticsearchBM25.create()
+        # Initialize the content processor with both search engines
+        worker.processor = ContentProcessor(
+            es_engine=worker.es_engine,
+            qdrant_engine=worker.qdrant_engine
+        )
+        return worker

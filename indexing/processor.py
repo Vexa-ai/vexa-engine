@@ -44,7 +44,7 @@ class ContentProcessor:
             
         if content.type == ContentType.NOTE.value:
             await self._process_note_content(content, user_id, session)
-        else:  # Meeting content
+        elif content.type == ContentType.MEETING.value:
             await self._process_meeting_content(content, user_id, token, session)
         
         content.is_indexed = True
@@ -91,29 +91,74 @@ class ContentProcessor:
             timestamp=content.timestamp,
             topic_provider=lambda _: 'Note',  # Fixed topic for notes
             speaker_provider=lambda _: str(user_id),  # Fixed speaker for notes
-            speakers=[str(user_id)]
+            speakers=[str(user_id)],
+            content_type=ContentType.NOTE
         )
         await self._index_to_search_engines(es_documents, qdrant_points)
 
     @handle_processing_errors()
     async def _process_meeting_content(self, content: Content, user_id: str, token: str, session: AsyncSession) -> None:
         self.vexa.token = token
-        df, formatted_output, start_datetime, speakers, transcript = await self.vexa.get_transcription(meeting_session_id=str(content.id))
         
+        # Get user info before requesting transcription
+        await self.vexa.get_user_info()
+        
+        # Get transcription with better error handling
+        logger.info(f"Requesting transcription for content_id={content.id}, user_id={user_id}")
+        transcription_result = await self.vexa.get_transcription(meeting_session_id=str(content.id))
+        
+        if not transcription_result:
+            logger.warning(
+                f"No transcription data available for meeting {content.id}. "
+                f"User ID: {user_id}, Token: {token[:8]}..."
+            )
+            # Mark as processed but empty to avoid reprocessing
+            content.is_indexed = True
+            await session.commit()
+            return
+        
+        try:
+            df, formatted_output, start_datetime, speakers, transcript = transcription_result
+        except (TypeError, ValueError) as e:
+            logger.error(
+                f"Invalid transcription data format for meeting {content.id}. "
+                f"User ID: {user_id}, Error: {e}"
+            )
+            raise ProcessingError(f"Invalid transcription data format: {e}")
+
         if df.empty:
-            raise ProcessingError("No transcription data available")
+            raise ProcessingError(
+                f"No transcription data available for meeting {content.id}. "
+                f"User ID: {user_id}"
+            )
 
         es_documents, qdrant_points = await self._merge_meeting_into_chunks(df, str(content.id), start_datetime, speakers)
         await self._index_to_search_engines(es_documents, qdrant_points)
 
     async def _merge_meeting_into_chunks(self, df: pd.DataFrame, content_id: str, start_datetime: datetime, speakers: List[str]) -> Tuple[List[Dict], List[PointStruct]]:
+        # Convert to markdown
         input_text = df[['formatted_time','speaker', 'content']].to_markdown()
-        topics_result = await TopicsExtraction.call([
-            system_msg(f"Extract topics from the following text: {input_text}"),
-            user_msg(input_text)
-        ])
         
-        topics_df = pd.DataFrame([{"formatted_time": m.formatted_time, "topic": m.topic} for m in topics_result.mapping])
+        # Use RecursiveCharacterTextSplitter with OpenAI's message length limit
+        MAX_MESSAGE_LENGTH = 1000000  # Leaving some buffer
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=MAX_MESSAGE_LENGTH,
+            chunk_overlap=0  # No overlap needed since we're sending all chunks in one call
+        )
+        chunks = text_splitter.split_text(input_text)
+        
+        # Create messages array with system prompt and multiple user messages
+        messages = [system_msg("Extract topics from the following meeting transcript sections. Maintain consistency across sections.")]
+        for chunk in chunks:
+            messages.append(user_msg(chunk))
+        
+        # Make single API call with all chunks as separate messages
+        topics_result = await TopicsExtraction.call(messages)
+        
+        # Continue with existing processing
+        topics_df = pd.DataFrame([{"formatted_time": m.formatted_time, "topic": m.topic} 
+                                for m in topics_result.mapping])
+        
         df = df.merge(topics_df, on='formatted_time', how='left')[['formatted_time','topic','speaker','content']].ffill()
         df['speaker_shift'] = (df['speaker']+df['topic'] != df['speaker']+df['topic'].shift(1)).cumsum()
         
@@ -128,7 +173,6 @@ class ContentProcessor:
         doc_content = '\n'.join(chunks)
         contextualized_chunks = await self._contextualize_chunks(chunks, doc_content)
         
-        # Prepare and index documents
         return await self._prepare_search_documents(
             chunks=chunks,
             contextualized_chunks=contextualized_chunks,
@@ -136,7 +180,8 @@ class ContentProcessor:
             timestamp=start_datetime,
             topic_provider=lambda i: df_grouped.iloc[i].topic,
             speaker_provider=lambda i: df_grouped.iloc[i].speaker,
-            speakers=speakers
+            speakers=speakers,
+            content_type=ContentType.MEETING
         )
 
     async def _prepare_search_documents(
@@ -147,7 +192,8 @@ class ContentProcessor:
         timestamp: datetime,
         topic_provider: Callable[[int], str],
         speaker_provider: Callable[[int], str],
-        speakers: List[str]
+        speakers: List[str],
+        content_type: ContentType
     ) -> Tuple[List[Dict], List[PointStruct]]:
         """Prepare search documents with embeddings for both Elasticsearch and Qdrant."""
         # Generate embeddings
@@ -163,7 +209,8 @@ class ContentProcessor:
                 chunk_index=i,
                 topic=topic_provider(i),
                 speaker=speaker_provider(i),
-                speakers=speakers
+                speakers=speakers,
+                content_type=content_type
             )
             for i, (chunk, context) in enumerate(zip(chunks, contextualized_chunks))
         ]
@@ -200,7 +247,16 @@ class ContentProcessor:
         for i in range(0, len(es_documents), 100):
             batch_es = es_documents[i:i+100]
             batch_qdrant = qdrant_points[i:i+100]
-            self.es.index_documents(batch_es)
+            
+            # Use es_client instead of client
+            operations = []
+            for doc in batch_es:
+                operations.extend([
+                    {"index": {"_index": self.es.index_name}},
+                    doc
+                ])
+            await self.es.es_client.bulk(operations=operations)
+            
             await self.qdrant_engine.client.upsert(
                 collection_name=self.qdrant_engine.collection_name,
                 points=batch_qdrant

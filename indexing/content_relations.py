@@ -18,7 +18,7 @@ async def create_child_content(
     
     # Check if parent exists
     parent = await session.scalar(
-        select(Content).where(Content.content_id == parent_id)
+        select(Content).where(Content.id == parent_id)
     )
     if not parent:
         logger.error(f"Parent content {parent_id} not found")
@@ -26,7 +26,7 @@ async def create_child_content(
         
     # Create child content
     child = Content(
-        content_id=str(uuid.uuid4()),
+        id=str(uuid.uuid4()),
         parent_id=parent_id,
         type=content_type,
         text=text_content,

@@ -65,11 +65,6 @@ content_entity_association = Table('content_entity', Base.metadata,
     Column('entity_id', Integer, ForeignKey('entities.id'))
 )
 
-thread_entity_association = Table('thread_entity', Base.metadata,
-    Column('thread_id', String, ForeignKey('threads.thread_id')),
-    Column('entity_id', Integer, ForeignKey('entities.id'))
-)
-
     
 class User(Base):
     __tablename__ = 'users'
@@ -87,6 +82,7 @@ class User(Base):
     # Relationships
     default_access_granted = relationship("DefaultAccess", foreign_keys="DefaultAccess.granted_user_id", back_populates="granted_user")
     default_access_owner = relationship("DefaultAccess", foreign_keys="DefaultAccess.owner_user_id", back_populates="owner")
+    threads = relationship('Thread', back_populates='user', cascade='all, delete-orphan')
 
 class UserToken(Base):
     __tablename__ = 'user_tokens'
@@ -123,7 +119,6 @@ class Entity(Base):
     )
     
     content = relationship('Content', secondary=content_entity_association, back_populates='entities')
-    threads = relationship('Thread', secondary=thread_entity_association, back_populates='entities')
 
 
 class ContentType(str, Enum):
@@ -190,21 +185,29 @@ class Thread(Base):
     __tablename__ = 'threads'
 
     thread_id = Column(String, primary_key=True)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=True)
+    entity_id = Column(Integer, ForeignKey('entities.id'), nullable=True)
     prompt_id = Column(Integer, ForeignKey('prompts.id'), nullable=True)
     thread_name = Column(String(255))
     messages = Column(Text)
     timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
+    meta = Column(JSONB, nullable=True)
 
-    user = relationship('User')
+    user = relationship('User', back_populates='threads')
     content = relationship('Content')
-    entities = relationship('Entity', secondary=thread_entity_association, back_populates='threads')
     prompt = relationship('Prompt', back_populates='threads')
+    entity = relationship('Entity')
 
     __table_args__ = (
         Index('idx_thread_user_content', 'user_id', 'content_id'),
+        Index('idx_thread_user_entity', 'user_id', 'entity_id'),
         Index('idx_thread_prompt', 'prompt_id'),
+        Index('idx_thread_metadata', 'meta', postgresql_using='gin'),
+        CheckConstraint(
+            '(content_id IS NULL AND entity_id IS NOT NULL) OR (content_id IS NOT NULL AND entity_id IS NULL) OR (content_id IS NULL AND entity_id IS NULL)',
+            name='content_entity_mutex'
+        )
     )
 
 

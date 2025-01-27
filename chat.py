@@ -4,13 +4,16 @@ from uuid import UUID
 import re
 
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
 from core import system_msg, user_msg, assistant_msg, generic_call_, Msg
 from prompts import Prompts
+from psql_models import Content, ContentType
 from thread_manager import ThreadManager
 from logger import logger
+from content_resolver import resolve_content_ids
 
 
 import pandas as pd
@@ -75,16 +78,16 @@ class UnifiedContextProvider(BaseContextProvider):
         self.session = session
         self.qdrant_engine = qdrant_engine
         self.es_engine = es_engine
-        self.meeting_map = {}  # meeting_id -> int
-        self.meeting_map_reverse = {}  # int -> meeting_id
+        self.content_map = {}  # content_id -> int
+        self.content_map_reverse = {}  # int -> content_id
         
-    async def _get_raw_context(self, meeting_ids: List[UUID] = None, speakers: List[str] = None, **kwargs) -> str:
+    async def _get_raw_context(self, content_ids: List[UUID] = None, **kwargs) -> str:
         results = await hybrid_search(
             query=kwargs.get('query', ''),
             qdrant_engine=self.qdrant_engine,
             es_engine=self.es_engine,
-            meeting_ids=[str(mid) for mid in meeting_ids] if meeting_ids else None,
-            speakers=speakers,
+            content_ids=[str(cid) for cid in content_ids] if content_ids else None,
+
             k=100
         )
         
@@ -92,16 +95,16 @@ class UnifiedContextProvider(BaseContextProvider):
         if df.empty:
             return "No relevant context found."
             
-        # Create meeting maps
-        unique_meetings = df['meeting_id'].unique()
-        self.meeting_map = {mid: idx+1 for idx, mid in enumerate(unique_meetings)}
-        self.meeting_map_reverse = {v: k for k, v in self.meeting_map.items()}
+        # Create content maps
+        unique_contents = df['content_id'].unique()
+        self.content_map = {cid: idx+1 for idx, cid in enumerate(unique_contents)}
+        self.content_map_reverse = {v: k for k, v in self.content_map.items()}
         
-        meetings = []
-        for meeting_id, group in df.groupby('meeting_id'):
-            int_meeting_id = self.meeting_map[meeting_id]
+        contents = []
+        for content_id, group in df.groupby('content_id'):
+            int_content_id = self.content_map[content_id]
             timestamp = pd.to_datetime(group['timestamp'].iloc[0])
-            date_header = f"##  [{int_meeting_id}] - {timestamp.strftime('%B %d, %Y %H:%M')}"
+            date_header = f"##  [{int_content_id}] - {timestamp.strftime('%B %d, %Y %H:%M')}"
             
             content_items = []
             for _, row in group.iterrows():
@@ -111,63 +114,74 @@ class UnifiedContextProvider(BaseContextProvider):
                 content_items.append(f"  > {row['content']}")
             
             content = "\n".join(content_items)
-            meetings.append(f"{date_header}\n\n{content}\n")
+            contents.append(f"{date_header}\n\n{content}\n")
         
-        return "\n".join(meetings)
+        return "\n".join(contents)
     
-class MeetingContextProvider(BaseContextProvider):
-    """Provides context from meeting transcripts"""
-    def __init__(self, meeting_ids, max_tokens: int = 40000):
+class ContentContextProvider(BaseContextProvider):
+    """Provides context from content items"""
+    def __init__(self, content_ids, max_tokens: int = 40000):
         super().__init__(max_tokens)
-        self.meeting_ids = meeting_ids
+        self.content_ids = content_ids
         self.unified_fallback = None
 
     async def _get_raw_context(self, session: AsyncSession, **kwargs) -> str:
         combined_context = []
         total_tokens = 0
 
-        # Try to get transcripts for all meetings
-        for meeting_id in self.meeting_ids:
+        # Try to get content for all IDs
+        for content_id in self.content_ids:
             try:
-                token = await get_meeting_token(meeting_id)
-                vexa_api = VexaAPI(token=token)
-                user_id = (await vexa_api.get_user_info())['id']
-                transcription = await vexa_api.get_transcription(meeting_session_id=meeting_id, use_index=True)
+                # Get coselecttype and access level
+                query = select(Content.type, Content.text).where(Content.id == content_id)
+                result = await session.execute(query)
+                content = result.first()
                 
-                if not transcription:
-                    logger.warning(f"No transcription found for meeting {meeting_id}")
+                if not content:
+                    logger.warning(f"No content found for ID {content_id}")
                     continue
-
-                df, formatted_input, start_time, _, transcript = transcription
+                    
+                content_type, text = content
                 
-                # Count tokens for this meeting's context
-                meeting_tokens = count_tokens(formatted_input)
+                # For meetings, get transcript from Vexa
+                if content_type == ContentType.MEETING.value:
+                    token = await get_meeting_token(content_id)
+                    vexa_api = VexaAPI(token=token)
+                    transcription = await vexa_api.get_transcription(meeting_session_id=content_id, use_index=True)
+                    
+                    if not transcription:
+                        logger.warning(f"No transcription found for meeting {content_id}")
+                        continue
+                        
+                    df, formatted_input, start_time, _, transcript = transcription
+                    text = formatted_input
                 
-                # If adding this meeting would exceed the limit, stop here
-                if total_tokens + meeting_tokens > self.max_tokens:
+                # Count tokens for this content
+                content_tokens = count_tokens(text)
+                
+                # If adding this content would exceed the limit, use UnifiedContextProvider
+                if total_tokens + content_tokens > self.max_tokens:
                     logger.info(f"Token limit reached at {total_tokens} tokens. Falling back to UnifiedContextProvider.")
-                    # Initialize UnifiedContextProvider for fallback
                     if not self.unified_fallback:
                         self.unified_fallback = UnifiedContextProvider(
                             session=session,
                             qdrant_engine=kwargs.get('qdrant_engine'),
                             es_engine=kwargs.get('es_engine')
                         )
-                    # Use UnifiedContextProvider with all meeting_ids
                     return await self.unified_fallback._get_raw_context(
-                        meeting_ids=self.meeting_ids,
+                        content_ids=self.content_ids,
                         **kwargs
                     )
 
-                total_tokens += meeting_tokens
-                combined_context.append(formatted_input)
+                total_tokens += content_tokens
+                combined_context.append(text)
 
             except Exception as e:
-                logger.error(f"Error getting transcript for meeting {meeting_id}: {str(e)}")
+                logger.error(f"Error getting content for ID {content_id}: {str(e)}")
                 continue
 
         if not combined_context:
-            return "No meeting transcripts found"
+            return "No content found"
 
         return "\n\n---\n\n".join(combined_context)
 
@@ -189,8 +203,9 @@ class ChatManager:
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         prompt: Optional[str] = None,
-        content_ids: Optional[List[UUID]] = None,
-        speaker_names: Optional[List[str]] = None,
+        content_id: Optional[UUID] = None,
+        entity_id: Optional[int] = None,
+        meta: Optional[Dict] = None,
         **context_kwargs
     ) -> AsyncGenerator[Dict[str, Any], None]:
         # Get user name
@@ -211,7 +226,7 @@ class ChatManager:
         # Combine historical queries with current query
         historical_queries = " ".join([msg.content for msg in self.messages if msg.role == 'user'])
         combined_query = f"{historical_queries} {query}".strip()
-        print(combined_query)
+        
         # Get context using combined query
         context = await context_provider.get_context(
             user_id=user_id,
@@ -240,10 +255,10 @@ class ChatManager:
         
         # Create linked_output if using UnifiedChatManager
         final_output = output
-        if isinstance(self, UnifiedChatManager) and not context_kwargs.get('meeting_ids'):
+        if isinstance(self, UnifiedChatManager) and not context_kwargs.get('content_ids'):
             final_output = await self._create_linked_output(
                 output, 
-                self.unified_context_provider.meeting_map_reverse
+                self.unified_context_provider.content_map_reverse
             )
             
         service_content = {
@@ -252,22 +267,24 @@ class ChatManager:
         }
         self.messages.append(assistant_msg(msg=final_output, service_content=service_content))
 
-        # Use new thread manager methods with content and speaker associations
+        # Use new thread manager methods with content and entity associations
         if not thread_id:
             thread_id = await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 thread_name=thread_name,
                 messages=self.messages,
-                content_ids=content_ids,
-                speaker_names=speaker_names
+                content_id=content_id,
+                entity_id=entity_id,
+                meta=meta
             )
         else:
             await self.thread_manager.upsert_thread(
                 user_id=user_id,
                 messages=self.messages,
                 thread_id=thread_id,
-                content_ids=content_ids,
-                speaker_names=speaker_names
+                content_id=content_id,
+                entity_id=entity_id,
+                meta=meta
             )
 
         yield {
@@ -376,61 +393,93 @@ class UnifiedChatManager(ChatManager):
         self.unified_context_provider = UnifiedContextProvider(session, qdrant_engine, es_engine)
         self.allowed_models = {'gpt-4o-mini', 'gpt-4o', 'claude-3-5-sonnet-20240620'}
 
-    async def _create_linked_output(self, output: str, meeting_map_reverse: dict) -> str:
+    async def _create_linked_output(self, output: str, content_map_reverse: dict) -> str:
         # Add space between consecutive reference numbers
         output = re.sub(r'\]\[', '] [', output)
         
-        # Replace meeting references with links
-        for int_id, meeting_id in meeting_map_reverse.items():
-            url = f"/meeting/{meeting_id}"
-            # Replace both "Meeting X" and "[X]" patterns
+        # Replace content references with links
+        for int_id, content_id in content_map_reverse.items():
+            url = f"/content/{content_id}"
+            # Replace both "Content X" and "[X]" patterns
             output = re.sub(
-                f'Meeting {int_id}(?!\])',
-                f'[Meeting {int_id}]({url})',
+                f'Content {int_id}(?!\])',
+                f'[Content {int_id}]({url})',
                 output
             )
             output = output.replace(f'[{int_id}]', f'[{int_id}]({url})')
             
         return output
 
-    async def chat(self, user_id: str, query: str, meeting_ids: Optional[List[UUID]] = None,
-                  entities: Optional[List[str]] = None, thread_id: Optional[str] = None,
-                  model: Optional[str] = None, temperature: Optional[float] = None,
-                  prompt: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def chat(
+        self,
+        user_id: str,
+        query: str,
+        content_id: Optional[UUID] = None,
+        entity_id: Optional[int] = None,
+        content_ids: Optional[List[UUID]] = None,
+        entity_ids: Optional[List[int]] = None,
+        thread_id: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        meta: Optional[Dict] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         # Validate model
         if model and model not in self.allowed_models:
             model = 'gpt-4o-mini'  # Fallback to default
         
-        # Validate access if meeting_ids provided
-        if meeting_ids:
-            meetings, _ = await get_accessible_content(
-                session=self.session,
-                user_id=UUID(user_id),
-                limit=1000
-            )
-            accessible_meeting_ids = {str(m['content_id']) for m in meetings}
-            
-            # Check access for all provided meeting IDs
-            for meeting_id in meeting_ids:
-                if str(meeting_id) not in accessible_meeting_ids:
-                    yield {
-                        "error": f"No access to meeting {meeting_id}",
-                        "service_content": {"error": f"No access to meeting {meeting_id}"}
-                    }
-                    return
-
+        # Resolve all content IDs
+        all_content_ids = await resolve_content_ids(
+            session=self.session,
+            content_id=content_id,
+            entity_id=entity_id,
+            content_ids=content_ids,
+            entity_ids=entity_ids
+        )
+        
+        # Validate access
+        contents, _ = await get_accessible_content(
+            session=self.session,
+            user_id=UUID(user_id),
+            limit=1000
+        )
+        accessible_content_ids = {str(c['content_id']) for c in contents}
+        
+        if len(all_content_ids) > 0:
+            # Filter to accessible content
+            accessible_content_ids = [
+                cid for cid in all_content_ids 
+                if str(cid) in accessible_content_ids
+            ]
+        
+        if not accessible_content_ids:
+            yield {
+                "error": "No access to any requested content",
+                "service_content": {"error": "No access to any requested content"}
+            }
+            return
+        
         output = ""
         
         # Choose appropriate context provider
-        context_provider = (
-            MeetingContextProvider(meeting_ids) if meeting_ids 
-            else self.unified_context_provider
-        )
+        # context_provider = (
+        #     ContentContextProvider(accessible_content_ids) if accessible_content_ids 
+        #     else self.unified_context_provider
+        # )
+        
+        context_provider = self.unified_context_provider
+        
+        # Prepare meta for thread storage
+        thread_meta = meta or {}
+        if content_ids or entity_ids:
+            thread_meta['content_ids'] = [str(cid) for cid in accessible_content_ids]
+        if entity_ids:
+            thread_meta['entity_ids'] = entity_ids
         
         context_kwargs = {
-            "meeting_ids": meeting_ids if meeting_ids else None,
-            "speakers": entities if entities else None,
-            "session": self.session  # Add session for MeetingContextProvider
+            "content_ids": accessible_content_ids,
+            "session": self.session,
+            "qdrant_engine": self.unified_context_provider.qdrant_engine,
+            "es_engine": self.unified_context_provider.es_engine
         }
         
         async for result in super().chat(
@@ -440,9 +489,10 @@ class UnifiedChatManager(ChatManager):
             thread_id=thread_id,
             model=model or self.model,
             temperature=temperature,
-            prompt=prompt,
-            content_ids=meeting_ids,
-            speaker_names=entities,
+            prompt=None,
+            content_id=content_id,
+            entity_id=entity_id,
+            meta=thread_meta,
             **context_kwargs
         ):
             if 'chunk' in result:
@@ -451,15 +501,17 @@ class UnifiedChatManager(ChatManager):
             else:
                 linked_output = await self._create_linked_output(
                     output, 
-                    self.unified_context_provider.meeting_map_reverse
-                ) if not meeting_ids else output
+                    self.unified_context_provider.content_map_reverse
+                ) if not content_ids else output
                 
                 # Update service content to include linked_output
                 result['service_content']['output'] = linked_output
                 
                 yield {
                     "thread_id": result['thread_id'],
-                    "linked_output": linked_output
+                    "output": output,
+                    "linked_output": linked_output,
+                    "service_content": result['service_content']
                 }
         
         

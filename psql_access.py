@@ -186,7 +186,7 @@ async def get_content_by_user_id(
     async with async_session() as session:
         # Select columns
         columns = [
-            Content.content_id,
+            Content.id,
             Content.timestamp,
             Content.type,
             UserContent.access_level,
@@ -258,7 +258,7 @@ async def get_content_by_ids(
     async with (session or get_session()) as session:
         query = (
             select(
-                Content.content_id,
+                Content.id,
                 Content.timestamp,
                 Content.type,
                 Content.is_indexed,
@@ -266,16 +266,16 @@ async def get_content_by_ids(
                 func.array_agg(distinct(Entity.name)).label('entities')
             )
             .join(UserContent)
-            .join(content_entity_association, Content.content_id == content_entity_association.c.content_id)
+            .join(content_entity_association, Content.id == content_entity_association.c.content_id)
             .join(Entity)
             .where(and_(
                 UserContent.user_id == user_id,
                 UserContent.access_level != AccessLevel.REMOVED.value,
                 Content.type == content_type.value,
-                Content.content_id.in_(content_ids)
+                Content.id.in_(content_ids)
             ))
             .group_by(
-                Content.content_id,
+                Content.id,
                 Content.timestamp,
                 Content.type,
                 Content.is_indexed,
@@ -320,7 +320,7 @@ async def clean_content_data(
         
     async with (session or get_session()) as session:
         # Get content
-        query = select(Content).where(Content.content_id == content_id)
+        query = select(Content).where(Content.id == content_id)
         result = await session.execute(query)
         content = result.scalar_one_or_none()
         
@@ -340,7 +340,7 @@ async def clean_content_data(
 
 async def get_accessible_content(
     user_id: UUID,
-    content_type: ContentType = ContentType.MEETING,
+    content_type: Optional[ContentType] = None,
     access_level: Optional[AccessLevel] = None,
     limit: int = 100,
     offset: int = 0,
@@ -361,7 +361,7 @@ async def get_accessible_content(
 
 async def _get_accessible_content(
     user_id: UUID,
-    content_type: ContentType,
+    content_type: Optional[ContentType],
     access_level: Optional[AccessLevel],
     limit: int,
     offset: int,
@@ -373,14 +373,16 @@ async def _get_accessible_content(
         select(Content, UserContent.access_level)
         .join(UserContent, or_(
             UserContent.content_id == Content.id,
-            UserContent.content_id == Content.content_id
         ))
         .where(and_(
             UserContent.user_id == user_id,
-            Content.type == content_type.value,
             UserContent.access_level != AccessLevel.REMOVED.value
         ))
     )
+
+    # Add content type filter if specified
+    if content_type:
+        query = query.where(Content.type == content_type.value)
 
     # Add access level filter if specified
     if access_level:
@@ -408,7 +410,7 @@ async def _get_accessible_content(
     rows = result.all()
     
     contents = [{
-        "content_id": str(row.Content.content_id or row.Content.id),
+        "content_id": str(row.Content.id),
         "timestamp": row.Content.timestamp,
         "type": row.Content.type,
         "access_level": row.access_level,
@@ -525,7 +527,7 @@ async def get_content_search_indices(
         content_query = select(Content).filter(
             or_(
                 Content.id == content_id,
-                Content.content_id == content_id
+                Content.id == content_id
             )
         )
         result = await session.execute(content_query)

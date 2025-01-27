@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Path, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, Header, Path, Request, BackgroundTasks, Query, Body
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_cache import FastAPICache
@@ -12,16 +12,15 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 
 from sqlalchemy import (
-    func, select, update, insert, and_, case, distinct, desc
+    func, select, update, insert, and_, case, distinct, desc, or_, text, delete
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from psql_models import (
-    Content, UserContent, ContentType, AccessLevel,
-    User, Thread as ThreadModel, ShareLink, Entity,
-    DefaultAccess, EntityType, content_entity_association,
-    thread_entity_association
+    User, Content, Entity, Thread, ContentType, 
+    EntityType, content_entity_association, thread_entity_association,
+    AccessLevel, UserContent
 )
 
 from psql_helpers import (
@@ -100,7 +99,7 @@ app.add_middleware(
 token_manager = TokenManager()
 thread_manager = ThreadManager()
 
-class Thread(BaseModel):
+class ThreadResponse(BaseModel):
     thread_id: str
     thread_name: str
     timestamp: datetime
@@ -110,8 +109,11 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = Field(None, description="Optional thread ID to continue a conversation")
     model: Optional[str] = Field(None, description="Optional model name to use for chat")
     temperature: Optional[float] = Field(None, description="Optional temperature parameter for model response randomness")
-    meeting_ids: Optional[List[UUID]] = Field(None, description="Optional list of meeting IDs to provide context")
-    entities: Optional[List[str]] = Field(None, description="Optional list of entity names to provide context")
+    content_id: Optional[UUID] = Field(None, description="Optional single content ID to provide context")
+    entity: Optional[str] = Field(None, description="Optional single entity name to associate with thread")
+    content_ids: Optional[List[UUID]] = Field(None, description="Optional list of content IDs to provide context")
+    entities: Optional[List[str]] = Field(None, description="Optional list of entity names to scope search")
+    meta: Optional[Dict[str, Any]] = Field(None, description="Optional metadata for the chat")
 
 class TokenRequest(BaseModel):
     token: str
@@ -213,9 +215,8 @@ async def get_user_threads(user_id: str):
     async with get_session() as session:
         # Query threads for the user
         result = await session.execute(
-            select(ThreadModel)
-            .where(ThreadModel.user_id == UUID(user_id))
-            .order_by(ThreadModel.timestamp.desc())
+            select(Thread)
+            .where(Thread.user_id == UUID(user_id))
         )
         
         threads = result.scalars().all()
@@ -223,7 +224,9 @@ async def get_user_threads(user_id: str):
         return [{
             "thread_id": thread.thread_id,
             "thread_name": thread.thread_name,
-            "timestamp": thread.timestamp
+            "timestamp": thread.timestamp,
+            "content_id": str(thread.content_id) if thread.content_id else None,
+            "entity_id": thread.entity_id
         } for thread in threads]
 
 @app.post("/submit_token")
@@ -233,21 +236,78 @@ async def submit_token(request: TokenRequest):
         raise HTTPException(status_code=401, detail="Invalid token")
     return {"user_id": user_id, "user_name": user_name, "image": image}
 
-@app.get("/threads", response_model=List[Thread])
-async def get_threads(current_user: tuple = Depends(get_current_user)):
+@app.get("/threads")
+async def get_threads(
+    content_id: Optional[UUID] = Query(None),
+    entity_id: Optional[int] = Query(None),
+    content_ids: Optional[List[UUID]] = Query(None),
+    entity_ids: Optional[List[int]] = Query(None),
+    current_user: tuple = Depends(get_current_user)
+):
     user_id, user_name, token = current_user
-    return await get_user_threads(user_id)
+    
+    # Validate ID combinations
+    if content_id and entity_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot specify both content_id and entity_id for thread mapping"
+        )
+        
+    if content_ids and entity_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot specify both content_ids and entity_ids for search"
+        )
+        
+    if (content_id and content_ids) or (entity_id and entity_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot specify both single and multiple IDs of the same type"
+        )
+    
+    async with get_session() as session:
+        # Base query
+        query = (
+            select(Thread)
+            .where(Thread.user_id == UUID(user_id))
+        )
+        
+        # Handle single ID mapping
+        if content_id:
+            query = query.where(Thread.content_id == content_id)
+        elif entity_id:
+            query = query.where(Thread.entity_id == entity_id)
+            
+        # Add entity filter if specified
+        if entity_id:
+            query = query.join(thread_entity_association)
+            query = query.where(thread_entity_association.c.entity_id == entity_id)
+            
+        # Execute query
+        result = await session.execute(query.order_by(Thread.timestamp.desc()))
+        threads = result.scalars().all()
+        
+        return {
+            "threads": [{
+                "thread_id": thread.thread_id,
+                "thread_name": thread.thread_name,
+                "timestamp": thread.timestamp,
+                "content_id": str(thread.content_id) if thread.content_id else None,
+                "entity_id": thread.entity_id if thread.entity_id else None,
+                "meta": json.loads(thread.meta) if thread.meta else {}
+            } for thread in threads]
+        }
 
 async def get_thread_by_id(thread_id: str, user_id: str) -> dict:
     """Get a thread by its ID and user ID"""
     async with get_session() as session:
         # Query thread for the user
         result = await session.execute(
-            select(ThreadModel)
+            select(Thread)
             .where(
                 and_(
-                    ThreadModel.thread_id == thread_id,
-                    ThreadModel.user_id == UUID(user_id)
+                    Thread.thread_id == thread_id,
+                    Thread.user_id == UUID(user_id)
                 )
             )
         )
@@ -290,61 +350,100 @@ chat_manager = UnifiedChatManager(
     es_engine=es_engine
 )
 
-@app.post("/chat", 
-    response_class=StreamingResponse,
-    summary="Chat endpoint",
-    description="Streaming chat endpoint that handles real-time chat interactions with context from meetings and entities",
-    response_description="Server-sent events stream containing chat responses",
-    responses={
-        200: {
-            "description": "Successful chat response stream",
-            "content": {"text/event-stream": {}}
-        },
-        500: {"description": "Internal server error"}
-    }
-)
+@app.post("/chat")
 async def chat(
-    request: ChatRequest,
-    background_tasks: BackgroundTasks,
+    request: Request,
+    query: str = Body(...),
+    content_id: Optional[UUID] = Body(None),
+    entity: Optional[str] = Body(None),
+    content_ids: Optional[List[UUID]] = Body(None),
+    entities: Optional[List[str]] = Body(None),
+    thread_id: Optional[str] = Body(None),
+    model: Optional[str] = Body(None),
+    temperature: Optional[float] = Body(None),
+    meta: Optional[dict] = Body(None),
     current_user: tuple = Depends(get_current_user)
 ):
     user_id, user_name, token = current_user
-    return await handle_chat_request(request, user_id, background_tasks)
-
-async def handle_chat_request(request: ChatRequest, user_id: str, background_tasks: BackgroundTasks):
-    """Handle chat requests by streaming responses from the chat manager."""
-    try:
-        async def event_generator():
-            try:
-                async for result in chat_manager.chat(
-                    user_id=user_id,
-                    query=request.query,
-                    meeting_ids=request.meeting_ids,
-                    entities=request.entities,
-                    thread_id=request.thread_id,
-                    model=request.model,
-                    temperature=request.temperature
-                ):
-                    if isinstance(result, dict):
-                        yield f"data: {json.dumps(result)}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'chunk': result})}\n\n"
-            except Exception as e:
-                logger.error(f"Error in event generator: {str(e)}", exc_info=True)
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-        return StreamingResponse(
-            event_generator(),
-            media_type='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no'
-            }
+    
+    # Validate ID combinations
+    if content_id and entity:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot specify both content_id and entity for thread mapping"
         )
-    except Exception as e:
-        logger.error(f"Error in chat request: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        
+    if content_ids and entities:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot specify both content_ids and entities for search scope"
+        )
+        
+    if (content_id and content_ids) or (entity and entities):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot specify both single and multiple values of the same type"
+        )
+    
+    # Validate thread access if thread_id provided
+    if thread_id:
+        async with get_session() as session:
+            thread = await session.scalar(
+                select(Thread).where(
+                    Thread.thread_id == thread_id,
+                    Thread.user_id == UUID(user_id)
+                )
+            )
+            if not thread:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Thread not found or no access"
+                )
+    
+    # Initialize chat manager
+    chat_manager = UnifiedChatManager(
+        session=get_session(),
+        qdrant_engine=qdrant_engine,
+        es_engine=es_engine
+    )
+    
+    # Create response stream
+    async def generate():
+        async for chunk in chat_manager.chat(
+            user_id=user_id,
+            query=query,
+            content_id=content_id,
+            entity=entity,
+            content_ids=content_ids,
+            entities=entities,
+            thread_id=thread_id,
+            model=model,
+            temperature=temperature,
+            meta=meta
+        ):
+            if "error" in chunk:
+                yield f"data: {json.dumps(chunk)}\n\n"
+                return
+            elif "chunk" in chunk:
+                yield f"data: {json.dumps({'chunk': chunk['chunk']})}\n\n"
+            else:
+                # Final response with metadata
+                response_data = {
+                    'thread_id': chunk['thread_id'],
+                    'content_id': str(content_id) if content_id else None,
+                    'entity': entity,
+                    'content_ids': [str(cid) for cid in content_ids] if content_ids else None,
+                    'entities': entities,
+                    'output': chunk['output'],
+                    'linked_output': chunk.get('linked_output', chunk['output']),
+                    'service_content': chunk.get('service_content', {})
+                }
+                yield f"data: {json.dumps(response_data)}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream"
+    )
 
 @app.delete("/thread/{thread_id}")
 async def delete_thread(thread_id: str, current_user: tuple = Depends(get_current_user)):
@@ -669,6 +768,7 @@ async def get_meeting_details(
                 transcript_data = transcript
                 speakers = list(set(segment.get('speaker') for segment in transcript_data 
                             if segment.get('speaker') and segment.get('speaker') != 'TBD'))
+
         except Exception as e:
             logger.error(f"Failed to fetch transcript from Vexa: {str(e)}")
             if content.text:
@@ -713,14 +813,14 @@ async def get_all_threads(current_user: tuple = Depends(get_current_user)):
     async with get_session() as session:
         # Query threads that have no content_id and no entity associations
         result = await session.execute(
-            select(ThreadModel)
-            .outerjoin(thread_entity_association)
+            select(Thread)
+            .outerjoin(content_entity_association)
             .where(and_(
-                ThreadModel.user_id == UUID(user_id),
-                ThreadModel.content_id.is_(None),
-                thread_entity_association.c.thread_id.is_(None)
+                Thread.user_id == UUID(user_id),
+                Thread.content_id.is_(None),
+                content_entity_association.c.thread_id.is_(None)
             ))
-            .order_by(ThreadModel.timestamp.desc())
+            .order_by(Thread.timestamp.desc())
         )
         
         threads = result.unique().scalars().all()
@@ -766,12 +866,12 @@ async def get_meeting_threads(meeting_id: UUID, current_user: tuple = Depends(ge
             
         # Get threads associated with the content
         result = await session.execute(
-            select(ThreadModel)
+            select(Thread)
             .where(and_(
-                ThreadModel.user_id == user_id,
-                ThreadModel.content_id == meeting_id
+                Thread.user_id == user_id,
+                Thread.content_id == meeting_id
             ))
-            .order_by(ThreadModel.timestamp.desc())
+            .order_by(Thread.timestamp.desc())
         )
         
         threads = [{
@@ -1133,7 +1233,6 @@ async def add_content(
     try:
         async with get_session() as session:
             logger.debug(f"Creating content with type={request.type}, body={request.body}")
-            # Create content
             content = Content(
                 id=uuid4(),
                 type=request.type.value,
@@ -1144,23 +1243,21 @@ async def add_content(
             )
             session.add(content)
             await session.flush()
-            logger.debug(f"Created content with id={content.id}")
-
-            # Create user content access
+            
+            # Create user content record
             user_content = UserContent(
                 content_id=content.id,
                 user_id=user_id,
-                access_level=AccessLevel.OWNER.value,
                 created_by=user_id,
-                is_owner=True
+                is_owner=True,
+                access_level=AccessLevel.OWNER.value
             )
             session.add(user_content)
-            logger.debug("Added user content access")
-
+            await session.flush()
+            
             # Add entities
             for entity_data in request.entities:
                 logger.debug(f"Processing entity: {entity_data}")
-                # Validate entity type
                 try:
                     entity_type = EntityType(entity_data["type"])
                     logger.debug(f"Validated entity type: {entity_type}")
@@ -1171,7 +1268,7 @@ async def add_content(
                         detail=f"'{entity_data['type']}' is not a valid EntityType. Valid types are: {[e.value for e in EntityType]}"
                     )
                 
-                # Check if entity already exists
+                # Check if entity exists
                 entity_query = select(Entity).where(
                     and_(
                         Entity.name == entity_data["name"],
@@ -1298,8 +1395,7 @@ async def modify_content(
                 if not entity:
                     entity = Entity(
                         name=entity_data["name"],
-                        type=entity_type.value
-                    )
+                        type=entity_type.value)
                     session.add(entity)
                     await session.flush()
                 
@@ -1561,24 +1657,22 @@ async def get_entities(
     offset: int = 0,
     limit: int = 20,
     current_user: tuple = Depends(get_current_user)
-) -> Dict[str, Any]:
-    """Get entities by type with pagination and last seen timestamp"""
+):
     user_id, user_name, token = current_user
     
+    # Validate entity type before any DB operations
+    if entity_type not in [e.value for e in EntityType]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid entity type. Must be one of: {[e.value for e in EntityType]}"
+        )
+    
     try:
-        # Validate entity type
-        try:
-            entity_type_enum = EntityType(entity_type)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid entity type. Must be one of: {[e.value for e in EntityType]}"
-            )
-        
-        async with get_session() as session:
+        async with async_session() as session:
             # Query to get entities and their latest content timestamps
             query = (
                 select(
+                    Entity.id,
                     Entity.name,
                     func.max(Content.timestamp).label('last_seen'),
                     func.count(distinct(Content.id)).label('content_count')
@@ -1590,12 +1684,12 @@ async def get_entities(
                     and_(
                         UserContent.user_id == user_id,
                         UserContent.access_level != AccessLevel.REMOVED.value,
-                        Entity.type == entity_type_enum.value,
+                        Entity.type == entity_type,
                         Entity.name != 'TBD',
                         Entity.name != None
                     )
                 )
-                .group_by(Entity.name)
+                .group_by(Entity.id, Entity.name)
                 .order_by(desc('last_seen'))
                 .offset(offset)
                 .limit(limit)
@@ -1604,6 +1698,7 @@ async def get_entities(
             result = await session.execute(query)
             entities = [
                 {
+                    "id": row.id,
                     "name": row.name,
                     "last_seen": row.last_seen.isoformat() if row.last_seen else None,
                     "content_count": row.content_count
@@ -1622,7 +1717,7 @@ async def get_entities(
                     and_(
                         UserContent.user_id == user_id,
                         UserContent.access_level != AccessLevel.REMOVED.value,
-                        Entity.type == entity_type_enum.value,
+                        Entity.type == entity_type,
                         Entity.name != 'TBD',
                         Entity.name != None
                     )

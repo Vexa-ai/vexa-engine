@@ -63,7 +63,7 @@ async def main():
             raise ValueError("VOYAGE_API_KEY environment variable not set")
         
         # Initialize worker
-        worker = IndexingWorker(
+        worker = await IndexingWorker.create(
             redis=redis,
             qdrant_api_key=voyage_api_key,
             max_concurrent=1,

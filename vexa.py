@@ -15,7 +15,9 @@ import uuid
 from sqlalchemy import select
 from typing import List, Tuple
 from uuid import UUID
+import logging
 
+logger = logging.getLogger(__name__)
 
 VEXA_API_URL = os.getenv('VEXA_API_URL', 'http://127.0.0.1:8001')
 API_URL = os.getenv('API_URL', 'http://127.0.0.1:8765')
@@ -71,23 +73,35 @@ class VexaAPI:
                     error_message += f"\nError details: {response.text}"
             raise VexaAPIError(error_message)
 
-    async def get_transcription_(self, meeting_id=None, meeting_session_id=None, last_msg_timestamp=None, offset=None, limit=None):
-
-            url = f"{self.base_url}/api/v1/transcription"
-            
-            params = {
-                "meeting_id": meeting_id,
-                "meeting_session_id": meeting_session_id,
-                "token": self.token
-            }
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"Failed to retrieve data. Status code: {response.status_code}")
-                return None
+    async def get_transcription_(self, meeting_id=None, meeting_session_id=None):
+        url = f"{self.base_url}/api/v1/transcription"
+        
+        params = {
+            "meeting_id": meeting_id,
+            "meeting_session_id": meeting_session_id,
+            "token": self.token
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if not data:
+                logger.warning(
+                    f"Empty transcription response for meeting_session_id={meeting_session_id}. "
+                    f"User info: {self.user_id} ({self.user_name})"
+                )
+            return data
+        else:
+            logger.error(
+                f"Failed to retrieve transcription. "
+                f"Status: {response.status_code}, "
+                f"Response: {response.text}, "
+                f"Meeting ID: {meeting_session_id}, "
+                f"User ID: {self.user_id}"
+            )
+            return None
 
     @staticmethod
     def format_timestamp(timestamp, start_time):

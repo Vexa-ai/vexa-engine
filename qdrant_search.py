@@ -1,5 +1,5 @@
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from uuid import UUID
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
@@ -46,7 +46,7 @@ class QdrantSearchEngine:
             )
         )
         
-        # Single text index for content which includes speaker and topic
+        # Create payload indexes
         await self.client.create_payload_index(
             collection_name=self.collection_name,
             field_name='content',
@@ -58,53 +58,32 @@ class QdrantSearchEngine:
             )
         )
 
-    async def search(self, query: str, meeting_ids: List[str] = None,
-                    speakers: List[str] = None, limit: int = 10, 
-                    min_score: float = 0.2) -> List[Dict[str, Any]]:
-        query_embedding = self.voyage.embed(texts=[query], model='voyage-3')
+    async def search(
+        self,
+        query: str,
+        content_ids: Optional[List[str]] = None,
+        k: int = 100
+    ) -> List[Dict]:
+        # Build filter
+        filter_query = None
+        if content_ids:
+            filter_query = {
+                "must": [
+                    {"key": "content_id", "match": {"any": content_ids}}
+                ]
+            }
+            
+        # Get embeddings and extract values
+        query_embedding = self.voyage.embed(query).embeddings[0]  # Get the first embedding's values
         
-        must_conditions = []
-        if meeting_ids:
-            must_conditions.append(
-                FieldCondition(
-                    key="meeting_id",
-                    match=MatchAny(any=meeting_ids)
-                )
-            )
-        
-        if speakers:
-            must_conditions.append(
-                FieldCondition(
-                    key="speaker",
-                    match=MatchAny(any=speakers)
-                )
-            )
-        
+        # Perform search with updated filter
         results = await self.client.search(
             collection_name=self.collection_name,
-            query_vector=query_embedding.embeddings[0],
-            query_filter=Filter(must=must_conditions) if must_conditions else None,
-            limit=limit,
-            score_threshold=min_score,
-            search_params=SearchParams(hnsw_ef=128),
-            with_payload=True
+            query_vector=query_embedding,  # Now passing the actual embedding values
+            query_filter=filter_query,
+            limit=k
         )
-        
-        return [
-            {
-                "score": hit.score,
-                "content": hit.payload.get("content", ""),
-                "contextualized_content": hit.payload.get("contextualized_content", ""),
-                "topic": hit.payload.get("topic", ""),
-                "meeting_id": hit.payload.get("meeting_id", ""),
-                "formatted_time": hit.payload.get("formatted_time", ""),
-                "timestamp": hit.payload.get("timestamp", ""),
-                "speaker": hit.payload.get("speaker", ""),
-                "speakers": hit.payload.get("speakers", []),
-                "chunk_index": hit.payload.get("chunk_index", 0)
-            }
-            for hit in results
-        ]
+        return results
 
     async def drop_collection(self):
         try:

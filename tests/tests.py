@@ -364,4 +364,284 @@ async def test_get_entities_invalid_type(setup_test_users):
     
     with pytest.raises(ValueError) as exc:
         await client.get_entities("invalid_type")
-    assert "Invalid entity type" in str(exc.value) 
+    assert "Invalid entity type" in str(exc.value)
+
+@pytest.mark.asyncio
+async def test_chat_with_content(setup_test_users):
+    """Test chat with content association"""
+    users = setup_test_users
+    test_user, test_token = users[0]
+
+    client = await APIClient.create(email=test_user.email)
+
+    # Create content first
+    content_response = await client.add_content(
+        body="Test content for chat",
+        content_type="note"
+    )
+    content_id = UUID(content_response["content_id"])
+
+    # Test 1: Chat with single content ID
+    final_response = None
+    async for response in client.chat(
+        query="Test query",
+        content_id=content_id,
+        meta={"test_key": "test_value"}
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    assert final_response['content_id'] == str(content_id)
+    assert final_response['output'] is not None
+    assert final_response['thread_id'] is not None
+    assert final_response['service_content']['meta']['content_ids'] == [str(content_id)]
+
+    # Test 2: Chat with multiple content IDs
+    content_response2 = await client.add_content(
+        body="Another test content",
+        content_type="note"
+    )
+    content_id2 = UUID(content_response2["content_id"])
+    
+    final_response = None
+    async for response in client.chat(
+        query="Test query with multiple contents",
+        content_ids=[content_id, content_id2]
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    assert final_response['content_ids'] == [str(content_id), str(content_id2)]
+    assert final_response['output'] is not None
+    assert final_response['thread_id'] is not None
+    assert final_response['service_content']['meta']['content_ids'] == [str(content_id), str(content_id2)]
+
+@pytest.mark.asyncio
+async def test_chat_with_entity(setup_test_users):
+    """Test chat with entity association"""
+    users = setup_test_users
+    test_user, test_token = users[0]
+
+    client = await APIClient.create(email=test_user.email)
+
+    # Create content with entity first
+    content_response = await client.add_content(
+        body="Test content",
+        content_type="note",
+        entities=[{"type": "tag", "name": "test-tag"}]
+    )
+
+    # Get entity ID
+    entities = await client.get_entities("tag")
+    entity = next(e for e in entities["entities"] if e["name"] == "test-tag")
+
+    # Test 1: Chat with single entity ID
+    final_response = None
+    async for response in client.chat(
+        query="Test query",
+        entity_id=entity["id"],
+        meta={"test_key": "test_value"}
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    assert final_response['entity_id'] == entity["id"]
+    assert final_response['output'] is not None
+    assert final_response['thread_id'] is not None
+    assert final_response['service_content']['meta']['entity_ids'] == [str(entity["id"])]
+
+    # Test 2: Chat with multiple entity IDs
+    content_response2 = await client.add_content(
+        body="Another test content",
+        content_type="note",
+        entities=[{"type": "tag", "name": "test-tag-2"}]
+    )
+    entities = await client.get_entities("tag")
+    entity2 = next(e for e in entities["entities"] if e["name"] == "test-tag-2")
+
+    final_response = None
+    async for response in client.chat(
+        query="Test query with multiple entities",
+        entity_ids=[entity["id"], entity2["id"]]
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    assert final_response['entity_ids'] == [entity["id"], entity2["id"]]
+    assert final_response['output'] is not None
+    assert final_response['thread_id'] is not None
+    assert final_response['service_content']['meta']['entity_ids'] == [str(entity["id"]), str(entity2["id"])]
+
+@pytest.mark.asyncio
+async def test_chat_invalid_combinations(setup_test_users):
+    """Test chat with invalid ID combinations"""
+    users = setup_test_users
+    test_user, test_token = users[0]
+
+    client = await APIClient.create(email=test_user.email)
+
+    # Create test content and entity
+    content_response = await client.add_content(
+        body="Test content",
+        content_type="note",
+        entities=[{"type": "tag", "name": "test-tag"}]
+    )
+    content_id = UUID(content_response["content_id"])
+
+    entities = await client.get_entities("tag")
+    entity = next(e for e in entities["entities"] if e["name"] == "test-tag")
+
+    # Test 1: Cannot specify both content_id and entity_id
+    with pytest.raises(ValueError, match="Cannot specify both content_id and entity_id"):
+        async for _ in client.chat(
+            query="Test query",
+            content_id=content_id,
+            entity_id=entity["id"]
+        ):
+            pass
+
+    # Test 2: Cannot specify both content_id and content_ids
+    with pytest.raises(ValueError, match="Cannot specify both single and multiple IDs of the same type"):
+        async for _ in client.chat(
+            query="Test query",
+            content_id=content_id,
+            content_ids=[content_id]
+        ):
+            pass
+
+    # Test 3: Cannot specify both entity_id and entity_ids
+    with pytest.raises(ValueError, match="Cannot specify both single and multiple IDs of the same type"):
+        async for _ in client.chat(
+            query="Test query",
+            entity_id=entity["id"],
+            entity_ids=[entity["id"]]
+        ):
+            pass
+
+    # Test 4: Cannot specify both content_ids and entity_ids
+    with pytest.raises(ValueError, match="Cannot specify both content_ids and entity_ids"):
+        async for _ in client.chat(
+            query="Test query",
+            content_ids=[content_id],
+            entity_ids=[entity["id"]]
+        ):
+            pass
+
+@pytest.mark.asyncio
+async def test_chat_thread_continuation(setup_test_users):
+    """Test chat thread continuation"""
+    users = setup_test_users
+    test_user, test_token = users[0]
+
+    client = await APIClient.create(email=test_user.email)
+
+    # Create content first
+    content_response = await client.add_content(
+        body="Test content for chat",
+        content_type="note"
+    )
+    content_id = UUID(content_response["content_id"])
+
+    # Start a chat thread
+    thread_id = None
+    async for response in client.chat(
+        query="Initial query",
+        content_id=content_id
+    ):
+        if 'thread_id' in response:
+            thread_id = response['thread_id']
+            break
+
+    assert thread_id is not None
+
+    # Continue the thread
+    final_response = None
+    async for response in client.chat(
+        query="Follow-up query",
+        thread_id=thread_id
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    assert final_response['thread_id'] == thread_id
+    assert final_response['output'] is not None
+
+@pytest.mark.asyncio
+async def test_get_threads_by_content(setup_test_users):
+    """Test getting threads by content"""
+    users = setup_test_users
+    test_user, test_token = users[0]
+
+    client = await APIClient.create(email=test_user.email)
+
+    # Create content and chat with it
+    content_response = await client.add_content(
+        body="Test content for threads",
+        content_type="note"
+    )
+    content_id = UUID(content_response["content_id"])
+
+    # Test 1: Chat with single content ID for thread mapping
+    final_response = None
+    async for response in client.chat(
+        query="Test query",
+        content_id=content_id
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    thread_id = final_response['thread_id']
+
+    # Test 2: Get threads by content
+    threads = await client.get_threads(content_id=content_id)
+    assert len(threads) > 0
+    assert any(t["thread_id"] == thread_id for t in threads)
+
+@pytest.mark.asyncio
+async def test_get_threads_by_entity(setup_test_users):
+    """Test getting threads by entity"""
+    users = setup_test_users
+    test_user, test_token = users[0]
+
+    client = await APIClient.create(email=test_user.email)
+
+    # Create content with entity and chat
+    content_response = await client.add_content(
+        body="Test content",
+        content_type="note",
+        entities=[{"type": "tag", "name": "test-tag-threads"}]
+    )
+
+    # Get entity ID
+    entities = await client.get_entities("tag")
+    entity = next(e for e in entities["entities"] if e["name"] == "test-tag-threads")
+
+    # Test 1: Chat with single entity ID for thread mapping
+    final_response = None
+    async for response in client.chat(
+        query="Test query",
+        entity_id=entity["id"]
+    ):
+        if 'chunk' in response:
+            continue
+        final_response = response
+
+    assert final_response is not None
+    thread_id = final_response['thread_id']
+
+    # Test 2: Get threads by entity
+    threads = await client.get_threads(entity_id=entity["id"])
+    assert len(threads) > 0
+    assert any(t["thread_id"] == thread_id for t in threads) 

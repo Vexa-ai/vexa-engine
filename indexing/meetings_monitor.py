@@ -115,7 +115,7 @@ class MeetingsMonitor:
         active_cutoff = (now - timedelta(seconds=self.active_seconds))
         
         # Query for content that user has access to - separate handling for notes and meetings
-        base_stmt = select(Content.content_id, Content.type, Content.last_update).join(UserContent)\
+        base_stmt = select(Content.id, Content.type, Content.last_update).join(UserContent)\
             .where(and_(
                 UserContent.user_id == user_id,
                 Content.last_update >= cutoff,
@@ -173,7 +173,7 @@ class MeetingsMonitor:
             )
             
             # Base query for both content types
-            base_query = select(Content.content_id, Content.type, Content.last_update)\
+            base_query = select(Content.id, Content.type, Content.last_update)\
                 .where(and_(
                     Content.last_update >= cutoff_date,
                     Content.is_indexed == False
@@ -213,7 +213,7 @@ class MeetingsMonitor:
                     logger.info(f"Queued meeting {content_id} from {last_update}")
             
             # Track active content
-            stmt = select(Content.content_id, Content.type, UserContent.user_id)\
+            stmt = select(Content.id, Content.type, UserContent.user_id)\
                 .join(UserContent)\
                 .where(and_(
                     Content.type.in_([ContentType.MEETING.value, ContentType.NOTE.value]),
@@ -303,7 +303,7 @@ class MeetingsMonitor:
                 
                 # Check if content exists
                 stmt = select(Content).where(and_(
-                    Content.content_id == meeting_id,
+                    Content.id == meeting_id,
                     Content.type == ContentType.MEETING.value
                 ))
                 existing_content = await session.scalar(stmt)
@@ -313,7 +313,6 @@ class MeetingsMonitor:
                     if not existing_content:
                         existing_content = Content(
                             id=meeting_id,
-                            content_id=meeting_id,
                             type=ContentType.MEETING.value,
                             timestamp=meeting_time,
                             last_update=last_update,
@@ -345,7 +344,6 @@ class MeetingsMonitor:
                     if not existing_content:
                         existing_content = Content(
                             id=meeting_id,
-                            content_id=meeting_id,
                             type=ContentType.MEETING.value,
                             timestamp=meeting_time,
                             last_update=last_update,

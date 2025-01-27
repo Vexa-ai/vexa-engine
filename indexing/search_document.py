@@ -2,6 +2,11 @@ from typing import Dict, List
 from datetime import datetime
 from qdrant_client.models import PointStruct
 import uuid
+from enum import Enum
+
+class ContentType(Enum):
+    NOTE = "note"
+    MEETING = "meeting"
 
 class SearchDocumentError(Exception): pass
 
@@ -15,7 +20,8 @@ class SearchDocument:
         chunk_index: int,
         topic: str,
         speaker: str,
-        speakers: List[str]
+        speakers: List[str],
+        content_type: ContentType
     ):
         # Validate inputs
         if not content_id:
@@ -29,6 +35,7 @@ class SearchDocument:
         self.topic = topic
         self.speaker = speaker
         self.speakers = speakers
+        self.content_type = content_type
 
     @property
     def formatted_time(self) -> str:
@@ -36,7 +43,7 @@ class SearchDocument:
 
     def to_es_doc(self) -> Dict:
         return {
-            'meeting_id': self.content_id,  # Keep meeting_id for compatibility
+            'content_id': self.content_id,
             'timestamp': self.timestamp.isoformat(),
             'formatted_time': self.formatted_time,
             'content': self.chunk,
@@ -44,7 +51,8 @@ class SearchDocument:
             'chunk_index': self.chunk_index,
             'topic': self.topic,
             'speaker': self.speaker,
-            'speakers': self.speakers
+            'speakers': self.speakers,
+            'content_type': self.content_type.value
         }
 
     def to_qdrant_point(self, embedding: List[float]) -> PointStruct:
