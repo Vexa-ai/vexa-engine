@@ -6,7 +6,7 @@ from token_manager import TokenManager
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 class GoogleAuthRequest(BaseModel):
     utm_source: Optional[str] = None
@@ -25,7 +25,7 @@ class TokenResponse(BaseModel):
     user_name: str
     image: Optional[str] = None
 
-@router.post("/auth/google", response_model=dict)
+@router.post("/google", response_model=dict)
 async def google_auth(request: GoogleAuthRequest):
     try:
         auth_manager = await AuthManager.create()

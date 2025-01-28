@@ -13,7 +13,7 @@ import logging
 from routers.common import get_current_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="/chat", tags=["chat"]) 
 
 class ChatRequest(BaseModel):
     query: str = Field(..., description="The chat message or query from the user")
@@ -114,7 +114,7 @@ async def chat(
         media_type="text/event-stream"
     )
 
-@router.post("/chat/edit")
+@router.post("/edit")
 async def edit_chat_message(
     thread_id: str = Body(...),
     message_index: int = Body(...),
