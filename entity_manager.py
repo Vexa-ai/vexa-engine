@@ -31,11 +31,8 @@ class EntityManager:
                     return []
                 
                 # Query to get entities ordered by their content timestamps
-                subquery = (
-                    select(
-                        Entity.id,
-                        func.max(Content.timestamp).label('max_timestamp')
-                    )
+                query = (
+                    select(Entity)
                     .select_from(Entity)
                     .join(content_entity_association, content_entity_association.c.entity_id == Entity.id)
                     .join(Content, Content.id == content_entity_association.c.content_id)
@@ -49,20 +46,14 @@ class EntityManager:
                             Entity.name != None
                         )
                     )
-                    .group_by(Entity.id)
-                    .order_by(desc('max_timestamp'))
+                    .group_by(Entity.id, Content.timestamp)  # Include timestamp in group by
+                    .order_by(desc(Content.timestamp))  # Order by timestamp directly
                     .offset(offset)
                     .limit(limit)
-                ).subquery()
-                
-                query = (
-                    select(Entity)
-                    .select_from(Entity)
-                    .join(subquery, Entity.id == subquery.c.id)
                 )
                 
                 result = await session.execute(query)
-                entities = result.scalars().all()
+                entities = result.scalars().unique().all()  # Use unique() to deduplicate entities
                 
                 return list(entities)
                 
