@@ -42,22 +42,31 @@ async def hybrid_search(
                 'content_id': content_id,
                 'timestamp': result.payload.get('timestamp'),
                 'formatted_time': result.payload.get('formatted_time'),
-                'contextualized_content': result.payload.get('contextualized_content', '')
+                'contextualized_content': result.payload.get('contextualized_content', ''),
+                'content_type': result.payload.get('content_type', ''),
+                'topic': result.payload.get('topic', ''),
+                'speaker': result.payload.get('speaker', ''),
+                'speakers': result.payload.get('speakers', [])
             })
     
     # Process text results
-    for hit in text_results['hits']['hits']:
-        content_id = hit['_source'].get('content_id')
-        if content_id not in seen_content:
-            seen_content.add(content_id)
-            all_results.append({
-                'score': hit['_score'],
-                'content': hit['_source'].get('content', ''),
-                'content_id': content_id,
-                'timestamp': hit['_source'].get('timestamp'),
-                'formatted_time': hit['_source'].get('formatted_time'),
-                'contextualized_content': hit['_source'].get('contextualized_content', '')
-            })
+    if text_results:
+        for hit in text_results['hits']['hits']:
+            content_id = hit['_source'].get('content_id')
+            if content_id not in seen_content:
+                seen_content.add(content_id)
+                all_results.append({
+                    'score': hit['_score'],
+                    'content': hit['_source'].get('content', ''),
+                    'content_id': content_id,
+                    'timestamp': hit['_source'].get('timestamp'),
+                    'formatted_time': hit['_source'].get('formatted_time'),
+                    'contextualized_content': hit['_source'].get('contextualized_content', ''),
+                    'content_type': hit['_source'].get('content_type', ''),
+                    'topic': hit['_source'].get('topic', ''),
+                    'speaker': hit['_source'].get('speaker', ''),
+                    'speakers': hit['_source'].get('speakers', [])
+                })
     
     # Sort by score descending
     all_results.sort(key=lambda x: x['score'], reverse=True)

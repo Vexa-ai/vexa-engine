@@ -104,7 +104,8 @@ class UnifiedContextProvider(BaseContextProvider):
         for content_id, group in df.groupby('content_id'):
             int_content_id = self.content_map[content_id]
             timestamp = pd.to_datetime(group['timestamp'].iloc[0])
-            date_header = f"##  [{int_content_id}] - {timestamp.strftime('%B %d, %Y %H:%M')}"
+            content_type = group['content_type'].iloc[0].capitalize()
+            date_header = f"## {content_type} {int_content_id} - {timestamp.strftime('%B %d, %Y %H:%M')}"
             
             content_items = []
             for _, row in group.iterrows():
