@@ -9,7 +9,7 @@ from content_manager import ContentManager
 from routers.common import get_current_user
 
 
-
+from psql_models import EntityType
 
 from indexing.redis_keys import RedisKeys
 from redis import Redis
@@ -28,19 +28,23 @@ class ContentFilter(BaseModel):
     type: str
     values: List[str]
 
+class EntityRequest(BaseModel):
+    name: str
+    type: EntityType
+
 class AddContentRequest(BaseModel):
-    type: str
+    type: ContentType
     text: str
     parent_id: Optional[UUID] = None
-    entities: Optional[List[Dict[str, str]]] = None
+    entities: Optional[List[EntityRequest]] = None
 
 class ModifyContentRequest(BaseModel):
     text: str
-    entities: Optional[List[Dict[str, str]]] = None
+    entities: Optional[List[EntityRequest]] = None
 
 class CreateShareLinkRequest(BaseModel):
     access_level: str
-    meeting_ids: List[UUID]
+    content_ids: List[UUID]
     target_email: Optional[str] = None
     expiration_hours: Optional[int] = None
 
@@ -61,10 +65,39 @@ async def get_contents(
     current_user: tuple = Depends(get_current_user)
 ):
     user_id, user_name, token = current_user
+    
+    # Validate content_type
+    if content_type is not None:
+        try:
+            ContentType(content_type)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid content type: {content_type}. Must be one of: {[e.value for e in ContentType]}"
+            )
+    
     filter_list = []
     if filters:
         try:
             filter_list = [ContentFilter(**f).dict() for f in json.loads(filters)]
+            # Validate filter types against EntityType enum
+            for filter_spec in filter_list:
+                try:
+                    EntityType(filter_spec["type"])
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid filter type: {filter_spec['type']}. Must be one of: {[e.value for e in EntityType]}"
+                    )
+                if not filter_spec.get("values"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Filter values are required for type: {filter_spec['type']}"
+                    )
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON format in filters")
+        except KeyError as e:
+            raise HTTPException(status_code=400, detail=f"Missing required field in filter: {str(e)}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid filters format: {str(e)}")
     
@@ -100,18 +133,10 @@ async def add_content(
     current_user: tuple = Depends(get_current_user)
 ):
     user_id, user_name, token = current_user
-    try:
-        content_type = ContentType(request.type)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid content type. Must be one of: {[e.value for e in ContentType]}"
-        )
-    
     manager = await ContentManager.create()
     content_id = await manager.add_content(
         user_id=user_id,
-        type=content_type.value,
+        type=request.type.value,
         text=request.text,
         parent_id=request.parent_id,
         entities=request.entities
@@ -202,7 +227,7 @@ async def create_new_share_link(
         token = await manager.create_share_link(
             owner_id=user_id,
             access_level=access_level,
-            meeting_ids=request.meeting_ids,
+            content_ids=request.content_ids,
             target_email=request.target_email,
             expiration_hours=request.expiration_hours
         )

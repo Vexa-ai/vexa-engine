@@ -5,7 +5,7 @@ from typing import List, Dict
 from content_manager import ContentManager, ContentData
 from psql_models import (
     Content, UserContent, Entity, ContentType, 
-    EntityType, AccessLevel, async_session
+    EntityType, AccessLevel, async_session, content_entity_association
 )
 from sqlalchemy import select, and_
 from unittest.mock import patch, MagicMock
@@ -148,7 +148,7 @@ async def test_get_contents_filters(setup_test_users):
     entity_filtered = await manager.get_contents(
         user_id=str(test_user.id),
         filters=[{
-            "type": "speakers",
+            "type": EntityType.SPEAKER.value,
             "values": ["Test Speaker"]
         }]
     )
@@ -501,4 +501,75 @@ async def test_physical_delete_content(setup_test_users):
             select(Content).where(Content.id == UUID(content_id))
         )
         content = result.scalar_one_or_none()
-        assert content is None 
+        assert content is None
+
+@pytest.mark.asyncio
+async def test_add_content_invalid_type(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Test invalid content type
+    with pytest.raises(ValueError, match="Invalid content type"):
+        await manager.add_content(
+            user_id=str(test_user.id),
+            type="invalid_type",
+            text="Test content"
+        )
+
+@pytest.mark.asyncio
+async def test_add_content_invalid_entity_type(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Test invalid entity type
+    with pytest.raises(ValueError, match="Invalid entity type"):
+        await manager.add_content(
+            user_id=str(test_user.id),
+            type=ContentType.NOTE.value,
+            text="Test content",
+            entities=[{"name": "Test Entity", "type": "invalid_type"}]
+        )
+    
+    # Test missing entity name
+    with pytest.raises(ValueError, match="Entity name is required"):
+        await manager.add_content(
+            user_id=str(test_user.id),
+            type=ContentType.NOTE.value,
+            text="Test content",
+            entities=[{"type": EntityType.SPEAKER.value}]
+        )
+
+@pytest.mark.asyncio
+async def test_add_content_valid_entity(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Test valid entity types
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.NOTE.value,
+        text="Test content",
+        entities=[
+            {"name": "Test Speaker", "type": EntityType.SPEAKER.value},
+            {"name": "Test Tag", "type": EntityType.TAG.value}
+        ]
+    )
+    
+    # Verify entities in database
+    async with async_session() as session:
+        result = await session.execute(
+            select(Entity)
+            .join(content_entity_association)
+            .where(content_entity_association.c.content_id == UUID(content_id))
+        )
+        entities = result.scalars().all()
+        assert len(entities) == 2
+        entity_types = {e.type for e in entities}
+        assert EntityType.SPEAKER.value in entity_types
+        assert EntityType.TAG.value in entity_types 

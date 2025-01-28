@@ -107,10 +107,25 @@ class APIClient:
     async def add_content(self, body: str, content_type: str, entities: Optional[List[Dict[str, str]]] = None) -> Dict[str, str]:
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
+        
+        # Convert entities to proper format
+        formatted_entities = None
+        if entities:
+            formatted_entities = []
+            for entity in entities:
+                if "type" not in entity:
+                    raise APIError("Entity type is required")
+                if "name" not in entity:
+                    raise APIError("Entity name is required")
+                formatted_entities.append({
+                    "name": entity["name"],
+                    "type": entity["type"]
+                })
+        
         data = {
             "type": content_type,
             "text": body,
-            "entities": entities
+            "entities": formatted_entities
         }
         response = requests.post(f"{self.base_url}/contents", headers=self.headers, json=data)
         if response.status_code != 200:
@@ -120,9 +135,24 @@ class APIClient:
     async def modify_content(self, content_id: UUID, body: str, entities: Optional[List[Dict[str, str]]] = None) -> Dict[str, bool]:
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
+        
+        # Convert entities to proper format
+        formatted_entities = None
+        if entities:
+            formatted_entities = []
+            for entity in entities:
+                if "type" not in entity:
+                    raise APIError("Entity type is required")
+                if "name" not in entity:
+                    raise APIError("Entity name is required")
+                formatted_entities.append({
+                    "name": entity["name"],
+                    "type": entity["type"]
+                })
+        
         data = {
             "text": body,
-            "entities": entities
+            "entities": formatted_entities
         }
         response = requests.put(f"{self.base_url}/contents/{content_id}", headers=self.headers, json=data)
         if response.status_code == 200:
@@ -165,13 +195,13 @@ class APIClient:
         else:
             raise APIError(f"Failed to restore content: {response.text}")
 
-    async def create_share_link(self, access_level: str, meeting_ids: List[UUID], target_email: Optional[str] = None, 
+    async def create_share_link(self, access_level: str, content_ids: List[UUID], target_email: Optional[str] = None, 
                               expiration_hours: Optional[int] = None) -> Dict[str, str]:
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
         data = {
             "access_level": access_level,
-            "meeting_ids": meeting_ids,
+            "content_ids": content_ids,
             "target_email": target_email,
             "expiration_hours": expiration_hours
         }

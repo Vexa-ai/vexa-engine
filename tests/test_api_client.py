@@ -1,9 +1,9 @@
 import pytest
 import pytest_asyncio
 from uuid import UUID
-from api_client import APIClient
+from api_client import APIClient, APIError
 from psql_models import ContentType, AccessLevel, EntityType, User, UserToken
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from google_client import UserInfo
 from aiohttp import ClientSession
 import asyncio
@@ -96,20 +96,94 @@ async def test_contents_crud(api_client):
         assert "entities" in content_details
         assert len(content_details["entities"]) == 1
         assert content_details["entities"][0]["name"] == "Test Entity"
+        assert content_details["entities"][0]["type"] == EntityType.TAG.value
 
-        # Test modifying content
+        # Test modifying content with entities
         modified = await api_client.modify_content(
             content_id=content_id,
             body="Modified content",
-            entities=[{"name": "Modified Entity", "type": EntityType.TAG.value}]
+            entities=[{"name": "Modified Entity", "type": EntityType.SPEAKER.value}]
         )
         assert "success" in modified
         assert modified["success"] is True
+
+        # Verify modified content
+        mock_get.return_value.json.return_value = {
+            "text": "Modified content",
+            "entities": [{"name": "Modified Entity", "type": EntityType.SPEAKER.value}]
+        }
+        modified_content = await api_client.get_content(content_id)
+        assert modified_content["text"] == "Modified content"
+        assert len(modified_content["entities"]) == 1
+        assert modified_content["entities"][0]["name"] == "Modified Entity"
+        assert modified_content["entities"][0]["type"] == EntityType.SPEAKER.value
+
+        # Test invalid content type
+        with pytest.raises(APIError, match="Invalid content type"):
+            mock_post.return_value.status_code = 400
+            mock_post.return_value.text = "Invalid content type"
+            await api_client.add_content(
+                body="Test content",
+                content_type="invalid_type",
+                entities=[]
+            )
+
+        # Test invalid entity type
+        with pytest.raises(APIError, match="Invalid entity type"):
+            mock_post.return_value.status_code = 400
+            mock_post.return_value.text = "Invalid entity type"
+            await api_client.add_content(
+                body="Test content",
+                content_type=ContentType.NOTE.value,
+                entities=[{"name": "Test Entity", "type": "invalid_type"}]
+            )
+
+        # Test missing entity name
+        with pytest.raises(APIError, match="Entity name is required"):
+            mock_post.return_value.status_code = 400
+            mock_post.return_value.text = "Entity name is required"
+            await api_client.add_content(
+                body="Test content",
+                content_type=ContentType.NOTE.value,
+                entities=[{"type": EntityType.SPEAKER.value}]
+            )
+
+        # Test modifying content with invalid entity type
+        with pytest.raises(APIError, match="Invalid entity type"):
+            mock_put.return_value.status_code = 400
+            mock_put.return_value.text = "Invalid entity type"
+            await api_client.modify_content(
+                content_id=content_id,
+                body="Modified content",
+                entities=[{"name": "Test Entity", "type": "invalid_type"}]
+            )
+
+        # Test modifying content with missing entity name
+        with pytest.raises(APIError, match="Entity name is required"):
+            mock_put.return_value.status_code = 400
+            mock_put.return_value.text = "Entity name is required"
+            await api_client.modify_content(
+                content_id=content_id,
+                body="Modified content",
+                entities=[{"type": EntityType.SPEAKER.value}]
+            )
+
+        # Reset mock for archive operation
+        mock_post.reset_mock()
+        mock_post.return_value = MagicMock()
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"success": True}
 
         # Test archiving content
         archived = await api_client.archive_content(content_id)
         assert "success" in archived
         assert archived["success"] is True
+
+        # Reset mock for restore operation
+        mock_post.reset_mock()
+        mock_post.return_value = MagicMock()
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"success": True}
 
         # Test restoring content
         restored = await api_client.restore_content(content_id)
@@ -145,9 +219,10 @@ async def test_share_links(api_client, setup_test_users):
 
         # Create share link
         share_link = await api_client.create_share_link(
-            access_level="read",
-            meeting_ids=[content_id],
-            target_email=accepter.email
+            access_level=AccessLevel.TRANSCRIPT.value,
+            content_ids=[content_id],
+            target_email=accepter.email,
+            expiration_hours=24
         )
         assert "token" in share_link
         assert share_link["token"] == "test_share_token"

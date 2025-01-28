@@ -92,14 +92,15 @@ class ContentManager:
                 # Apply entity filters if provided
                 if filters:
                     for filter_spec in filters:
-                        if filter_spec["type"] == "speakers":
+                        filter_type = filter_spec["type"]
+                        if filter_type == EntityType.SPEAKER.value:
                             base_query = base_query.where(
                                 and_(
                                     Entity.name.in_(filter_spec["values"]),
                                     Entity.type == EntityType.SPEAKER.value
                                 )
                             )
-                        elif filter_spec["type"] == "tags":
+                        elif filter_type == EntityType.TAG.value:
                             base_query = base_query.where(
                                 and_(
                                     Entity.name.in_(filter_spec["values"]),
@@ -136,14 +137,15 @@ class ContentManager:
                 # Apply same entity filters to count query
                 if filters:
                     for filter_spec in filters:
-                        if filter_spec["type"] == "speakers":
+                        filter_type = filter_spec["type"]
+                        if filter_type == EntityType.SPEAKER.value:
                             count_query = count_query.where(
                                 and_(
                                     Entity.name.in_(filter_spec["values"]),
                                     Entity.type == EntityType.SPEAKER.value
                                 )
                             )
-                        elif filter_spec["type"] == "tags":
+                        elif filter_type == EntityType.TAG.value:
                             count_query = count_query.where(
                                 and_(
                                     Entity.name.in_(filter_spec["values"]),
@@ -241,13 +243,35 @@ class ContentManager:
         type: str,
         text: str,
         parent_id: Optional[UUID] = None,
-        entities: Optional[List[Dict[str, str]]] = None
+        entities: Optional[List[Dict[str, Any]]] = None
     ) -> str:
+        # Validate content type
+        try:
+            content_type = ContentType(type)
+        except ValueError:
+            raise ValueError(f"Invalid content type. Must be one of: {[e.value for e in ContentType]}")
+            
+        # Validate entity types if provided
+        if entities:
+            for entity_data in entities:
+                try:
+                    # EntityRequest objects already validate the type
+                    if not entity_data.name:
+                        raise ValueError("Entity name is required")
+                except AttributeError:
+                    # Handle dict input for backward compatibility
+                    try:
+                        EntityType(entity_data["type"])
+                        if not entity_data.get("name"):
+                            raise ValueError("Entity name is required")
+                    except (KeyError, ValueError):
+                        raise ValueError(f"Invalid entity type. Must be one of: {[e.value for e in EntityType]}")
+            
         async with get_session() as session:
             async with session.begin():
                 content = Content(
                     id=uuid4(),
-                    type=type,
+                    type=content_type.value,
                     text=text,
                     timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
                     parent_id=parent_id,
@@ -269,12 +293,20 @@ class ContentManager:
                 # Add entities
                 if entities:
                     for entity_data in entities:
-                        entity_type = EntityType(entity_data["type"])
+                        try:
+                            # Handle EntityRequest objects
+                            entity_name = entity_data.name
+                            entity_type = entity_data.type
+                        except AttributeError:
+                            # Handle dict input for backward compatibility
+                            entity_name = entity_data["name"]
+                            entity_type = EntityType(entity_data["type"])
+                            
                         # Check if entity exists
                         entity_query = select(Entity).where(
                             and_(
-                                Entity.name == entity_data["name"],
-                                Entity.type == entity_type.value
+                                Entity.name == entity_name,
+                                Entity.type == entity_type
                             )
                         )
                         result = await session.execute(entity_query)
@@ -282,8 +314,8 @@ class ContentManager:
                         
                         if not entity:
                             entity = Entity(
-                                name=entity_data["name"],
-                                type=entity_type.value
+                                name=entity_name,
+                                type=entity_type
                             )
                             session.add(entity)
                             await session.flush()
@@ -339,11 +371,20 @@ class ContentManager:
                     
                     # Add new entities
                     for entity_data in entities:
-                        entity_type = EntityType(entity_data["type"])
+                        try:
+                            # Handle EntityRequest objects
+                            entity_name = entity_data.name
+                            entity_type = entity_data.type
+                        except AttributeError:
+                            # Handle dict input for backward compatibility
+                            entity_name = entity_data["name"]
+                            entity_type = EntityType(entity_data["type"])
+                            
+                        # Check if entity exists
                         entity_query = select(Entity).where(
                             and_(
-                                Entity.name == entity_data["name"],
-                                Entity.type == entity_type.value
+                                Entity.name == entity_name,
+                                Entity.type == entity_type
                             )
                         )
                         result = await session.execute(entity_query)
@@ -351,8 +392,8 @@ class ContentManager:
                         
                         if not entity:
                             entity = Entity(
-                                name=entity_data["name"],
-                                type=entity_type.value
+                                name=entity_name,
+                                type=entity_type
                             )
                             session.add(entity)
                             await session.flush()

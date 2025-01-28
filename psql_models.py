@@ -148,6 +148,10 @@ class Content(Base):
     __table_args__ = (
         Index('idx_content_parent_id', 'parent_id'),
         Index('idx_content_type', 'type'),
+        CheckConstraint(
+            type.in_([e.value for e in ContentType]),
+            name='valid_content_type'
+        ),
     )
 
 
