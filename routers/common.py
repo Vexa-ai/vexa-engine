@@ -1,8 +1,8 @@
-
-
+import logging
 from fastapi import HTTPException, Header
 from token_manager import TokenManager
 
+logger = logging.getLogger(__name__)
 token_manager = TokenManager()
 
 async def get_current_user(authorization: str = Header(...)):

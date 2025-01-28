@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, APIRouter
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from uuid import UUID
 from enum import Enum
-from psql_models import ContentType
+from psql_models import ContentType, AccessLevel
 import json
 from content_manager import ContentManager
 from routers.common import get_current_user
@@ -16,7 +16,7 @@ from redis import Redis
 from datetime import datetime
 
 
-router = FastAPI(prefix="/contents", tags=["contents"])
+router = APIRouter(prefix="/contents", tags=["contents"])
 
 class MeetingOwnership(str, Enum):
     MY = "my"
@@ -37,6 +37,19 @@ class AddContentRequest(BaseModel):
 class ModifyContentRequest(BaseModel):
     text: str
     entities: Optional[List[Dict[str, str]]] = None
+
+class CreateShareLinkRequest(BaseModel):
+    access_level: str
+    meeting_ids: List[UUID]
+    target_email: Optional[str] = None
+    expiration_hours: Optional[int] = None
+
+class CreateShareLinkResponse(BaseModel):
+    token: str
+
+class AcceptShareLinkRequest(BaseModel):
+    token: str
+    accepting_email: str
 
 @router.get("/all")
 async def get_contents(

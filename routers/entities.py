@@ -1,10 +1,10 @@
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, APIRouter
 from typing import Optional
 from psql_models import EntityType
 from entity_manager import EntityManager
 from routers.common import get_current_user
 
-router = FastAPI(prefix="/entities", tags=["entities"])
+router = APIRouter(prefix="/entities", tags=["entities"])
 
 @router.get("/{entity_type}")
 async def get_entities(

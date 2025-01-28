@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Body, Request
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, UUID
+from typing import Optional, List, Dict, Any
+from uuid import UUID
 import json
 from chat_manager import ChatManager
 from fastapi.responses import StreamingResponse
@@ -9,7 +10,7 @@ import os
 from qdrant_search import QdrantSearchEngine
 from bm25_search import ElasticsearchBM25
 import logging
-from common import get_current_user
+from routers.common import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

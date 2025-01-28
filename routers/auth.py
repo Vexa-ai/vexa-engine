@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict
 from auth_manager import AuthManager
+from token_manager import TokenManager
 import logging
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,14 @@ class GoogleAuthRequest(BaseModel):
     utm_content: Optional[str] = None
     ref: Optional[str] = None
     token: str
+
+class SubmitTokenRequest(BaseModel):
+    token: str
+
+class TokenResponse(BaseModel):
+    user_id: str
+    user_name: str
+    image: Optional[str] = None
 
 @router.post("/auth/google", response_model=dict)
 async def google_auth(request: GoogleAuthRequest):
@@ -40,3 +49,16 @@ async def google_auth(request: GoogleAuthRequest):
             raise HTTPException(status_code=400, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/submit_token", response_model=TokenResponse)
+async def submit_token(request: SubmitTokenRequest):
+    token_manager = TokenManager()
+    user_id, user_name, image = await token_manager.submit_token(request.token)
+    
+    if not user_id or not user_name:
+        raise HTTPException(status_code=401, detail="Invalid token")
+        
+    return TokenResponse(
+        user_id=user_id,
+        user_name=user_name,
+        image=image
+    )
