@@ -456,4 +456,49 @@ async def test_queue_content_indexing_no_access(setup_test_users):
         await manager.queue_content_indexing(
             user_id=str(other_user.id),
             content_id=UUID(content_id)
-        ) 
+        )
+
+@pytest.mark.asyncio
+async def test_physical_delete_content(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    manager = await ContentManager.create()
+    # Create content
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    # Try to delete non-archived content - should fail
+    success = await manager.delete_content(
+        user_id=str(test_user.id),
+        content_id=UUID(content_id),
+        physical_delete=True
+    )
+    assert success is False
+    # Verify content still exists
+    async with async_session() as session:
+        result = await session.execute(
+            select(Content).where(Content.id == UUID(content_id))
+        )
+        content = result.scalar_one()
+        assert content is not None
+    # Archive content first
+    await manager.archive_content(
+        user_id=str(test_user.id),
+        content_id=UUID(content_id)
+    )
+    # Now physical delete should work
+    success = await manager.delete_content(
+        user_id=str(test_user.id),
+        content_id=UUID(content_id),
+        physical_delete=True
+    )
+    assert success is True
+    # Verify content is physically deleted
+    async with async_session() as session:
+        result = await session.execute(
+            select(Content).where(Content.id == UUID(content_id))
+        )
+        content = result.scalar_one_or_none()
+        assert content is None 

@@ -145,7 +145,8 @@ async def delete_content(
     manager = await ContentManager.create()
     success = await manager.delete_content(
         user_id=user_id,
-        content_id=content_id
+        content_id=content_id,
+        physical_delete=True
     )
     if not success:
         raise HTTPException(status_code=404, detail="Content not found or no access")

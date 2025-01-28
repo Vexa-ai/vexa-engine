@@ -71,7 +71,7 @@ class APIClient:
             raise APIError(f"Google auth failed: {str(e)}")
 
     async def submit_token(self, token: str) -> Dict:
-        response = requests.post(f"{self.base_url}/submit_token", json={"token": token})
+        response = requests.post(f"{self.base_url}/auth/submit_token", json={"token": token})
         if response.status_code != 200:
             raise APIError(f"Token submission failed: {response.text}")
         return response.json()

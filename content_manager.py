@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update, delete, and_, func, case
+from sqlalchemy import select, update, delete, and_, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from psql_models import (
     Content, UserContent, Entity, content_entity_association,
@@ -367,9 +367,43 @@ class ContentManager:
                 await session.commit()
                 return True
     
-    async def delete_content(self, user_id: str, content_id: UUID) -> bool:
+    async def delete_content(self, user_id: str, content_id: UUID, physical_delete: bool = False) -> bool:
         async with get_session() as session:
             async with session.begin():
+                # Check if content exists and user has access
+                user_content = await session.execute(
+                    select(UserContent)
+                    .where(
+                        and_(
+                            UserContent.content_id == content_id,
+                            UserContent.user_id == UUID(user_id)
+                        )
+                    )
+                )
+                user_content = user_content.scalar_one_or_none()
+                if not user_content:
+                    return False
+                # For physical delete, check if content is archived
+                if physical_delete:
+                    if user_content.access_level != AccessLevel.REMOVED.value:
+                        return False
+                    # First delete all UserContent records
+                    await session.execute(
+                        delete(UserContent)
+                        .where(UserContent.content_id == content_id)
+                    )
+                    # Then delete content and its associations
+                    await session.execute(
+                        delete(content_entity_association)
+                        .where(content_entity_association.c.content_id == content_id)
+                    )
+                    await session.execute(
+                        delete(Content)
+                        .where(Content.id == content_id)
+                    )
+                    await session.commit()
+                    return True
+                # Regular delete - just mark as removed
                 result = await session.execute(
                     update(UserContent)
                     .where(
