@@ -221,4 +221,78 @@ async def test_chat(api_client):
                 assert thread_id == "test-thread-id"
             else:
                 assert "chunk" in response
-                assert response["chunk"] == "Test response chunk" 
+                assert response["chunk"] == "Test response chunk"
+
+@pytest.mark.asyncio
+async def test_threads(api_client):
+    with patch('requests.get') as mock_get, \
+         patch('requests.post') as mock_post, \
+         patch('requests.put') as mock_put:
+        
+        # Mock responses
+        test_thread_id = "test-thread-123"
+        test_thread = {
+            "id": test_thread_id,
+            "name": "Test Thread",
+            "user_id": "test-user",
+            "created_at": "2024-01-28T12:00:00Z",
+            "messages": []
+        }
+        
+        # Mock get_threads response
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "threads": [test_thread],
+            "total": 1
+        }
+        
+        # Test get_threads
+        threads = await api_client.get_threads(
+            limit=10,
+            offset=0,
+            only_archived=False
+        )
+        assert "threads" in threads
+        assert len(threads["threads"]) == 1
+        assert threads["threads"][0]["id"] == test_thread_id
+        
+        # Mock get_thread response
+        mock_get.return_value.json.return_value = test_thread
+        
+        # Test get_thread
+        thread = await api_client.get_thread(test_thread_id)
+        assert thread["id"] == test_thread_id
+        assert thread["name"] == "Test Thread"
+        
+        # Mock archive_thread response
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"success": True}
+        
+        # Test archive_thread
+        result = await api_client.archive_thread(test_thread_id)
+        assert result["success"] is True
+        
+        # Test restore_thread
+        result = await api_client.restore_thread(test_thread_id)
+        assert result["success"] is True
+        
+        # Mock rename_thread response
+        mock_put.return_value.status_code = 200
+        mock_put.return_value.json.return_value = {"success": True}
+        
+        # Test rename_thread
+        result = await api_client.rename_thread(test_thread_id, "New Thread Name")
+        assert result["success"] is True
+        
+        # Test error cases
+        mock_get.return_value.status_code = 404
+        with pytest.raises(ValueError, match="Thread not found"):
+            await api_client.get_thread("non-existent-thread")
+            
+        mock_post.return_value.status_code = 404
+        with pytest.raises(ValueError, match="Thread not found"):
+            await api_client.archive_thread("non-existent-thread")
+            
+        mock_put.return_value.status_code = 404
+        with pytest.raises(ValueError, match="Thread not found"):
+            await api_client.rename_thread("non-existent-thread", "New Name") 

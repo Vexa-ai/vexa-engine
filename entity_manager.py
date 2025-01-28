@@ -69,3 +69,8 @@ class EntityManager:
             except Exception as e:
                 logger.error(f"Error getting entities: {str(e)}", exc_info=True)
                 raise
+            
+            
+#todo: add delete entity
+#todo: add update entity
+#todo: add create entity

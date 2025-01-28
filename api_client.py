@@ -64,7 +64,7 @@ class APIClient:
             response = requests.post(f"{self.base_url}/auth/google", json=data)
             if response.status_code != 200:
                 raise APIError(f"Google auth failed: {response.text}")
-        return response.json()
+            return response.json()
         except GoogleError as e:
             raise APIError(f"Google token verification failed: {str(e)}")
         except Exception as e:
@@ -74,7 +74,7 @@ class APIClient:
         response = requests.post(f"{self.base_url}/submit_token", json={"token": token})
         if response.status_code != 200:
             raise APIError(f"Token submission failed: {response.text}")
-            return response.json()
+        return response.json()
 
     # Contents Router Methods
     async def get_contents(self, content_type: Optional[str] = None, filters: Optional[List[Dict]] = None, 
@@ -115,7 +115,7 @@ class APIClient:
         response = requests.post(f"{self.base_url}/contents", headers=self.headers, json=data)
         if response.status_code != 200:
             raise APIError(f"Failed to add content: {response.text}")
-            return response.json()
+        return response.json()
 
     async def modify_content(self, content_id: UUID, body: str, entities: Optional[List[Dict[str, str]]] = None) -> Dict[str, bool]:
         if not self._initialized:
@@ -285,4 +285,70 @@ class APIClient:
                             data = json.loads(line[6:])
                             yield data
                         except json.JSONDecodeError:
-                            continue 
+                            continue
+
+    # Thread Router Methods
+    async def get_threads(self, content_id: Optional[UUID] = None, entity_id: Optional[int] = None,
+                         only_archived: bool = False, limit: int = 50, offset: int = 0,
+                         start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> Dict:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        params = {
+            "content_id": str(content_id) if content_id else None,
+            "entity_id": entity_id,
+            "only_archived": only_archived,
+            "limit": limit,
+            "offset": offset,
+            "start_date": start_date.isoformat() if start_date else None,
+            "end_date": end_date.isoformat() if end_date else None
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        response = requests.get(f"{self.base_url}/threads", headers=self.headers, params=params)
+        if response.status_code != 200:
+            raise APIError(f"Failed to get threads: {response.text}")
+        return response.json()
+
+    async def get_thread(self, thread_id: str) -> Dict:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        response = requests.get(f"{self.base_url}/threads/{thread_id}", headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise ValueError("Thread not found")
+        else:
+            raise APIError(f"Failed to get thread: {response.text}")
+
+    async def archive_thread(self, thread_id: str) -> Dict[str, bool]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        response = requests.post(f"{self.base_url}/threads/{thread_id}/archive", headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise ValueError("Thread not found")
+        else:
+            raise APIError(f"Failed to archive thread: {response.text}")
+
+    async def restore_thread(self, thread_id: str) -> Dict[str, bool]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        response = requests.post(f"{self.base_url}/threads/{thread_id}/restore", headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise ValueError("Thread not found")
+        else:
+            raise APIError(f"Failed to restore thread: {response.text}")
+
+    async def rename_thread(self, thread_id: str, thread_name: str) -> Dict[str, bool]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        data = {"thread_name": thread_name}
+        response = requests.put(f"{self.base_url}/threads/{thread_id}/rename", headers=self.headers, json=data)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise ValueError("Thread not found")
+        else:
+            raise APIError(f"Failed to rename thread: {response.text}") 
