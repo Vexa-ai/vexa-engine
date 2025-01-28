@@ -193,6 +193,7 @@ class Thread(Base):
     messages = Column(Text)
     timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
     meta = Column(JSONB, nullable=True)
+    is_archived = Column(Boolean, default=False, nullable=False, server_default='false')
 
     user = relationship('User', back_populates='threads')
     content = relationship('Content')

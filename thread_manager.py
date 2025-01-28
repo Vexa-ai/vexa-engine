@@ -60,6 +60,7 @@ class ThreadManager:
                         .where(Thread.thread_id == thread_id)
                         .values(
                             messages=messages_json,
+                            thread_name=truncated_thread_name,
                             content_id=content_id,
                             entity_id=entity_id,
                             meta=thread_meta if thread_meta else None
@@ -84,34 +85,6 @@ class ThreadManager:
                 
                 await session.commit()
                 return thread.thread_id
-
-    async def get_threads_by_filter(
-        self,
-        user_id: str,
-        content_ids: Optional[List[UUID]] = None,
-        entities: Optional[List[str]] = None
-    ) -> List[dict]:
-        async with get_session() as session:
-            query = select(Thread).where(Thread.user_id == UUID(user_id))
-            
-            if content_ids:
-                content_ids_str = [str(cid) for cid in content_ids]
-                query = query.where(Thread.meta['content_ids'].contains(content_ids_str))
-            
-            if entities:
-                query = query.where(Thread.meta['entities'].contains(entities))
-            
-            result = await session.execute(query)
-            threads = result.scalars().all()
-            
-            return [{
-                "thread_id": t.thread_id,
-                "thread_name": t.thread_name,
-                "timestamp": t.timestamp,
-                "content_id": str(t.content_id) if t.content_id else None,
-                "entity": t.entity,
-                "meta": t.meta
-            } for t in threads]
 
     async def get_thread(self, thread_id: str) -> Optional[SearchAssistantThread]:
         async with get_session() as session:
@@ -147,8 +120,13 @@ class ThreadManager:
         self, 
         user_id: str, 
         content_id: Optional[UUID] = None,
-        entity_id: Optional[int] = None
-    ) -> List[dict]:
+        entity_id: Optional[int] = None,
+        only_archived: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> dict:
         async with get_session() as session:
             query = select(Thread).filter(Thread.user_id == UUID(user_id))
             
@@ -158,18 +136,36 @@ class ThreadManager:
                 query = query.filter(Thread.entity_id == entity_id)
             else:
                 query = query.filter(Thread.content_id.is_(None), Thread.entity_id.is_(None))
-                
-            result = await session.execute(query.order_by(Thread.timestamp.desc()))
+            
+            query = query.filter(Thread.is_archived == only_archived)
+            
+            # Apply date filters if provided
+            if start_date:
+                query = query.filter(Thread.timestamp >= start_date)
+            if end_date:
+                query = query.filter(Thread.timestamp <= end_date)
+            
+            # Get total count
+            count_query = select(func.count()).select_from(query.subquery())
+            total = await session.scalar(count_query)
+            
+            # Apply pagination
+            query = query.order_by(Thread.timestamp.desc()).offset(offset).limit(limit)
+            result = await session.execute(query)
             threads = result.scalars().all()
             
-            return [{
-                "thread_id": thread.thread_id,
-                "thread_name": thread.thread_name,
-                "timestamp": thread.timestamp,
-                "content_id": str(thread.content_id) if thread.content_id else None,
-                "entity_id": thread.entity_id,
-                "meta": thread.meta
-            } for thread in threads]
+            return {
+                "total": total,
+                "threads": [{
+                    "thread_id": thread.thread_id,
+                    "thread_name": thread.thread_name,
+                    "timestamp": thread.timestamp,
+                    "content_id": str(thread.content_id) if thread.content_id else None,
+                    "entity_id": thread.entity_id,
+                    "meta": thread.meta,
+                    "is_archived": thread.is_archived
+                } for thread in threads]
+            }
 
     async def get_messages_by_thread_id(self, thread_id: str) -> Optional[List[Msg]]:
         thread = await self.get_thread(thread_id)
@@ -177,21 +173,34 @@ class ThreadManager:
             return thread.messages
         return None
 
-    async def delete_thread(self, thread_id: str) -> bool:
+    async def archive_thread(self, thread_id: str) -> bool:
         async with get_session() as session:
             try:
                 result = await session.execute(
-                    select(Thread).filter(Thread.thread_id == thread_id)
+                    update(Thread)
+                    .where(Thread.thread_id == thread_id)
+                    .values(is_archived=True)
                 )
-                thread = result.scalar_one_or_none()
-                if thread:
-                    await session.delete(thread)
-                    await session.commit()
-                    print(f"Thread deleted with id {thread_id}")
-                    return True
-                return False
+                await session.commit()
+                rows_affected = result.rowcount
+                return rows_affected > 0
             except Exception as e:
-                print(f"Error deleting thread {thread_id}: {str(e)}")
+                print(f"Error archiving thread {thread_id}: {str(e)}")
+                return False
+
+    async def unarchive_thread(self, thread_id: str) -> bool:
+        async with get_session() as session:
+            try:
+                result = await session.execute(
+                    update(Thread)
+                    .where(Thread.thread_id == thread_id)
+                    .values(is_archived=False)
+                )
+                await session.commit()
+                rows_affected = result.rowcount
+                return rows_affected > 0
+            except Exception as e:
+                print(f"Error unarchiving thread {thread_id}: {str(e)}")
                 return False
 
     async def rename_thread(self, thread_id: str, new_name: str) -> bool:
