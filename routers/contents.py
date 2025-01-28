@@ -8,6 +8,14 @@ import json
 from content_manager import ContentManager
 from routers.common import get_current_user
 
+
+
+
+from indexing.redis_keys import RedisKeys
+from redis import Redis
+from datetime import datetime
+
+
 router = FastAPI(prefix="/contents", tags=["contents"])
 
 class MeetingOwnership(str, Enum):
@@ -159,4 +167,75 @@ async def restore_content(
     if not success:
         raise HTTPException(status_code=404, detail="Content not found or not archived")
     return {"success": True}
+
+@router.post("/share-links", response_model=CreateShareLinkResponse)
+async def create_new_share_link(
+    request: CreateShareLinkRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, user_name, token = current_user
+    
+    try:
+        access_level = AccessLevel(request.access_level)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid access level. Must be one of: {[e.value for e in AccessLevel]}"
+        )
+    
+    try:
+        manager = await ContentManager.create()
+        token = await manager.create_share_link(
+            owner_id=user_id,
+            access_level=access_level,
+            meeting_ids=request.meeting_ids,
+            target_email=request.target_email,
+            expiration_hours=request.expiration_hours
+        )
+        return CreateShareLinkResponse(token=token)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+@router.post("/share-links/accept")
+async def accept_new_share_link(
+    request: AcceptShareLinkRequest,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, user_name, token = current_user
+    
+    manager = await ContentManager.create()
+    success = await manager.accept_share_link(
+        token=request.token,
+        accepting_user_id=user_id,
+        accepting_email=request.accepting_email
+    )
+    
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired share link"
+        )
+        
+    return {"message": "Share link accepted successfully"}
+
+@router.post("/{content_id}/index")
+async def index_content(
+    content_id: UUID,
+    current_user: tuple = Depends(get_current_user)
+):
+    user_id, user_name, token = current_user
+    
+    try:
+        manager = await ContentManager.create()
+        result = await manager.queue_content_indexing(
+            user_id=user_id,
+            content_id=content_id
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error queuing content for indexing: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 

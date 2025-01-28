@@ -457,7 +457,6 @@ async def has_content_access(
         .where(and_(
             UserContent.user_id == user_id,
             UserContent.content_id == content_id,
-            Content.type == content_type,
             UserContent.access_level != AccessLevel.REMOVED.value
         ))
     )

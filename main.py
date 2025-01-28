@@ -99,19 +99,6 @@ app.add_middleware(
 # Other middleware and routes should come after CORS middleware
 
 
-
-class CreateShareLinkRequest(BaseModel):
-    access_level: str
-    meeting_ids: Optional[List[UUID]] = None
-    target_email: Optional[EmailStr] = None
-    expiration_hours: Optional[int] = None
-
-class CreateShareLinkResponse(BaseModel):
-    token: str
-
-class AcceptShareLinkRequest(BaseModel):
-    token: str
-    accepting_email: Optional[EmailStr] = None
     
 
 REDIS_HOST=os.getenv('REDIS_HOST', '127.0.0.1')
@@ -153,112 +140,6 @@ def setup_logger():
 
 logger = setup_logger()
 
-
-@app.post("/share-links", response_model=CreateShareLinkResponse)
-async def create_new_share_link(
-    request: CreateShareLinkRequest,
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, user_name, token = current_user
-    
-    try:
-        access_level = AccessLevel(request.access_level)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid access level. Must be one of: {[e.value for e in AccessLevel]}"
-        )
-    
-    try:
-        async with async_session() as session:
-            token = await create_share_link(
-                session=session,
-                owner_id=user_id,
-                access_level=access_level,
-                meeting_ids=request.meeting_ids,
-                target_email=request.target_email,
-                expiration_hours=request.expiration_hours
-            )
-            
-        return CreateShareLinkResponse(token=token)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-
-@app.post("/share-links/accept")
-async def accept_new_share_link(
-    request: AcceptShareLinkRequest,
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, user_name, token = current_user
-    
-    async with async_session() as session:
-        success = await accept_share_link(
-            session=session,
-            token=request.token,
-            accepting_user_id=user_id,
-            accepting_email=request.accepting_email
-        )
-        
-    if not success:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired share link"
-        )
-        
-    return {"message": "Share link accepted successfully"}
-
-
-
-
-from indexing.redis_keys import RedisKeys
-from redis import Redis
-from datetime import datetime
-
-# Add this near other Redis initialization
-REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT)
-
-class IndexMeetingRequest(BaseModel):
-    meeting_id: UUID
-
-@app.post("/meetings/{meeting_id}/index")
-async def index_meeting(
-    meeting_id: UUID,
-    current_user: tuple = Depends(get_current_user)
-):
-    user_id, user_name, token = current_user
-    meeting_id_str = str(meeting_id)
-    
-    try:
-        async with get_session() as session:
-            if not await has_content_access(session, user_id, meeting_id):
-                raise HTTPException(status_code=403, detail="No access to meeting")
-            
-            # Check if meeting is already being processed
-            if redis_client.sismember(RedisKeys.PROCESSING_SET, meeting_id_str):
-                return {"status": "already_processing", "message": "Meeting is already being processed"}
-            
-            # Check if meeting is already in queue
-            if redis_client.zscore(RedisKeys.INDEXING_QUEUE, meeting_id_str) is not None:
-                return {"status": "already_queued", "message": "Meeting is already in indexing queue"}
-            
-            # Check if meeting is in failed state
-            failed_info = redis_client.hget(RedisKeys.FAILED_SET, meeting_id_str)
-            if failed_info:
-                redis_client.hdel(RedisKeys.FAILED_SET, meeting_id_str)
-            
-            # Add to indexing queue with current timestamp
-            redis_client.zadd(RedisKeys.INDEXING_QUEUE, {meeting_id_str: datetime.now().timestamp()})
-            
-            return {
-                "status": "queued",
-                "message": "Meeting has been queued for indexing"
-            }
-            
-    except Exception as e:
-        logger.error(f"Error queuing meeting for indexing: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 # Add this with other router includes
 app.include_router(auth_router)

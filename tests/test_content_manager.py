@@ -8,6 +8,8 @@ from psql_models import (
     EntityType, AccessLevel, async_session
 )
 from sqlalchemy import select, and_
+from unittest.mock import patch, MagicMock
+from indexing.redis_keys import RedisKeys
 
 @pytest.mark.asyncio
 async def test_add_content_basic(setup_test_users):
@@ -306,4 +308,152 @@ async def test_modify_content_no_access(setup_test_users):
         content_id=UUID(content_id),
         text="Modified text"
     )
-    assert success is False 
+    assert success is False
+
+@pytest.mark.asyncio
+async def test_create_share_link(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create content to share
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    
+    # Create share link
+    token = await manager.create_share_link(
+        owner_id=str(test_user.id),
+        access_level=AccessLevel.TRANSCRIPT,
+        content_ids=[UUID(content_id)]
+    )
+    
+    assert token is not None
+    assert isinstance(token, str)
+
+@pytest.mark.asyncio
+async def test_accept_share_link(setup_test_users):
+    users = setup_test_users
+    owner, owner_token = users[0]
+    accepter, accepter_token = users[1]
+    
+    manager = await ContentManager.create()
+    
+    # Create content and share link
+    content_id = await manager.add_content(
+        user_id=str(owner.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    
+    token = await manager.create_share_link(
+        owner_id=str(owner.id),
+        access_level=AccessLevel.TRANSCRIPT,
+        content_ids=[UUID(content_id)]
+    )
+    
+    # Accept share link
+    success = await manager.accept_share_link(
+        token=token,
+        accepting_user_id=str(accepter.id)
+    )
+    
+    assert success is True
+    
+    # Verify access
+    content = await manager.get_content(
+        user_id=str(accepter.id),
+        content_id=UUID(content_id)
+    )
+    assert content is not None
+
+@pytest.mark.asyncio
+async def test_queue_content_indexing(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create content
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    
+    with patch('content_manager.redis_client') as mock_redis:
+        # Mock Redis responses
+        mock_redis.sismember.return_value = False
+        mock_redis.zscore.return_value = None
+        mock_redis.hget.return_value = None
+        
+        # Queue content for indexing
+        result = await manager.queue_content_indexing(
+            user_id=str(test_user.id),
+            content_id=UUID(content_id)
+        )
+        
+        assert result["status"] == "queued"
+        assert "message" in result
+        
+        # Verify Redis calls
+        mock_redis.sismember.assert_called_once_with(RedisKeys.PROCESSING_SET, str(content_id))
+        mock_redis.zscore.assert_called_once_with(RedisKeys.INDEXING_QUEUE, str(content_id))
+        mock_redis.zadd.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_queue_content_indexing_already_processing(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create content
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    
+    with patch('content_manager.redis_client') as mock_redis:
+        # Mock Redis to indicate content is being processed
+        mock_redis.sismember.return_value = True
+        
+        # Attempt to queue content
+        result = await manager.queue_content_indexing(
+            user_id=str(test_user.id),
+            content_id=UUID(content_id)
+        )
+        
+        assert result["status"] == "already_processing"
+        assert "message" in result
+        
+        # Verify only sismember was called
+        mock_redis.sismember.assert_called_once_with(RedisKeys.PROCESSING_SET, str(content_id))
+        mock_redis.zscore.assert_not_called()
+        mock_redis.zadd.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_queue_content_indexing_no_access(setup_test_users):
+    users = setup_test_users
+    owner, owner_token = users[0]
+    other_user, other_token = users[1]
+    
+    manager = await ContentManager.create()
+    
+    # Create content
+    content_id = await manager.add_content(
+        user_id=str(owner.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    
+    # Try to queue content as other user
+    with pytest.raises(ValueError, match="No access to content"):
+        await manager.queue_content_indexing(
+            user_id=str(other_user.id),
+            content_id=UUID(content_id)
+        ) 

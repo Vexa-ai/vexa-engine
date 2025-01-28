@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from psql_models import User, UserToken, async_session, UserContent
+from psql_models import User, UserToken, async_session, UserContent, ShareLink
 
 @pytest.fixture(scope="session")
 def event_loop():
@@ -39,7 +39,15 @@ async def setup_test_users():
             user_id = user_result.scalar_one_or_none()
             
             if user_id:
-                # Delete user content first
+                # Delete share links first
+                await session.execute(
+                    delete(ShareLink).where(ShareLink.owner_id == user_id)
+                )
+                # Delete user content where user is creator
+                await session.execute(
+                    delete(UserContent).where(UserContent.created_by == user_id)
+                )
+                # Delete user content where user has access
                 await session.execute(
                     delete(UserContent).where(UserContent.user_id == user_id)
                 )

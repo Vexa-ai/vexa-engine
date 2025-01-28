@@ -10,9 +10,19 @@ from psql_models import (
     ContentType, AccessLevel, EntityType
 )
 from psql_helpers import get_session
+from redis import Redis
+from indexing.redis_keys import RedisKeys
+from psql_access import has_content_access
+from psql_sharing import create_share_link, accept_share_link
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+# Redis client initialization
+REDIS_HOST = os.getenv('REDIS_HOST', '127.0.0.1')
+REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
+redis_client = Redis(host=REDIS_HOST, port=REDIS_PORT)
 
 class ContentData(BaseModel):
     content_id: str
@@ -391,4 +401,82 @@ class ContentManager:
                     .values(access_level=AccessLevel.OWNER.value)
                 )
                 await session.commit()
-                return result.rowcount > 0 
+                return result.rowcount > 0
+
+    async def create_share_link(
+        self,
+        owner_id: str,
+        access_level: AccessLevel,
+        content_ids: Optional[List[UUID]] = None,
+        target_email: Optional[str] = None,
+        expiration_hours: Optional[int] = None,
+        session: AsyncSession = None
+    ) -> str:
+        async with (session or get_session()) as session:
+            token = await create_share_link(
+                session=session,
+                owner_id=UUID(owner_id),
+                access_level=access_level,
+                content_ids=content_ids,
+                target_email=target_email,
+                expiration_hours=expiration_hours
+            )
+            return token
+
+    async def accept_share_link(
+        self,
+        token: str,
+        accepting_user_id: str,
+        accepting_email: Optional[str] = None,
+        session: AsyncSession = None
+    ) -> bool:
+        async with (session or get_session()) as session:
+            return await accept_share_link(
+                session=session,
+                token=token,
+                accepting_user_id=UUID(accepting_user_id),
+                accepting_email=accepting_email
+            )
+
+    async def queue_content_indexing(
+        self,
+        user_id: str,
+        content_id: UUID,
+        session: AsyncSession = None
+    ) -> Dict[str, str]:
+        async with (session or get_session()) as session:
+            # Verify access
+            if not await has_content_access(session, UUID(user_id), content_id):
+                raise ValueError("No access to content")
+            
+            content_id_str = str(content_id)
+            
+            # Check if content is already being processed
+            if redis_client.sismember(RedisKeys.PROCESSING_SET, content_id_str):
+                return {
+                    "status": "already_processing",
+                    "message": "Content is already being processed"
+                }
+            
+            # Check if content is already in queue
+            if redis_client.zscore(RedisKeys.INDEXING_QUEUE, content_id_str) is not None:
+                return {
+                    "status": "already_queued",
+                    "message": "Content is already in indexing queue"
+                }
+            
+            # Remove from failed set if present
+            failed_info = redis_client.hget(RedisKeys.FAILED_SET, content_id_str)
+            if failed_info:
+                redis_client.hdel(RedisKeys.FAILED_SET, content_id_str)
+            
+            # Add to indexing queue
+            redis_client.zadd(
+                RedisKeys.INDEXING_QUEUE,
+                {content_id_str: datetime.now().timestamp()}
+            )
+            
+            return {
+                "status": "queued",
+                "message": "Content has been queued for indexing"
+            } 
