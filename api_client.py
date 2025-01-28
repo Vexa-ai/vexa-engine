@@ -249,45 +249,57 @@ class APIClient:
         return response.json()
 
     # Chat Router Methods
-    async def chat(self, query: str, content_id: Optional[UUID] = None, entity: Optional[str] = None,
-                  content_ids: Optional[List[UUID]] = None, entities: Optional[List[str]] = None,
+    async def chat(self, query: str, content_id: Optional[UUID] = None, entity_id: Optional[int] = None,
+                  content_ids: Optional[List[UUID]] = None, entity_ids: Optional[List[int]] = None,
                   thread_id: Optional[str] = None, model: Optional[str] = None,
                   temperature: Optional[float] = None, meta: Optional[dict] = None) -> AsyncGenerator[Dict[str, Any], None]:
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
-        if content_id and entity:
-            raise ValueError("Cannot specify both content_id and entity")
-        if content_ids and entities:
-            raise ValueError("Cannot specify both content_ids and entities")
-        if (content_id and content_ids) or (entity and entities):
+        if content_id and entity_id:
+            raise ValueError("Cannot specify both content_id and entity_id")
+        if content_ids and entity_ids:
+            raise ValueError("Cannot specify both content_ids and entity_ids")
+        if (content_id and content_ids) or (entity_id and entity_ids):
             raise ValueError("Cannot specify both single and multiple values of same type")
 
         payload = {
             "query": query,
             "content_id": str(content_id) if content_id else None,
-            "entity": entity,
+            "entity_id": entity_id,
             "content_ids": [str(cid) for cid in content_ids] if content_ids else None,
-            "entities": entities,
+            "entity_ids": entity_ids,
             "thread_id": thread_id,
             "model": model,
             "temperature": temperature,
             "meta": meta
         }
+        payload = {k: v for k, v in payload.items() if v is not None}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{self.base_url}/chat", json=payload, headers=self.headers) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise APIError(f"Chat request failed: {error_text}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{self.base_url}/chat/chat", json=payload, headers=self.headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise APIError(f"Chat request failed: {error_text}")
 
-                async for line in response.content:
-                    line = line.decode('utf-8').strip()
-                    if line.startswith('data: '):
-                        try:
-                            data = json.loads(line[6:])
-                            yield data
-                        except json.JSONDecodeError:
-                            continue
+                    try:
+                        async for line in response.content:
+                            try:
+                                line = line.decode('utf-8').strip()
+                                if line.startswith('data: '):
+                                    try:
+                                        data = json.loads(line[6:])
+                                        yield data
+                                    except json.JSONDecodeError:
+                                        continue
+                            except UnicodeDecodeError:
+                                continue
+                    except (aiohttp.ClientPayloadError, aiohttp.ClientError) as e:
+                        raise APIError(f"Chat streaming failed: {str(e)}")
+        except Exception as e:
+            if isinstance(e, APIError):
+                raise
+            raise APIError(f"Chat request failed: {str(e)}")
 
     async def edit_chat_message(self, thread_id: str, message_index: int, new_content: str,
                               model: Optional[str] = None, temperature: Optional[float] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -301,21 +313,33 @@ class APIClient:
             "model": model,
             "temperature": temperature
         }
+        payload = {k: v for k, v in payload.items() if v is not None}
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{self.base_url}/chat/edit", json=payload, headers=self.headers) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise APIError(f"Chat edit request failed: {error_text}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{self.base_url}/chat/edit", json=payload, headers=self.headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise APIError(f"Chat edit request failed: {error_text}")
 
-                async for line in response.content:
-                    line = line.decode('utf-8').strip()
-                    if line.startswith('data: '):
-                        try:
-                            data = json.loads(line[6:])
-                            yield data
-                        except json.JSONDecodeError:
-                            continue
+                    try:
+                        async for line in response.content:
+                            try:
+                                line = line.decode('utf-8').strip()
+                                if line.startswith('data: '):
+                                    try:
+                                        data = json.loads(line[6:])
+                                        yield data
+                                    except json.JSONDecodeError:
+                                        continue
+                            except UnicodeDecodeError:
+                                continue
+                    except (aiohttp.ClientPayloadError, aiohttp.ClientError) as e:
+                        raise APIError(f"Chat edit streaming failed: {str(e)}")
+        except Exception as e:
+            if isinstance(e, APIError):
+                raise
+            raise APIError(f"Chat edit request failed: {str(e)}")
 
     # Thread Router Methods
     async def get_threads(self, content_id: Optional[UUID] = None, entity_id: Optional[int] = None,

@@ -1,7 +1,6 @@
-from fastapi import APIRouter, HTTPException, Depends, Body, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Depends, Request
+from pydantic import BaseModel, Field, UUID4
 from typing import Optional, List, Dict, Any
-from uuid import UUID
 import json
 from chat_manager import ChatManager
 from fastapi.responses import StreamingResponse
@@ -11,55 +10,61 @@ from qdrant_search import QdrantSearchEngine
 from bm25_search import ElasticsearchBM25
 import logging
 from routers.common import get_current_user
+from contextlib import asynccontextmanager
+from fastapi import Body
+
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/chat", tags=["chat"]) 
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 class ChatRequest(BaseModel):
-    query: str = Field(..., description="The chat message or query from the user")
-    thread_id: Optional[str] = Field(None, description="Optional thread ID to continue a conversation")
-    model: Optional[str] = Field(None, description="Optional model name to use for chat")
-    temperature: Optional[float] = Field(None, description="Optional temperature parameter for model response randomness")
-    content_id: Optional[UUID] = Field(None, description="Optional single content ID to provide context")
-    entity: Optional[str] = Field(None, description="Optional single entity name to associate with thread")
-    content_ids: Optional[List[UUID]] = Field(None, description="Optional list of content IDs to provide context")
-    entities: Optional[List[str]] = Field(None, description="Optional list of entity names to scope search")
-    meta: Optional[Dict[str, Any]] = Field(None, description="Optional metadata for the chat")
+    query: str = Field(..., description="The chat query")
+    content_id: Optional[UUID4] = Field(None, description="Single content ID to map thread to")
+    entity_id: Optional[int] = Field(None, description="Single entity ID to map thread to")
+    content_ids: Optional[List[UUID4]] = Field(None, description="Content IDs to search over")
+    entity_ids: Optional[List[int]] = Field(None, description="Entity IDs to search over")
+    thread_id: Optional[str] = Field(None, description="Thread ID for continuing conversation")
+    model: Optional[str] = Field(None, description="Model to use for chat")
+    temperature: Optional[float] = Field(None, description="Temperature for model sampling")
+    meta: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
 
-# Initialize search engines
-qdrant_engine = QdrantSearchEngine(os.getenv('VOYAGE_API_KEY'))
-es_engine = ElasticsearchBM25()
+# Initialize search engine variables
+qdrant_engine = None
+es_engine = None
+
+@asynccontextmanager
+async def lifespan(app):
+    global qdrant_engine, es_engine
+    # Initialize search engines on startup
+    qdrant_engine = QdrantSearchEngine(os.getenv('VOYAGE_API_KEY'))
+    es_engine = await ElasticsearchBM25.create()
+    yield
+    # Cleanup on shutdown
+    if es_engine.es_client:
+        await es_engine.es_client.close()
 
 @router.post("/chat")
 async def chat(
     request: Request,
-    query: str = Body(...),
-    content_id: Optional[UUID] = Body(None),
-    entity: Optional[str] = Body(None),
-    content_ids: Optional[List[UUID]] = Body(None),
-    entities: Optional[List[str]] = Body(None),
-    thread_id: Optional[str] = Body(None),
-    model: Optional[str] = Body(None),
-    temperature: Optional[float] = Body(None),
-    meta: Optional[dict] = Body(None),
+    chat_request: ChatRequest,
     current_user: tuple = Depends(get_current_user)
 ):
     user_id, user_name, token = current_user
     
     # Validate input combinations
-    if content_id and entity:
+    if chat_request.content_id and chat_request.entity_id:
         raise HTTPException(
             status_code=400,
-            detail="Cannot specify both content_id and entity for thread mapping"
+            detail="Cannot specify both content_id and entity_id for thread mapping"
         )
         
-    if content_ids and entities:
+    if chat_request.content_ids and chat_request.entity_ids:
         raise HTTPException(
             status_code=400,
-            detail="Cannot specify both content_ids and entities for search scope"
+            detail="Cannot specify both content_ids and entity_ids for search scope"
         )
         
-    if (content_id and content_ids) or (entity and entities):
+    if (chat_request.content_id and chat_request.content_ids) or (chat_request.entity_id and chat_request.entity_ids):
         raise HTTPException(
             status_code=400,
             detail="Cannot specify both single and multiple values of the same type"
@@ -67,7 +72,6 @@ async def chat(
     
     # Initialize chat manager
     chat_manager = await ChatManager.create(
-        session=get_session(),
         qdrant_engine=qdrant_engine,
         es_engine=es_engine
     )
@@ -77,15 +81,15 @@ async def chat(
         try:
             async for chunk in chat_manager.chat(
                 user_id=user_id,
-                query=query,
-                content_id=content_id,
-                entity=entity,
-                content_ids=content_ids,
-                entities=entities,
-                thread_id=thread_id,
-                model=model,
-                temperature=temperature,
-                meta=meta
+                query=chat_request.query,
+                content_id=chat_request.content_id,
+                entity_id=chat_request.entity_id,
+                content_ids=chat_request.content_ids,
+                entity_ids=chat_request.entity_ids,
+                thread_id=chat_request.thread_id,
+                model=chat_request.model,
+                temperature=chat_request.temperature,
+                meta=chat_request.meta
             ):
                 if "error" in chunk:
                     yield f"data: {json.dumps(chunk)}\n\n"
@@ -96,10 +100,10 @@ async def chat(
                     # Final response with metadata
                     response_data = {
                         'thread_id': chunk['thread_id'],
-                        'content_id': str(content_id) if content_id else None,
-                        'entity': entity,
-                        'content_ids': [str(cid) for cid in content_ids] if content_ids else None,
-                        'entities': entities,
+                        'content_id': str(chat_request.content_id) if chat_request.content_id else None,
+                        'entity_id': chat_request.entity_id,
+                        'content_ids': [str(cid) for cid in chat_request.content_ids] if chat_request.content_ids else None,
+                        'entity_ids': chat_request.entity_ids,
                         'output': chunk['output'],
                         'linked_output': chunk.get('linked_output', chunk['output']),
                         'service_content': chunk.get('service_content', {})
@@ -108,7 +112,7 @@ async def chat(
         except ValueError as e:
             error_data = {"error": str(e)}
             yield f"data: {json.dumps(error_data)}\n\n"
-    
+                
     return StreamingResponse(
         generate(),
         media_type="text/event-stream"
@@ -126,7 +130,6 @@ async def edit_chat_message(
     user_id, user_name, token = current_user
     
     chat_manager = await ChatManager.create(
-        session=get_session(),
         qdrant_engine=qdrant_engine,
         es_engine=es_engine
     )
