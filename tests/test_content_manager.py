@@ -572,4 +572,43 @@ async def test_add_content_valid_entity(setup_test_users):
         assert len(entities) == 2
         entity_types = {e.type for e in entities}
         assert EntityType.SPEAKER.value in entity_types
-        assert EntityType.TAG.value in entity_types 
+        assert EntityType.TAG.value in entity_types
+
+@pytest.mark.asyncio
+async def test_get_contents_archived(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create content
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.NOTE.value,
+        text="Test content"
+    )
+    
+    # Archive content
+    await manager.archive_content(
+        user_id=str(test_user.id),
+        content_id=UUID(content_id)
+    )
+    
+    # Get only archived contents
+    archived_contents = await manager.get_contents(
+        user_id=str(test_user.id),
+        only_archived=True
+    )
+    
+    assert len(archived_contents["contents"]) > 0
+    assert any(c["content_id"] == content_id for c in archived_contents["contents"])
+    
+    # Get non-archived contents
+    active_contents = await manager.get_contents(
+        user_id=str(test_user.id),
+        only_archived=False
+    )
+    
+    # Verify the content is not in active contents
+    content_ids = [c["content_id"] for c in active_contents["contents"]]
+    assert content_id not in content_ids 

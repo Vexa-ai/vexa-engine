@@ -62,6 +62,7 @@ async def get_contents(
     offset: int = Query(0),
     limit: int = Query(20),
     ownership: str = Query(MeetingOwnership.ALL),
+    only_archived: bool = Query(False),
     current_user: tuple = Depends(get_current_user)
 ):
     user_id, user_name, token = current_user
@@ -108,7 +109,8 @@ async def get_contents(
         filters=filter_list,
         offset=offset,
         limit=limit,
-        ownership=ownership
+        ownership=ownership,
+        only_archived=only_archived
     )
 
 @router.get("/{content_id}")

@@ -78,7 +78,7 @@ class APIClient:
 
     # Contents Router Methods
     async def get_contents(self, content_type: Optional[str] = None, filters: Optional[List[Dict]] = None, 
-                          offset: int = 0, limit: int = 20, ownership: str = "all") -> Dict:
+                          offset: int = 0, limit: int = 20, ownership: str = "all", only_archived: bool = False) -> Dict:
         if not self._initialized:
             raise ValueError("Client not initialized. Please call set_email first.")
         params = {
@@ -86,7 +86,8 @@ class APIClient:
             "filters": json.dumps(filters) if filters else None,
             "offset": offset,
             "limit": limit,
-            "ownership": ownership
+            "ownership": ownership,
+            "only_archived": only_archived
         }
         response = requests.get(f"{self.base_url}/contents/all", headers=self.headers, params=params)
         if response.status_code != 200:

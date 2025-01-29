@@ -52,6 +52,7 @@ class ContentManager:
         filters: List[Dict[str, Any]] = None,
         offset: int = 0,
         limit: int = 100,
+        only_archived: bool = False,
         session: AsyncSession = None
     ) -> Dict[str, Any]:
         async with get_session() as session:
@@ -75,7 +76,10 @@ class ContentManager:
                     .where(
                         and_(
                             UserContent.user_id == UUID(user_id),
-                            UserContent.access_level != AccessLevel.REMOVED.value,
+                            case(
+                                (only_archived, UserContent.access_level == AccessLevel.REMOVED.value),
+                                else_=UserContent.access_level != AccessLevel.REMOVED.value
+                            ),
                             case(
                                 (ownership == "my", UserContent.is_owner == True),
                                 (ownership == "shared", UserContent.is_owner == False),
@@ -120,7 +124,10 @@ class ContentManager:
                     .where(
                         and_(
                             UserContent.user_id == UUID(user_id),
-                            UserContent.access_level != AccessLevel.REMOVED.value,
+                            case(
+                                (only_archived, UserContent.access_level == AccessLevel.REMOVED.value),
+                                else_=UserContent.access_level != AccessLevel.REMOVED.value
+                            ),
                             case(
                                 (ownership == "my", UserContent.is_owner == True),
                                 (ownership == "shared", UserContent.is_owner == False),

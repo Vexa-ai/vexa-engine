@@ -5,13 +5,23 @@ from api_client import APIClient, APIError
 from psql_models import ContentType, AccessLevel, EntityType, User, UserToken
 from unittest.mock import patch, AsyncMock, MagicMock
 from google_client import UserInfo
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientPayloadError
+from aiohttp.http_parser import TransferEncodingError
 import asyncio
 from typing import List, Tuple
 
 async def async_iter(items):
     for item in items:
         yield item
+
+class MockStreamResponse:
+    def __init__(self, responses):
+        self.responses = responses
+        self.status = 200
+
+    async def __aiter__(self):
+        for response in self.responses:
+            yield response
 
 @pytest_asyncio.fixture
 async def api_client():
@@ -257,46 +267,93 @@ async def test_entities(api_client):
 
 @pytest.mark.asyncio
 async def test_chat(api_client):
-    with patch('aiohttp.ClientSession.post') as mock_post, \
-         patch('requests.post') as mock_requests_post:
-
-        # Mock responses for content creation
-        mock_requests_post.return_value.status_code = 200
-        mock_requests_post.return_value.json.return_value = {"content_id": "550e8400-e29b-41d4-a716-446655440000"}
-
-        # Create content for chat
-        content = await api_client.add_content(
-            body="Content for chat",
-            content_type=ContentType.NOTE.value
-        )
-        content_id = UUID(content["content_id"])
-
-        # Mock streaming response for chat
+    with patch('aiohttp.ClientSession.post') as mock_post:
+        # Test successful chat with chunks and metadata
         mock_response = AsyncMock()
         mock_response.status = 200
+        chat_responses = [
+            b'data: {"chunk": "Test response chunk 1"}\n\n',
+            b'data: {"chunk": "Test response chunk 2"}\n\n',
+            b'data: {"thread_id": "test-thread-id", "output": "Complete response", "linked_output": "Complete response with context", "service_content": {"context": "test context"}}\n\n'
+        ]
+        mock_response.content = MockStreamResponse(chat_responses)
         mock_post.return_value.__aenter__.return_value = mock_response
 
-        # Prepare chat response data
-        chat_responses = [
-            b'data: {"chunk": "Test response chunk"}\n\n',
-            b'data: {"thread_id": "test-thread-id"}\n\n'
-        ]
-
-        # Set up the content attribute to yield our test responses
-        mock_response.content.iter_any = AsyncMock(return_value=async_iter(chat_responses))
-
-        # Test chat with content - thread is created automatically
-        thread_id = None
+        responses = []
         async for response in api_client.chat(
             query="Summarize this content",
-            content_id=content_id
+            content_id=UUID("550e8400-e29b-41d4-a716-446655440000"),
+            model="gpt-4o-mini",
+            temperature=0.7
         ):
-            if "thread_id" in response:
-                thread_id = response["thread_id"]
-                assert thread_id == "test-thread-id"
-            else:
-                assert "chunk" in response
-                assert response["chunk"] == "Test response chunk"
+            responses.append(response)
+
+        assert len(responses) == 3
+        assert responses[0]["chunk"] == "Test response chunk 1"
+        assert responses[1]["chunk"] == "Test response chunk 2"
+        assert responses[2]["thread_id"] == "test-thread-id"
+        assert responses[2]["output"] == "Complete response"
+        assert responses[2]["linked_output"] == "Complete response with context"
+        assert "service_content" in responses[2]
+        assert responses[2]["service_content"]["context"] == "test context"
+
+        # Test error in response
+        error_response = b'data: {"error": "Test error message"}\n\n'
+        mock_response.content = MockStreamResponse([error_response])
+        
+        responses = []
+        async for response in api_client.chat(
+            query="Summarize this content",
+            content_id=UUID("550e8400-e29b-41d4-a716-446655440000")
+        ):
+            responses.append(response)
+            
+        assert len(responses) == 1
+        assert "error" in responses[0]
+        assert responses[0]["error"] == "Test error message"
+
+        # Test HTTP error
+        mock_response.status = 400
+        mock_response.text = AsyncMock(return_value="Bad request")
+        
+        with pytest.raises(APIError, match="Chat request failed: Bad request"):
+            async for _ in api_client.chat(
+                query="Summarize this content",
+                content_id=UUID("550e8400-e29b-41d4-a716-446655440000")
+            ):
+                pass
+
+        # Test TransferEncodingError
+        mock_response.status = 200
+        mock_response.content = AsyncMock()
+        mock_response.content.__aiter__ = AsyncMock(side_effect=ClientPayloadError(
+            "Response payload is not completed",
+            TransferEncodingError("Not enough data for satisfy transfer length header.")
+        ))
+
+        with pytest.raises(APIError, match="Chat streaming failed"):
+            async for _ in api_client.chat(
+                query="Summarize this content",
+                content_id=UUID("550e8400-e29b-41d4-a716-446655440000")
+            ):
+                pass
+
+        # Test invalid input combinations
+        with pytest.raises(ValueError, match="Cannot specify both content_id and entity_id"):
+            async for _ in api_client.chat(
+                query="test",
+                content_id=UUID("550e8400-e29b-41d4-a716-446655440000"),
+                entity_id=123
+            ):
+                pass
+
+        with pytest.raises(ValueError, match="Cannot specify both content_ids and entity_ids"):
+            async for _ in api_client.chat(
+                query="test",
+                content_ids=[UUID("550e8400-e29b-41d4-a716-446655440000")],
+                entity_ids=[123]
+            ):
+                pass
 
 @pytest.mark.asyncio
 async def test_threads(api_client):
@@ -370,4 +427,142 @@ async def test_threads(api_client):
             
         mock_put.return_value.status_code = 404
         with pytest.raises(ValueError, match="Thread not found"):
-            await api_client.rename_thread("non-existent-thread", "New Name") 
+            await api_client.rename_thread("non-existent-thread", "New Name")
+
+@pytest.mark.asyncio
+async def test_edit_chat_message(api_client):
+    with patch('aiohttp.ClientSession.post') as mock_post:
+        # Mock streaming response
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        chat_responses = [
+            b'data: {"chunk": "Edited chunk 1"}\n\n',
+            b'data: {"chunk": "Edited chunk 2"}\n\n',
+            b'data: {"thread_id": "test-thread-id", "output": "Complete edited response", "service_content": {}}\n\n'
+        ]
+        mock_response.content = MockStreamResponse(chat_responses)
+        mock_post.return_value.__aenter__.return_value = mock_response
+
+        responses = []
+        async for response in api_client.edit_chat_message(
+            thread_id="test-thread-id",
+            message_index=1,
+            new_content="Updated message",
+            model="gpt-4o-mini",
+            temperature=0.7
+        ):
+            responses.append(response)
+
+        assert len(responses) == 3
+        assert responses[0]["chunk"] == "Edited chunk 1"
+        assert responses[1]["chunk"] == "Edited chunk 2"
+        assert responses[2]["thread_id"] == "test-thread-id"
+        assert responses[2]["output"] == "Complete edited response"
+        assert "service_content" in responses[2]
+
+        # Test error handling for TransferEncodingError
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.content = MockStreamResponse([])
+        mock_response.content.__aiter__ = AsyncMock(side_effect=ClientPayloadError(
+            "Response payload is not completed",
+            TransferEncodingError("Not enough data for satisfy transfer length header.")
+        ))
+        mock_post.return_value.__aenter__.return_value = mock_response
+
+        with pytest.raises(APIError) as exc_info:
+            async for response in api_client.edit_chat_message(
+                thread_id="test-thread-id",
+                message_index=1,
+                new_content="Updated message",
+                model="gpt-4o-mini",
+                temperature=0.7
+            ):
+                pass
+        assert "Chat edit streaming failed" in str(exc_info.value)
+
+        # Test invalid response format
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.content = MockStreamResponse([b'invalid data format\n\n'])
+        mock_post.return_value.__aenter__.return_value = mock_response
+        
+        responses = []
+        async for response in api_client.edit_chat_message(
+            thread_id="test-thread-id",
+            message_index=1,
+            new_content="Updated message",
+            model="gpt-4o-mini",
+            temperature=0.7
+        ):
+            responses.append(response)
+        assert len(responses) == 0  # Invalid data should be skipped
+
+        # Test empty response
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.content = MockStreamResponse([])
+        mock_post.return_value.__aenter__.return_value = mock_response
+        
+        responses = []
+        async for response in api_client.edit_chat_message(
+            thread_id="test-thread-id",
+            message_index=1,
+            new_content="Updated message",
+            model="gpt-4o-mini",
+            temperature=0.7
+        ):
+            responses.append(response)
+        assert len(responses) == 0
+
+@pytest.mark.asyncio
+async def test_get_archived_contents(api_client):
+    with patch('requests.get') as mock_get, \
+         patch('requests.post') as mock_post:
+        
+        # Mock responses
+        test_content_id = "550e8400-e29b-41d4-a716-446655440000"
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {"success": True}
+        
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "total": 1,
+            "contents": [{
+                "content_id": test_content_id,
+                "type": ContentType.NOTE.value,
+                "text": "Test content",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "is_indexed": False,
+                "is_owner": True,
+                "access_level": AccessLevel.REMOVED.value,
+                "entities": []
+            }]
+        }
+        
+        # Test getting archived contents
+        contents = await api_client.get_contents(
+            only_archived=True,
+            limit=20,
+            offset=0
+        )
+        
+        assert "contents" in contents
+        assert len(contents["contents"]) == 1
+        assert contents["contents"][0]["content_id"] == test_content_id
+        assert contents["contents"][0]["access_level"] == AccessLevel.REMOVED.value
+
+        # Test getting non-archived contents
+        mock_get.return_value.json.return_value = {
+            "total": 0,
+            "contents": []
+        }
+        
+        contents = await api_client.get_contents(
+            only_archived=False,
+            limit=20,
+            offset=0
+        )
+        
+        assert "contents" in contents
+        assert len(contents["contents"]) == 0 
