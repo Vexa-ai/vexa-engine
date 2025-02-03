@@ -1,3 +1,25 @@
+Business Requirements:
+
+userflows
+
+
+1.User share access to content to another user
+2. User share access to enitity to another user
+    - if enitity is global accross users that will mean that the accessing party will have access to contents that the providing party did not have, we dont want that
+    - if entltly is local to the providing party that means the accessing party will have duplicated entities if they have interacted with this entitiy directly or got aceesss from another user, we dont want that
+
+3. User want to be able to have automatic sharing of both contents and entities accross departments
+
+
+please consider the following solution and provide feedback.
+
+
+
+
+
+
+
+
 #TODO:
 
 

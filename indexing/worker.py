@@ -33,7 +33,7 @@ class IndexingWorker:
         self.debug = debug
         self.error_delay = 5
         self.processing_delay = 1
-        self.test_user_id = "ef7c085b-fdb5-4c94-b7b6-a61a3d04c210" if debug else None
+        self.test_user_id = "f05bd139-3fa1-4563-a900-2516dffb67b3" if debug else None
         
         self.logger = logging.getLogger('indexing_worker')
         self.logger.setLevel(logging.DEBUG if debug else logging.INFO)

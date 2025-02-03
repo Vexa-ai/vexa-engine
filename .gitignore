@@ -6,13 +6,13 @@ qdrant_storage/
 *.qdrant.tmp
 qdrant.lock
 
-
-__pycache__/
-*.pyc
-
 # Python cache files
 __pycache__/
 *.pyc
+
+# Logs
+logs/
+*.log
 
 # Specific pycache files
 *.cpython-311.pyc

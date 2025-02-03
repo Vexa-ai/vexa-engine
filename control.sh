@@ -1,7 +1,17 @@
 #!/bin/bash
 
-# Create logs directory if it doesn't exist
+# Create required directories
 mkdir -p /app/logs
+mkdir -p /var/run/supervisor
+
+# Function to ensure supervisord is running
+ensure_supervisord() {
+    if ! pgrep supervisord > /dev/null; then
+        echo "Starting supervisord..."
+        supervisord -c /app/supervisord.conf
+        sleep 2  # Give it time to start
+    fi
+}
 
 wait_for_status() {
     local target_status=$1
@@ -21,24 +31,28 @@ wait_for_status() {
 
 case "$1" in
     start)
+        ensure_supervisord
         echo "Starting all services..."
         supervisorctl start all
         wait_for_status "RUNNING" || echo "Warning: Not all services started successfully"
         supervisorctl status
         ;;
     stop)
+        ensure_supervisord
         echo "Stopping all services..."
         supervisorctl stop all
         wait_for_status "STOPPED" || echo "Warning: Not all services stopped successfully"
         supervisorctl status
         ;;
     restart)
+        ensure_supervisord
         echo "Restarting all services..."
         supervisorctl restart all
         wait_for_status "RUNNING" || echo "Warning: Not all services restarted successfully"
         supervisorctl status
         ;;
     status)
+        ensure_supervisord
         supervisorctl status
         ;;
     logs)
@@ -51,3 +65,20 @@ case "$1" in
         exit 1
         ;;
 esac 
+
+
+
+# # Start all services (API, worker, and monitor)
+# ./control.sh start
+
+# # Stop all services
+# ./control.sh stop
+
+# # Restart all services
+# ./control.sh restart
+
+# # Check status of all services
+# ./control.sh status
+
+# # View available log files and their locations
+# ./control.sh logs

@@ -9,9 +9,10 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
+#ef7c085b-fdb5-4c94-b7b6-a61a3d04c210
+#f05bd139-3fa1-4563-a900-2516dffb67b3
 async def monitor_loop():
-    monitor = MeetingsMonitor(test_user_id="ef7c085b-fdb5-4c94-b7b6-a61a3d04c210")
+    monitor = MeetingsMonitor(test_user_id="f05bd139-3fa1-4563-a900-2516dffb67b3")
     
     while True:
        # try:

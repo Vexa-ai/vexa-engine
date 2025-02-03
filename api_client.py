@@ -43,9 +43,9 @@ class APIClient:
         if not token:
             raise ValueError(f"No token found for email: {email}")
         self.headers = {
-            "Content-Type": "application/json",
+         #   "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "X-User-Email": email
+         #   "X-User-Email": email
         }
         self._initialized = True
 

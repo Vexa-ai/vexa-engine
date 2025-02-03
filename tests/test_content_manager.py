@@ -8,8 +8,9 @@ from psql_models import (
     EntityType, AccessLevel, async_session, content_entity_association
 )
 from sqlalchemy import select, and_
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 from indexing.redis_keys import RedisKeys
+from vexa import VexaAPI, VexaAPIError
 
 @pytest.mark.asyncio
 async def test_add_content_basic(setup_test_users):
@@ -612,3 +613,141 @@ async def test_get_contents_archived(setup_test_users):
     # Verify the content is not in active contents
     content_ids = [c["content_id"] for c in active_contents["contents"]]
     assert content_id not in content_ids 
+
+@pytest.mark.asyncio
+async def test_get_content_meeting_type(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create meeting content with no text
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.MEETING.value,
+        text=""
+    )
+    
+    mock_transcription = (
+        None,  # df
+        "Test meeting transcription",  # formatted_input
+        datetime.now(),  # start_time
+        None,  # _
+        "Test transcript"  # transcript
+    )
+    
+    with patch('content_manager.get_meeting_token', new_callable=AsyncMock) as mock_token, \
+         patch('content_manager.VexaAPI') as mock_vexa:
+        # Setup mocks
+        mock_token.return_value = "test_token"
+        mock_vexa_instance = MagicMock()
+        mock_vexa_instance.get_transcription = AsyncMock(return_value=mock_transcription)
+        mock_vexa.return_value = mock_vexa_instance
+        
+        # Get content
+        content = await manager.get_content(
+            user_id=str(test_user.id),
+            content_id=UUID(content_id)
+        )
+        
+        assert content is not None
+        assert content.text == "Test meeting transcription"
+        assert content.type == ContentType.MEETING.value
+        mock_token.assert_called_once_with(UUID(content_id))
+        mock_vexa_instance.get_transcription.assert_called_once_with(
+            meeting_session_id=UUID(content_id),
+            use_index=True
+        )
+
+@pytest.mark.asyncio
+async def test_get_content_meeting_type_no_transcription(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create meeting content with no text
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.MEETING.value,
+        text=""
+    )
+    
+    with patch('content_manager.get_meeting_token', new_callable=AsyncMock) as mock_token, \
+         patch('content_manager.VexaAPI') as mock_vexa:
+        # Setup mocks
+        mock_token.return_value = "test_token"
+        mock_vexa_instance = MagicMock()
+        mock_vexa_instance.get_transcription = AsyncMock(return_value=None)
+        mock_vexa.return_value = mock_vexa_instance
+        
+        # Get content
+        content = await manager.get_content(
+            user_id=str(test_user.id),
+            content_id=UUID(content_id)
+        )
+        
+        assert content is not None
+        assert content.text == ""
+        assert content.type == ContentType.MEETING.value
+
+@pytest.mark.asyncio
+async def test_get_content_meeting_type_with_text(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create meeting content with existing text
+    existing_text = "Existing meeting text"
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.MEETING.value,
+        text=existing_text
+    )
+    
+    with patch('content_manager.get_meeting_token') as mock_token, \
+         patch('content_manager.VexaAPI') as mock_vexa:
+        # Get content - should not call VexaAPI since text exists
+        content = await manager.get_content(
+            user_id=str(test_user.id),
+            content_id=UUID(content_id)
+        )
+        
+        assert content is not None
+        assert content.text == existing_text
+        assert content.type == ContentType.MEETING.value
+        mock_token.assert_not_called()
+        mock_vexa.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_get_content_meeting_type_api_error(setup_test_users):
+    users = setup_test_users
+    test_user, test_token = users[0]
+    
+    manager = await ContentManager.create()
+    
+    # Create meeting content with no text
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.MEETING.value,
+        text=""
+    )
+    
+    with patch('content_manager.get_meeting_token', new_callable=AsyncMock) as mock_token, \
+         patch('content_manager.VexaAPI') as mock_vexa:
+        # Setup mocks
+        mock_token.return_value = "test_token"
+        mock_vexa_instance = MagicMock()
+        mock_vexa_instance.get_transcription = AsyncMock(side_effect=VexaAPIError("API Error"))
+        mock_vexa.return_value = mock_vexa_instance
+        
+        # Get content - should handle API error gracefully
+        content = await manager.get_content(
+            user_id=str(test_user.id),
+            content_id=UUID(content_id)
+        )
+        
+        assert content is not None
+        assert content.text == ""
+        assert content.type == ContentType.MEETING.value 

@@ -12,8 +12,9 @@ from psql_models import (
 from psql_helpers import get_session
 from redis import Redis
 from indexing.redis_keys import RedisKeys
-from psql_access import has_content_access
+from psql_access import has_content_access, get_meeting_token
 from psql_sharing import create_share_link, accept_share_link
+from vexa import VexaAPI, VexaAPIError
 import logging
 import os
 
@@ -228,10 +229,29 @@ class ContentManager:
                 
             content, access_level, is_owner, entity_names, entity_types = row
             
+            text = content.text
+            if content.type == ContentType.MEETING.value and not text:
+                try:
+                    token = await get_meeting_token(content_id)
+                    vexa_api = VexaAPI(token=token)
+                    transcription = await vexa_api.get_transcription(meeting_session_id=content_id, use_index=True)
+                    if transcription:
+                        df, formatted_input, start_time, _, transcript = transcription
+                        text = json.dumps(transcript)
+                    else:
+                        logger.warning(f"No transcription found for meeting {content_id}")
+                        text = ""
+                except Exception as e:
+                    logger.error(f"Error getting meeting transcription: {str(e)}")
+                    text = ""
+            
+            if text is None:
+                text = ""
+            
             return ContentData(
                 content_id=str(content.id),
                 type=content.type,
-                text=content.text,
+                text=text,
                 timestamp=content.timestamp,
                 is_indexed=content.is_indexed,
                 access_level=access_level,
@@ -268,11 +288,16 @@ class ContentManager:
                 except AttributeError:
                     # Handle dict input for backward compatibility
                     try:
-                        EntityType(entity_data["type"])
+                        # First check for name
                         if not entity_data.get("name"):
                             raise ValueError("Entity name is required")
-                    except (KeyError, ValueError):
-                        raise ValueError(f"Invalid entity type. Must be one of: {[e.value for e in EntityType]}")
+                        # Then validate type
+                        try:
+                            EntityType(entity_data["type"])
+                        except (KeyError, ValueError):
+                            raise ValueError(f"Invalid entity type. Must be one of: {[e.value for e in EntityType]}")
+                    except KeyError:
+                        raise ValueError("Entity name is required")
             
         async with get_session() as session:
             async with session.begin():
