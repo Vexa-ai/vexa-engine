@@ -15,6 +15,7 @@ from routers.chat import router as chat_router
 from routers.contents import router as contents_router
 from routers.entities import router as entities_router
 from routers.threads import router as threads_router
+from routers.prompts import router as prompts_router
 
 from contextlib import asynccontextmanager
 
@@ -90,6 +91,7 @@ app.include_router(chat_router)
 app.include_router(contents_router)
 app.include_router(entities_router)
 app.include_router(threads_router)
+app.include_router(prompts_router)
 
 if __name__ == "__main__":
     import uvicorn

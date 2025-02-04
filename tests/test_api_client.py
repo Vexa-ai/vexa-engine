@@ -324,12 +324,14 @@ async def test_chat(api_client):
                 pass
 
         # Test TransferEncodingError
+        async def error_generator():
+            raise ClientPayloadError("Response payload is not completed", TransferEncodingError("Not enough data for satisfy transfer length header."))
+            yield
+
+        mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.content = AsyncMock()
-        mock_response.content.__aiter__ = AsyncMock(side_effect=ClientPayloadError(
-            "Response payload is not completed",
-            TransferEncodingError("Not enough data for satisfy transfer length header.")
-        ))
+        mock_response.content = error_generator()
+        mock_post.return_value.__aenter__.return_value = mock_response
 
         with pytest.raises(APIError, match="Chat streaming failed"):
             async for _ in api_client.chat(
@@ -461,13 +463,13 @@ async def test_edit_chat_message(api_client):
         assert "service_content" in responses[2]
 
         # Test error handling for TransferEncodingError
+        async def error_generator():
+            raise ClientPayloadError("Response payload is not completed", TransferEncodingError("Not enough data for satisfy transfer length header."))
+            yield
+
         mock_response = AsyncMock()
         mock_response.status = 200
-        mock_response.content = MockStreamResponse([])
-        mock_response.content.__aiter__ = AsyncMock(side_effect=ClientPayloadError(
-            "Response payload is not completed",
-            TransferEncodingError("Not enough data for satisfy transfer length header.")
-        ))
+        mock_response.content = error_generator()
         mock_post.return_value.__aenter__.return_value = mock_response
 
         with pytest.raises(APIError) as exc_info:

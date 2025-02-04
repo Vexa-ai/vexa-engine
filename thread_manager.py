@@ -296,6 +296,7 @@ class ThreadManager:
                         Thread.meta['entities'].contains(entity_names)
                     )
                 )
+                .order_by(Thread.timestamp.desc())
             )
             
             result = await session.execute(query)

@@ -113,7 +113,7 @@ class ContentManager:
                                 )
                             )
 
-                base_query = base_query.group_by(Content.id, Content.timestamp, Content.type, Content.text, Content.is_indexed, UserContent.is_owner, UserContent.access_level)
+                base_query = base_query.group_by(Content.id, Content.timestamp, Content.type, Content.text, Content.is_indexed, UserContent.is_owner, UserContent.access_level).order_by(Content.timestamp.desc())
 
                 # Count total results using a simpler query
                 count_query = (

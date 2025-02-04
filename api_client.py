@@ -284,7 +284,9 @@ class APIClient:
                         raise APIError(f"Chat request failed: {error_text}")
 
                     try:
+                        got_data = False
                         async for line in response.content:
+                            got_data = True
                             try:
                                 line = line.decode('utf-8').strip()
                                 if line.startswith('data: '):
@@ -295,7 +297,11 @@ class APIClient:
                                         continue
                             except UnicodeDecodeError:
                                 continue
-                    except (aiohttp.ClientPayloadError, aiohttp.ClientError) as e:
+                        if not got_data:
+                            raise APIError("No data received from stream")
+                    except (aiohttp.ClientPayloadError, aiohttp.ClientError, TypeError) as e:
+                        if isinstance(e, TypeError) and 'does not implement __anext__' not in str(e):
+                            raise
                         raise APIError(f"Chat streaming failed: {str(e)}")
         except Exception as e:
             if isinstance(e, APIError):
@@ -324,7 +330,9 @@ class APIClient:
                         raise APIError(f"Chat edit request failed: {error_text}")
 
                     try:
+                        got_data = False
                         async for line in response.content:
+                            got_data = True
                             try:
                                 line = line.decode('utf-8').strip()
                                 if line.startswith('data: '):
@@ -335,7 +343,9 @@ class APIClient:
                                         continue
                             except UnicodeDecodeError:
                                 continue
-                    except (aiohttp.ClientPayloadError, aiohttp.ClientError) as e:
+                    except (aiohttp.ClientPayloadError, aiohttp.ClientError, TypeError) as e:
+                        if isinstance(e, TypeError) and 'does not implement __anext__' not in str(e):
+                            raise
                         raise APIError(f"Chat edit streaming failed: {str(e)}")
         except Exception as e:
             if isinstance(e, APIError):
@@ -406,4 +416,69 @@ class APIClient:
         elif response.status_code == 404:
             raise ValueError("Thread not found")
         else:
-            raise APIError(f"Failed to rename thread: {response.text}") 
+            raise APIError(f"Failed to rename thread: {response.text}")
+
+    # Prompts Router Methods
+    async def create_prompt(self, prompt: str, prompt_type: str, alias: Optional[str] = None) -> Dict[str, int]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        data = {
+            "prompt": prompt,
+            "type": prompt_type,
+            "alias": alias
+        }
+        response = requests.post(f"{self.base_url}/prompts", headers=self.headers, json=data)
+        if response.status_code != 200:
+            raise APIError(f"Failed to create prompt: {response.text}")
+        return response.json()
+
+    async def create_global_prompt(self, prompt: str, prompt_type: str, alias: Optional[str] = None) -> Dict[str, int]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        data = {
+            "prompt": prompt,
+            "type": prompt_type,
+            "alias": alias
+        }
+        response = requests.post(f"{self.base_url}/prompts/global", headers=self.headers, json=data)
+        if response.status_code != 200:
+            raise APIError(f"Failed to create global prompt: {response.text}")
+        return response.json()
+
+    async def get_prompts(self, prompt_type: Optional[str] = None) -> List[Dict]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        params = {"prompt_type": prompt_type} if prompt_type else {}
+        response = requests.get(f"{self.base_url}/prompts", headers=self.headers, params=params)
+        if response.status_code != 200:
+            raise APIError(f"Failed to get prompts: {response.text}")
+        return response.json()
+
+    async def update_prompt(self, prompt_id: int, prompt: Optional[str] = None, 
+                          prompt_type: Optional[str] = None, alias: Optional[str] = None) -> Dict[str, bool]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        data = {
+            "prompt": prompt,
+            "type": prompt_type,
+            "alias": alias
+        }
+        data = {k: v for k, v in data.items() if v is not None}
+        response = requests.put(f"{self.base_url}/prompts/{prompt_id}", headers=self.headers, json=data)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise ValueError("Prompt not found")
+        else:
+            raise APIError(f"Failed to update prompt: {response.text}")
+
+    async def delete_prompt(self, prompt_id: int) -> Dict[str, bool]:
+        if not self._initialized:
+            raise ValueError("Client not initialized. Please call set_email first.")
+        response = requests.delete(f"{self.base_url}/prompts/{prompt_id}", headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            raise ValueError("Prompt not found")
+        else:
+            raise APIError(f"Failed to delete prompt: {response.text}") 

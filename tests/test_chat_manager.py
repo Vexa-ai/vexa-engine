@@ -55,7 +55,8 @@ async def test_chat_streaming_response(chat_manager):
     ]
     
     async def mock_unified_chat(*args, **kwargs):
-        return AsyncIteratorMock(expected_chunks[:])
+        for item in expected_chunks:
+            yield item
     
     with patch('chat.UnifiedChatManager.chat', new=mock_unified_chat):
         responses = []
@@ -72,8 +73,11 @@ async def test_chat_streaming_response(chat_manager):
 @pytest.mark.asyncio
 async def test_chat_transfer_encoding_error(chat_manager):
     # Test handling of ClientPayloadError (which includes transfer encoding errors)
-    async def mock_unified_chat(*args, **kwargs):
-        raise ClientPayloadError("Not enough data for satisfy transfer length header.")
+    def mock_unified_chat(*args, **kwargs):
+        async def _agen():
+            raise ClientPayloadError("Not enough data for satisfy transfer length header.")
+            yield
+        return _agen()
     
     with patch('chat.UnifiedChatManager.chat', new=mock_unified_chat):
         responses = []
@@ -100,7 +104,7 @@ async def test_chat_with_content_scope(chat_manager):
     
     async def mock_unified_chat(*args, **kwargs):
         assert kwargs.get('content_id') == content_id
-        return AsyncIteratorMock([expected_response])
+        yield expected_response
     
     with patch('chat.UnifiedChatManager.chat', new=mock_unified_chat):
         responses = []
@@ -132,7 +136,8 @@ async def test_edit_and_continue_streaming(chat_manager):
     async def mock_edit(*args, **kwargs):
         assert kwargs.get('thread_id') == thread_id
         assert kwargs.get('message_index') == 1
-        return AsyncIteratorMock(expected_chunks[:])
+        for item in expected_chunks:
+            yield item
     
     with patch('chat.UnifiedChatManager.edit_and_continue', new=mock_edit):
         responses = []
@@ -154,7 +159,7 @@ async def test_chat_model_params(chat_manager):
     async def mock_unified_chat(*args, **kwargs):
         assert kwargs.get('model') == "gpt-4o-mini"
         assert kwargs.get('temperature') == 0.7
-        return AsyncIteratorMock([{"chunk": "Response"}])
+        yield {"chunk": "Response"}
     
     with patch('chat.UnifiedChatManager.chat', new=mock_unified_chat):
         responses = []

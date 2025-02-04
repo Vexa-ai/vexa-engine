@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, Table, Boolean
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, Table, Boolean, Enum as SAEnum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker, joinedload
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID, ARRAY, JSONB
@@ -24,6 +24,7 @@ from sqlalchemy.pool import AsyncAdaptedQueuePool
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
+from sqlalchemy.dialects.postgresql import ENUM as PostgresENUM
 
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', '127.0.0.1')
 POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
@@ -286,6 +287,15 @@ class UTMParams(Base):
         Index('idx_utm_params_user_id', 'user_id'),
     )
 
+
+# Insert the PromptTypeEnum definition if not present
+class PromptTypeEnum(str, Enum):
+    MEETING = 'meeting'
+    NOTE = 'note'
+    SPEAKER = 'speaker'
+    TAG = 'tag'
+    CHAT = 'chat'
+
 class Prompt(Base):
     __tablename__ = 'prompts'
 
@@ -293,6 +303,7 @@ class Prompt(Base):
     prompt = Column(Text, nullable=False)
     alias = Column(String(255), nullable=True)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
+    type = Column(PostgresENUM('meeting', 'note', 'speaker', 'tag', 'chat', name='prompttypeenum'), nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     
     user = relationship('User')
@@ -300,6 +311,7 @@ class Prompt(Base):
 
     __table_args__ = (
         Index('idx_prompts_user_id', 'user_id'),
+        CheckConstraint(type.in_([e.value for e in PromptTypeEnum]), name='valid_prompt_type')
     )
 
 
