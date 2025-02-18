@@ -1,159 +1,173 @@
-#######################################################
-## PLANSTATE FILE: Pydantic AI Chat System Integration
-#######################################################
+# Transcription Processing Migration Plan
 
-#--------------------------------------
-# META-INFO
-#--------------------------------------
-File Name: plan_state.txt
-Version: 1.2
+## Overview
+Moving transcription processing from @engine to @dashboard while simplifying the architecture by removing Redis and mutable/immutable states. Transcript-speaker matching will be moved to @audio service.
 
-#--------------------------------------
-# STAGE TRACKING
-#--------------------------------------
-Current Iteration: 3
-Current Stage (Workflow Ref): 3.1
-Confidence Score: 92
+## Key Decisions
 
-#--------------------------------------
-# LAYER 0: HIGH-LEVEL GOAL
-#--------------------------------------
-0.1_SummaryOfGoal: >
-  Upgrade chat system to use Pydantic AI for agentic capabilities while maintaining existing PostgreSQL message storage and threading functionality, and integrating hybrid search as a tool.
+1. Data Flow Changes:
+   - Remove Redis layer completely
+   - Direct database storage from audio service transcriptions
+   - Transcript-speaker matching moved to @audio service
+   - Remove separate diarization process
 
-0.2_ConstraintsOrConsiderations: >
-  - Must maintain existing message persistence in PostgreSQL
-  - Keep current threading system intact
-  - Wrap hybrid_search as a tool for agents
-  - Ensure proper user management and persistence
-  - Handle database foreign key constraints
-  - Keep compact code style without unnecessary whitespace
-  - Maintain high performance
-  - Clean up test data after testing
+2. Timestamp Handling:
+   - Single timestamp approach in output data
+   - Audio service provides segment timestamps internally
+   - Final API/database only exposes start_timestamp
+   - Maintain chronological ordering of transcripts
 
-0.3_Confidence: 92
+3. Content Processing:
+   - Keep HTML formatting and short version fields in schema
+   - Defer implementation of HTML formatting for later stages
+   - Maintain content_html and content_html_short in database structure
 
-#--------------------------------------
-# LAYER 1: DOMAIN & BUSINESS
-#--------------------------------------
-1.1_DomainDetails: >
-  - Chat system needs agentic capabilities via Pydantic AI
-  - Messages must persist in PostgreSQL
-  - Threading system must remain functional
-  - Hybrid search becomes available as agent tool
-  - System should maintain current API compatibility
-  - Users must exist in database before thread creation
-  - Test data should not pollute production database
+4. Speaker Information:
+   - Transcript-speaker matching done in @audio service
+   - Each transcript comes with pre-matched speaker info
+   - No speaker processing needed in dashboard/engine
 
-1.2_BusinessConstraints: >
-  - Zero data loss during upgrade
-  - Minimal system downtime
-  - Backward compatibility with existing APIs
-  - Performance must remain consistent
-  - Data integrity through proper foreign key relationships
-  - Clean test environment
+## Implementation Phases
 
-1.3_QuestionsOrAmbiguities: >
-  - How to handle tool rate limiting? [TODO]
-  - Error handling for tool failures? [TODO]
-  - State management between agent calls? [TODO]
-  - User creation/validation flow? [DONE]
-  - Test data cleanup strategy? [IN PROGRESS]
+### Phase 1 - Audio Service Refactoring
+1. Code Changes:
+   - Remove diarization-related code
+   - Update transcription processor to include speaker matching
+   - Modify segment output format to include matched speakers
+   - Update API endpoints to reflect new data structure
 
-1.4_Confidence: 88
+2. Test Cases:
+   - Unit Tests:
+     - Test speaker matching accuracy
+     - Verify timestamp handling
+     - Validate segment format
+   - Integration Tests:
+     - End-to-end transcription flow
+     - Audio processing pipeline
+     - API response format
+   - Performance Tests:
+     - Processing time benchmarks
+     - Memory usage monitoring
 
-#--------------------------------------
-# LAYER 2: ARCHITECTURE / TECH RESEARCH
-#--------------------------------------
-2.1_Components: >
-  1. Pydantic AI Integration:
-     - Define agent schemas and tools [DONE]
-     - Create tool wrappers for hybrid_search [DONE]
-     - Implement agent state management [DONE]
-  
-  2. PostgreSQL Layer:
-     - Maintain existing message storage [DONE]
-     - Add agent state storage if needed [DONE]
-     - Keep thread management intact [DONE]
-     - Ensure user existence before thread creation [DONE]
-  
-  3. User Management:
-     - Add user creation/validation [DONE]
-     - Handle test user scenarios [DONE]
-     - Maintain data integrity [DONE]
-     - Add test data cleanup [TODO]
-  
-  4. Hybrid Search Tool:
-     - Wrap existing functionality [DONE]
-     - Add rate limiting and caching [TODO]
-     - Implement error handling [TODO]
+### Phase 2 - Dashboard Database Setup
+1. Code Changes:
+   - Implement transcript database schema
+   - Create database migrations
+   - Set up basic DAL layer
+   - Add database health checks
 
-2.2_Implementation: >
-  1. Core Updates:
-     - Add Pydantic AI dependencies [DONE]
-     - Create agent base classes [DONE]
-     - Implement tool schemas [DONE]
-  
-  2. Database Layer:
-     - Keep existing schema [DONE]
-     - Add user management [DONE]
-     - Maintain session management [DONE]
-     - Add cleanup procedures [TODO]
-  
-  3. Tool Integration:
-     - Wrap hybrid_search [DONE]
-     - Add caching layer [TODO]
-     - Implement retries [TODO]
+2. Test Cases:
+   - Unit Tests:
+     - DAL operations (CRUD)
+     - Schema validations
+     - Timestamp handling
+   - Integration Tests:
+     - Migration scripts
+     - Database connections
+     - Transaction handling
+   - Performance Tests:
+     - Query performance
+     - Index effectiveness
 
-2.3_Confidence: 92
+### Phase 3 - Dashboard Integration
+1. Code Changes:
+   - Create audio service client
+   - Implement transcript processor
+   - Set up API endpoints
+   - Add error handling and retries
 
-#--------------------------------------
-# LAYER 3: SOLUTION PROPOSAL
-#--------------------------------------
-3.1_Implementation: >
-  Phase 1: Setup & Core [DONE]
-  - Add Pydantic AI dependencies
-  - Create base agent classes
-  - Define tool schemas
-  
-  Phase 2: Tool Integration [DONE]
-  - Wrap hybrid_search
-  - Add caching
-  - Implement rate limiting
-  
-  Phase 3: Database Integration [IN PROGRESS]
-  - Verify message persistence [DONE]
-  - Add user management [DONE]
-  - Test thread management [DONE]
-  - Add test data cleanup [TODO]
-  
-  Phase 4: Testing & Validation [IN PROGRESS]
-  - Unit tests for tools [TODO]
-  - Integration tests [IN PROGRESS]
-  - Performance testing [TODO]
-  - Test data management [TODO]
+2. Test Cases:
+   - Unit Tests:
+     - Client methods
+     - Error handling
+     - Retry logic
+   - Integration Tests:
+     - Audio service communication
+     - End-to-end transcript flow
+     - Error recovery scenarios
+   - Performance Tests:
+     - Response times
+     - Concurrent requests
+     - Resource usage
 
-3.2_RiskMitigation: >
-  - Implement feature flags
-  - Add rollback procedures
-  - Create monitoring
-  - Phase rollout strategy
-  - Add user validation checks [DONE]
-  - Add test data cleanup procedures [TODO]
+### Phase 4 - Migration & Cleanup
+1. Code Changes:
+   - Remove Redis dependencies
+   - Clean up old code paths
+   - Update documentation
+   - Add monitoring
 
-3.3_Confidence: 90
+2. Test Cases:
+   - Migration Tests:
+     - Data consistency checks
+     - No data loss validation
+     - Rollback procedures
+   - System Tests:
+     - Full system functionality
+     - Performance comparison
+     - Resource usage validation
 
-#--------------------------------------
-# LOG & NEXT STEPS
-#--------------------------------------
-log_of_updates: |
-  2024-03-21: Initial plan for Pydantic AI integration created
-  2024-03-21: Updated plan to include user management requirements
-  2024-03-21: Updated progress after implementing user creation and validation
+## Database Schema
 
-next_immediate_steps: >
-  1. Add test data cleanup function
-  2. Add cleanup after test execution
-  3. Add error handling for cleanup failures
-  4. Add test environment isolation
-  5. Implement proper test user lifecycle management
+```sql
+CREATE TABLE transcripts (
+    id UUID PRIMARY KEY,
+    meeting_id VARCHAR NOT NULL,
+    content TEXT NOT NULL,
+    content_html TEXT,
+    content_html_short TEXT,
+    start_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    speaker VARCHAR,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+## API Endpoints
+
+1. Audio Service (New):
+```python
+GET /v1/segments/transcripts
+Response:
+{
+    "meeting_id": str,
+    "segments": [
+        {
+            "content": str,
+            "speaker": str,
+            "start_timestamp": datetime,
+            "confidence": float
+        }
+    ]
+}
+```
+
+2. Dashboard Service:
+```python
+GET /api/v1/transcripts
+Query Parameters:
+- meeting_id: str
+- last_timestamp: datetime (optional)
+- limit: int (optional)
+
+POST /api/v1/transcripts
+Body:
+{
+    "meeting_id": str,
+    "content": str,
+    "speaker": str,
+    "start_timestamp": datetime
+}
+```
+
+## Next Steps
+
+1. Begin Audio Service Refactoring:
+   - Remove diarization code
+   - Update processor class
+   - Add speaker matching
+   - Write initial tests
+
+2. Start Dashboard Setup:
+   - Create database migrations
+   - Set up basic DAL
+   - Implement test framework
