@@ -235,7 +235,7 @@ from urllib.parse import urlparse, parse_qs
 #/api/v1/tools/meetings/active
 class VexaAuth:
     def __init__(self):
-        self.base_url = API_URL
+
         self.vexa_api_url = VEXA_API_URL
         self.service_token = os.getenv('VEXA_SERVICE_TOKEN')
         self.google_client = GoogleClient()

@@ -1,0 +1,112 @@
+name: dev_dashboard
+
+
+services:
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: 5432
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    networks:
+      - dev_backend_network
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    networks:
+      - dev_backend_network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    volumes:
+      - redis_data:/data
+    networks:
+      - dev_backend_network
+    restart: unless-stopped
+
+  elasticsearch:
+    image: elasticsearch:8.12.1
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - dev_backend_network
+    restart: unless-stopped
+
+  vexa-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - QDRANT_HOST=${QDRANT_HOST}
+      - QDRANT_PORT=${QDRANT_PORT}
+      - VEXA_API_URL=${VEXA_API_URL}
+      - API_URL=${API_URL}
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      - ANTROPIC_API_KEY=${ANTROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - VEXA_TOKEN=${VEXA_TOKEN}
+      - VEXA_SERVICE_TOKEN=${VEXA_SERVICE_TOKEN}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - TOGETHERAI_API_KEY=${TOGETHERAI_API_KEY}
+      - TOGETHERAI_API_KEY=${TOGETHERAI_API_KEY}
+      - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
+      - ELASTICSEARCH_PORT=${ELASTICSEARCH_PORT}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - API_PORT=${API_PORT}
+      - OPEN_ROUTER_API_KEY=${OPEN_ROUTER_API_KEY}
+    ports:
+      - "127.0.0.1:${API_PORT}:${API_PORT}"
+    depends_on:
+      - postgres
+      - qdrant
+      - redis
+    volumes:
+      - .:/app
+      - backend_venv:/app/.venv
+      - backend_cache:/app/__pycache__
+    networks:
+      - dev_backend_network
+    command: ["tail", "-f", "/dev/null"]
+    #command: ["/bin/bash", "-c", "/app/control.sh start && tail -f /dev/null"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    user: root
+
+networks:
+  dev_backend_network:
+    driver: bridge
+
+volumes:
+  postgres_data_dev:
+  backend_venv:
+  backend_cache:
+  redis_data:
+  elasticsearch_data:
+
+
+
+  #docker exec -it -u root multiassistant-vexa-backend-1 /bin/bash
+
+  # docker exec -it -u root multiassistant-vexa-frontend-1 /bin/bash 

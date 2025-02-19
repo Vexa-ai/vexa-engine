@@ -1,173 +1,519 @@
-# Transcription Processing Migration Plan
+## Simplified Database Structure
 
-## Overview
-Moving transcription processing from @engine to @dashboard while simplifying the architecture by removing Redis and mutable/immutable states. Transcript-speaker matching will be moved to @audio service.
+### Core Tables
 
-## Key Decisions
+1. Content Table:
+   - id (PK, UUID)
+   - type (enum: meeting, note, title, summary)
+   - text (String)  # For storing raw content
+   - timestamp (timestamp)  # For content creation/occurrence time
+   - parent_id (FK to Content, nullable)  # For hierarchical content
+   - is_indexed (Boolean, default false)  # Track indexing status
+   - last_update (timestamp)  # For sync tracking
+   - content_metadata (JSONB)  # For flexible metadata storage
 
-1. Data Flow Changes:
-   - Remove Redis layer completely
-   - Direct database storage from audio service transcriptions
-   - Transcript-speaker matching moved to @audio service
-   - Remove separate diarization process
+2. Transcript Table:
+   - id (PK, UUID)
+   - content_id (FK to Content)
+   - text_content (String)
+   - start_timestamp (timestamp with timezone)
+   - end_timestamp (timestamp with timezone)
+   - confidence (float)
+   - original_segment_id (integer)  # For legacy API mapping
+   - word_timing_data (JSONB)  # For word-level timing info
+   - segment_metadata (JSONB)  # For speaker info and other metadata
 
-2. Timestamp Handling:
-   - Single timestamp approach in output data
-   - Audio service provides segment timestamps internally
-   - Final API/database only exposes start_timestamp
-   - Maintain chronological ordering of transcripts
+3. Entity Table:
+   - id (PK)
+   - type (enum: SPEAKER, TAG)
+   - name (String)
+   - user_id (FK to User, optional)
+     * When set, entity is private to this user
+     * When null, entity is global
+   - is_global (Boolean, default false)
+   - entity_metadata (JSONB)  # For flexible metadata storage
+   - created_at (timestamp)
 
-3. Content Processing:
-   - Keep HTML formatting and short version fields in schema
-   - Defer implementation of HTML formatting for later stages
-   - Maintain content_html and content_html_short in database structure
+### Legacy API Compatibility
 
-4. Speaker Information:
-   - Transcript-speaker matching done in @audio service
-   - Each transcript comes with pre-matched speaker info
-   - No speaker processing needed in dashboard/engine
+1. Meeting Data Structure:
+   - Mapped to Content table with type='meeting'
+   - Legacy fields stored in content_metadata:
+     * meeting_id -> original_id
+     * start_time -> mapped to timestamp
+     * participants -> stored as user references
+     * recording_status -> status tracking
+     * meeting_type -> meeting classification
 
-## Implementation Phases
+2. Transcript Segment Mapping:
+   - Each segment maps to a Transcript record
+   - Legacy fields mapping:
+     * segment_id -> original_segment_id
+     * content -> text_content
+     * start_timestamp -> start_timestamp
+     * end_timestamp -> end_timestamp
+     * confidence -> confidence
+     * words -> word_timing_data
+     * speaker -> segment_metadata.speaker
+     * server_timestamp -> segment_metadata.server_timestamp
+     * transcription_timestamp -> segment_metadata.transcription_timestamp
+     * present_user_ids -> segment_metadata.present_user_ids
+     * partially_present_user_ids -> segment_metadata.partially_present_user_ids
 
-### Phase 1 - Audio Service Refactoring
-1. Code Changes:
-   - Remove diarization-related code
-   - Update transcription processor to include speaker matching
-   - Modify segment output format to include matched speakers
-   - Update API endpoints to reflect new data structure
+3. Search Document Integration:
+   - Content and Transcript tables support search document generation
+   - Required fields for search indexing:
+     * content_id (UUID)
+     * timestamp (datetime)
+     * text content (String)
+     * speaker information
+     * topic classification
+     * content type
 
-2. Test Cases:
-   - Unit Tests:
-     - Test speaker matching accuracy
-     - Verify timestamp handling
-     - Validate segment format
-   - Integration Tests:
-     - End-to-end transcription flow
-     - Audio processing pipeline
-     - API response format
-   - Performance Tests:
-     - Processing time benchmarks
-     - Memory usage monitoring
+4. Processing Queue Integration:
+   - Content.is_indexed tracks indexing status
+   - Content.last_update enables sync tracking
+   - Support for batch processing and queueing
 
-### Phase 2 - Dashboard Database Setup
-1. Code Changes:
-   - Implement transcript database schema
-   - Create database migrations
-   - Set up basic DAL layer
-   - Add database health checks
+### Relationship Tables
 
-2. Test Cases:
-   - Unit Tests:
-     - DAL operations (CRUD)
-     - Schema validations
-     - Timestamp handling
-   - Integration Tests:
-     - Migration scripts
-     - Database connections
-     - Transaction handling
-   - Performance Tests:
-     - Query performance
-     - Index effectiveness
+1. ContentEntity Table (many-to-many):
+   - content_id (FK to Content)
+   - entity_id (FK to Entity)
+   - created_at (timestamp)
+   - created_by (FK to User)
 
-### Phase 3 - Dashboard Integration
-1. Code Changes:
-   - Create audio service client
-   - Implement transcript processor
-   - Set up API endpoints
-   - Add error handling and retries
+2. ContentAccess Table:
+   - id (PK)
+   - content_id (FK to Content)
+   - user_id (FK to User)
+   - access_level (enum: owner, shared, removed)
+   - granted_at (timestamp)
+   - granted_by (FK to User)
 
-2. Test Cases:
-   - Unit Tests:
-     - Client methods
-     - Error handling
-     - Retry logic
-   - Integration Tests:
-     - Audio service communication
-     - End-to-end transcript flow
-     - Error recovery scenarios
-   - Performance Tests:
-     - Response times
-     - Concurrent requests
-     - Resource usage
+3. TranscriptAccess Table:
+   - id (PK)
+   - transcript_id (FK to Transcript)
+   - user_id (FK to User)
+   - access_level (enum: owner, shared, removed)
+   - granted_at (timestamp)
+   - granted_by (FK to User)
 
-### Phase 4 - Migration & Cleanup
-1. Code Changes:
-   - Remove Redis dependencies
-   - Clean up old code paths
-   - Update documentation
-   - Add monitoring
+4. UserEntityAccess Table:
+   - id (PK)
+   - entity_id (FK to Entity)
+   - owner_user_id (FK to User)
+   - granted_user_id (FK to User)
+   - granted_at (timestamp)
+   - granted_by (FK to User)
+   - access_level (enum: owner, shared, removed)
 
-2. Test Cases:
-   - Migration Tests:
-     - Data consistency checks
-     - No data loss validation
-     - Rollback procedures
-   - System Tests:
-     - Full system functionality
-     - Performance comparison
-     - Resource usage validation
+### Access Rules
 
-## Database Schema
+1. Entity Visibility:
+   - Global Entities (user_id is null):
+     * Visible to all users with content access
+     * Can be associated with any content
+     * Typically used for speakers and shared tags
+   
+   - Private Entities (user_id is set):
+     * Only visible to the owner and users with granted access
+     * Can be associated with content
+     * Access to content possible through:
+       a. Direct entity ownership
+       b. Shared entity access (via UserEntityAccess)
+     * Shared access inherits content access restrictions from owner
 
-```sql
-CREATE TABLE transcripts (
-    id UUID PRIMARY KEY,
-    meeting_id VARCHAR NOT NULL,
-    content TEXT NOT NULL,
-    content_html TEXT,
-    content_html_short TEXT,
-    start_timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
-    speaker VARCHAR,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-```
+2. Content Access Through Shared Entities:
+   - User B accessing content through User A's shared entity must:
+     a. Have valid UserEntityAccess entry
+     b. User A must have access to the content
+   - Access level is the most restrictive of:
+     a. User B's UserEntityAccess level
+     b. User A's ContentAccess level for the content
 
-## API Endpoints
+### Implementation Notes
 
-1. Audio Service (New):
+1. Access Calculation:
+   - Calculate maximum access level across all paths
+   - Cache results for performance
+   - Recalculate on permission changes
+
+2. Entity Management:
+   - Global entities can be referenced by anyone
+   - Private entities only manageable by owner
+   - Entity-content associations tracked with creator
+
+3. Performance Considerations:
+   - Index entity-content relationships
+   - Cache access calculations
+   - Optimize entity ownership queries
+   - Add indexes for legacy API sync operations:
+     * Content(type, last_update)
+     * Content(is_indexed)
+     * Transcript(content_id, start_timestamp)
+
+4. Legacy API Integration:
+   - Implement sync mechanisms for incremental updates
+   - Handle legacy ID mappings
+   - Support batch processing of transcripts
+   - Maintain data consistency during migration
+
+### Required Indexes
+
+1. Content Table:
+   ```sql
+   CREATE INDEX idx_content_type_update ON content(type, last_update);
+   CREATE INDEX idx_content_indexing ON content(is_indexed);
+   CREATE INDEX idx_content_parent ON content(parent_id);
+   ```
+
+2. Transcript Table:
+   ```sql
+   CREATE INDEX idx_transcript_content ON transcript(content_id);
+   CREATE INDEX idx_transcript_timing ON transcript(content_id, start_timestamp);
+   ```
+
+3. Entity Table:
+   ```sql
+   CREATE INDEX idx_entity_type ON entities(type);
+   CREATE INDEX idx_entity_user ON entities(user_id) WHERE user_id IS NOT NULL;
+   CREATE INDEX idx_entity_global ON entities(is_global) WHERE is_global = true;
+   ```
+
+4. Access Tables:
+   ```sql
+   CREATE INDEX idx_content_access_user ON content_access(user_id, access_level);
+   CREATE INDEX idx_transcript_access_user ON transcript_access(user_id, access_level);
+   CREATE INDEX idx_entity_access_user ON user_entity_access(granted_user_id, access_level);
+   ```
+
+### Migration Strategy
+
+1. Data Migration:
+   ```python
+   async def migrate_legacy_content(vexa_api, session):
+       # Fetch meetings from legacy API
+       meetings = await vexa_api.get_meetings()
+       
+       for meeting in meetings:
+           # Create Content record
+           content = Content(
+               id=uuid.uuid4(),
+               type=ContentType.MEETING,
+               timestamp=meeting['start_time'],
+               content_metadata={
+                   'original_id': meeting['meeting_id'],
+                   'meeting_type': meeting['type'],
+                   'recording_status': meeting['status'],
+                   'participants': meeting['participants']
+               }
+           )
+           
+           # Create Transcript records
+           transcripts = []
+           for segment in meeting['segments']:
+               transcript = Transcript(
+                   content_id=content.id,
+                   text_content=segment['content'],
+                   start_timestamp=segment['start_timestamp'],
+                   end_timestamp=segment['end_timestamp'],
+                   confidence=segment['confidence'],
+                   original_segment_id=segment['segment_id'],
+                   word_timing_data={'words': segment['words']},
+                   segment_metadata={
+                       'speaker': segment['speaker'],
+                       'server_timestamp': segment['server_timestamp'],
+                       'transcription_timestamp': segment['transcription_timestamp'],
+                       'present_user_ids': segment['present_user_ids'],
+                       'partially_present_user_ids': segment['partially_present_user_ids']
+                   }
+               )
+               transcripts.append(transcript)
+           
+           session.add(content)
+           session.add_all(transcripts)
+           await session.commit()
+   ```
+
+2. Incremental Sync:
+   ```python
+   async def sync_new_content(vexa_api, session):
+       last_sync = await session.scalar(
+           select(func.max(Content.last_update))
+           .where(Content.type == ContentType.MEETING)
+       )
+       
+       new_meetings = await vexa_api.get_meetings(since=last_sync)
+       await migrate_legacy_content(vexa_api, session, new_meetings)
+   ```
+
+### Next Steps
+
+1. Database Schema:
+   - Create core tables with legacy API compatibility
+   - Set up relationships and constraints
+   - Add required indexes for sync operations
+
+2. Migration Tools:
+   - Implement data migration scripts
+   - Create incremental sync mechanism
+   - Add validation and error handling
+
+3. Integration Testing:
+   - Test legacy API data ingestion
+   - Verify search document generation
+   - Validate access control rules
+
+4. Monitoring:
+   - Track sync operations
+   - Monitor indexing status
+   - Log data consistency checks
+
+### Transcript Format Normalization
+
+1. Using Existing Model:
+   ```python
+   class Transcript:
+       id: UUID
+       content_id: UUID
+       text_content: str
+       start_timestamp: datetime
+       end_timestamp: datetime  # For legacy: start_timestamp + estimated duration
+       confidence: float
+       original_segment_id: int
+       word_timing_data: dict  # {"words": [[word, start, end], ...]}
+       segment_metadata: dict  # Stores metadata + versions
+   ```
+
+2. Metadata Structure:
+   ```python
+   {
+       # Source metadata
+       "source": str,  # "legacy" or "upstream"
+       "speaker": str,
+       "server_timestamp": Optional[str],
+       "transcription_timestamp": Optional[str],
+       "present_user_ids": List[str],
+       "partially_present_user_ids": List[str],
+       
+       # Original format
+       "original_format": dict,
+       
+       # Versions
+       "versions": {
+           "html": {
+               "content": str,
+               "version": str,
+               "created_at": str
+           },
+           "translations": {
+               "language_code": {
+                   "content": str,
+                   "model": str,
+                   "version": str,
+                   "created_at": str
+               }
+           },
+           "polished": {
+               "content": str,
+               "model": str,
+               "version": str,
+               "created_at": str
+           }
+       }
+   }
+   ```
+
+3. Format Mapping Functions:
+   ```python
+   def map_legacy_segment(segment: dict) -> dict:
+       # Estimate end timestamp (e.g., +5 seconds or based on word timing)
+       start_time = parse_timestamp(segment["start_timestamp"])
+       end_time = estimate_end_timestamp(start_time, segment["words"])
+       
+       return {
+           "text_content": segment["content"],
+           "start_timestamp": start_time,
+           "end_timestamp": end_time,
+           "confidence": segment["confidence"],
+           "original_segment_id": segment["segment_id"],
+           "word_timing_data": {"words": segment["words"]},
+           "segment_metadata": {
+               "source": "legacy",
+               "speaker": segment["speaker"],
+               "original_format": segment,
+               "versions": {}  # Empty initially
+           }
+       }
+
+   def map_upstream_segment(segment: dict) -> dict:
+       return {
+           "text_content": segment["content"],
+           "start_timestamp": parse_timestamp(segment["start_timestamp"]),
+           "end_timestamp": parse_timestamp(segment["end_timestamp"]),
+           "confidence": segment["confidence"],
+           "original_segment_id": segment["segment_id"],
+           "word_timing_data": {"words": segment["words"]},
+           "segment_metadata": {
+               "source": "upstream",
+               "speaker": segment["speaker"],
+               "server_timestamp": segment.get("server_timestamp"),
+               "transcription_timestamp": segment.get("transcription_timestamp"),
+               "present_user_ids": segment.get("present_user_ids", []),
+               "partially_present_user_ids": segment.get("partially_present_user_ids", []),
+               "original_format": segment,
+               "versions": {}  # Empty initially
+           }
+       }
+   ```
+
+4. Timestamp Handling:
+   ```python
+   def estimate_end_timestamp(start_time: datetime, words: List) -> datetime:
+       if not words:
+           return start_time + timedelta(seconds=5)  # Default duration
+           
+       # Use last word's end time if available
+       last_word = words[-1]
+       if len(last_word) >= 3:
+           duration = last_word[2]  # End time of last word
+           return start_time + timedelta(seconds=duration)
+           
+       return start_time + timedelta(seconds=5)  # Fallback
+   ```
+
+5. Version Generation (Background Task):
+   ```python
+   async def generate_transcript_versions(transcript_id: UUID):
+       async with get_session() as session:
+           transcript = await get_transcript(session, transcript_id)
+           
+           # Generate versions if not exist
+           if "versions" not in transcript.segment_metadata:
+               transcript.segment_metadata["versions"] = {}
+           
+           versions = transcript.segment_metadata["versions"]
+           
+           # HTML version
+           if "html" not in versions:
+               versions["html"] = {
+                   "content": format_to_html(transcript.text_content),
+                   "version": "1.0",
+                   "created_at": datetime.now(timezone.utc).isoformat()
+               }
+           
+           # Polished version
+           if "polished" not in versions:
+               versions["polished"] = {
+                   "content": await polish_text(transcript.text_content),
+                   "model": "gpt-4",
+                   "version": "1.0",
+                   "created_at": datetime.now(timezone.utc).isoformat()
+               }
+           
+           await session.commit()
+   ```
+
+6. Implementation Strategy:
+   a. Use existing model structure
+   b. Handle legacy timestamp conversion
+   c. Store versions in segment_metadata
+   d. Generate versions asynchronously
+   e. Provide access methods for different versions
+
+7. Migration Notes:
+   - No schema changes needed
+   - Add version generation to background tasks
+   - Update ingestion to handle both formats
+   - Add timestamp estimation for legacy data
+
+### API Router Structure
+
+1. Transcript Router:
 ```python
-GET /v1/segments/transcripts
-Response:
-{
-    "meeting_id": str,
-    "segments": [
-        {
-            "content": str,
-            "speaker": str,
-            "start_timestamp": datetime,
-            "confidence": float
-        }
-    ]
-}
-```
+   # Routes
+   POST /api/transcripts/segments/{content_id}  # Ingest transcript segments
+   GET /api/transcripts/segments/{content_id}   # Get transcript segments
+   PUT /api/transcripts/{transcript_id}/access  # Update transcript access
 
-2. Dashboard Service:
-```python
-GET /api/v1/transcripts
-Query Parameters:
-- meeting_id: str
-- last_timestamp: datetime (optional)
-- limit: int (optional)
+   # Request/Response Models
+   class SegmentBase(BaseModel):
+       content: str
+       start_timestamp: datetime
+       confidence: float
+       segment_id: int
+       words: List[List[Union[str, float]]]  # [text, start_time, end_time]
+       speaker: str
 
-POST /api/v1/transcripts
-Body:
-{
-    "meeting_id": str,
-    "content": str,
-    "speaker": str,
-    "start_timestamp": datetime
-}
-```
+   class LegacySegment(SegmentBase):
+       html_content: Optional[str] = None
+       html_content_short: Optional[str] = None
+       keywords: List[str] = []
+       end_timestamp: Optional[datetime] = None
 
-## Next Steps
+   class UpstreamSegment(SegmentBase):
+       meeting_id: str
+       end_timestamp: datetime
+       server_timestamp: datetime
+       transcription_timestamp: datetime
+       present_user_ids: List[str] = []
+       partially_present_user_ids: List[str] = []
 
-1. Begin Audio Service Refactoring:
-   - Remove diarization code
-   - Update processor class
-   - Add speaker matching
-   - Write initial tests
+   class TranscriptAccessUpdate(BaseModel):
+       target_user_id: UUID
+       access_level: AccessLevel
+   ```
 
-2. Start Dashboard Setup:
-   - Create database migrations
-   - Set up basic DAL
-   - Implement test framework
+2. Error Handling:
+   ```python
+   class TranscriptError(HTTPException):
+       def __init__(self, detail: str, status_code: int = 400):
+           super().__init__(status_code=status_code, detail=detail)
+
+   class TranscriptNotFoundError(TranscriptError):
+       def __init__(self, transcript_id: UUID):
+           super().__init__(
+               detail=f"Transcript not found: {transcript_id}",
+               status_code=404
+           )
+
+   class ContentNotFoundError(TranscriptError):
+       def __init__(self, content_id: UUID):
+           super().__init__(
+               detail=f"Content not found: {content_id}",
+               status_code=404
+           )
+
+   class AccessDeniedError(TranscriptError):
+       def __init__(self):
+           super().__init__(
+               detail="Access denied",
+               status_code=403
+           )
+   ```
+
+3. Dependencies:
+   ```python
+   async def get_transcript_manager():
+       manager = await TranscriptManager.create()
+       return manager
+
+   async def get_current_user(
+       token: str = Depends(oauth2_scheme),
+       session: AsyncSession = Depends(get_session)
+   ) -> User:
+       # ... existing user auth logic ...
+   ```
+
+4. Integration Tests:
+   ```python
+   # Test cases
+   - Ingest legacy segments
+   - Ingest upstream segments
+   - Ingest mixed format segments
+   - Get segments with access control
+   - Update access levels
+   - Error handling for invalid requests
+   - Authentication and authorization
+   ```

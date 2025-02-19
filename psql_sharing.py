@@ -244,18 +244,31 @@ async def has_content_access(
     session: AsyncSession,
     user_id: UUID,
     content_id: UUID,
-    required_level: AccessLevel = AccessLevel.SEARCH
+    required_level: AccessLevel = AccessLevel.SHARED
 ) -> bool:
     result = await session.execute(
         select(UserContent)
         .where(and_(
             UserContent.content_id == content_id,
             UserContent.user_id == user_id,
-            UserContent.access_level != AccessLevel.REMOVED.value
+            UserContent.access_level != AccessLevel.REMOVED
         ))
     )
     user_content = result.scalar_one_or_none()
-    return user_content is not None and AccessLevel(user_content.access_level) >= required_level
+    
+    if not user_content:
+        return False
+        
+    # Owner has all access
+    if user_content.access_level == AccessLevel.OWNER.value:
+        return True
+        
+    # For shared access, any non-removed access is sufficient
+    if required_level == AccessLevel.SHARED:
+        return user_content.access_level != AccessLevel.REMOVED.value
+        
+    # For owner access, must be owner
+    return user_content.access_level == required_level.value
 
 
 

@@ -16,7 +16,7 @@ from routers.contents import router as contents_router
 from routers.entities import router as entities_router
 from routers.threads import router as threads_router
 from routers.prompts import router as prompts_router
-
+from routers.transcripts import router as transcripts
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -92,6 +92,7 @@ app.include_router(contents_router)
 app.include_router(entities_router)
 app.include_router(threads_router)
 app.include_router(prompts_router)
+app.include_router(transcripts)
 
 if __name__ == "__main__":
     import uvicorn

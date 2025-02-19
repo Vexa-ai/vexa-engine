@@ -1,0 +1,169 @@
+# Dashboard Service Restructuring Plan
+
+## Current Structure Analysis
+
+The codebase currently has several key components spread across a flat structure:
+
+1. Database Models and Access:
+   - `psql_models.py`, `psql_access.py`, `psql_helpers.py`, `psql_notes.py`, `psql_sharing.py`
+   - `pydantic_models.py`
+   - `models.py`
+
+2. Search Functionality:
+   - `search.py`
+   - `bm25_search.py`
+   - `hybrid_search.py`
+   - `qdrant_search.py`
+
+3. Business Logic Managers:
+   - `auth_manager.py`
+   - `chat_manager.py`
+   - `content_manager.py`
+   - `entity_manager.py`
+   - `thread_manager.py`
+   - `token_manager.py`
+   - `prompts_manager.py`
+
+4. API and Routing:
+   - `main.py`
+   - `routers/` directory
+   - `api_client.py`
+
+5. Infrastructure:
+   - `setup_*.py` files
+   - `supervisord.conf`
+   - `redis_monitor.py`
+   - `run_*.py` files
+
+6. Testing and Development:
+   - `tests/` directory
+   - `experiments/` directory
+   - `create_dummy_data.py`
+
+## Proposed New Structure
+
+```
+dashboard/
+├── src/
+│   ├── api/                    # API-related code
+│   │   ├── routers/           # FastAPI routers
+│   │   ├── middleware/        # API middleware
+│   │   └── dependencies/      # API dependencies
+│   │
+│   ├── core/                  # Core business logic
+│   │   ├── auth/             # Authentication
+│   │   ├── chat/             # Chat functionality
+│   │   ├── content/          # Content management
+│   │   ├── entity/           # Entity management
+│   │   └── prompts/          # Prompts handling
+│   │
+│   ├── db/                    # Database layer
+│   │   ├── models/           # SQL models
+│   │   ├── migrations/       # Alembic migrations
+│   │   └── repositories/     # Data access layer
+│   │
+│   ├── search/               # Search functionality
+│   │   ├── engines/          # Different search implementations
+│   │   └── indexing/         # Indexing logic
+│   │
+│   ├── infrastructure/       # Infrastructure components
+│   │   ├── monitoring/       # Monitoring and logging
+│   │   ├── cache/           # Caching (Redis)
+│   │   └── queue/           # Task queues
+│   │
+│   └── utils/               # Shared utilities
+│
+├── tests/                   # Test suite
+│   ├── unit/
+│   ├── integration/
+│   └── e2e/
+│
+├── docs/                    # Documentation
+├── scripts/                 # Utility scripts
+├── experiments/             # Experimental notebooks
+└── deployment/             # Deployment configurations
+    ├── docker/
+    └── kubernetes/
+
+## Migration Plan
+
+### Phase 1: Initial Setup (1-2 days)
+1. Create new directory structure
+2. Set up new package organization
+3. Update build and dependency management
+4. Create new configuration management
+
+### Phase 2: Core Components Migration (3-4 days)
+1. Move and restructure database models
+2. Reorganize business logic managers
+3. Refactor search functionality
+4. Update API layer organization
+
+### Phase 3: Infrastructure Updates (2-3 days)
+1. Reorganize infrastructure components
+2. Update monitoring and logging
+3. Improve deployment configurations
+4. Migrate scripts and utilities
+
+### Phase 4: Testing and Documentation (2-3 days)
+1. Restructure test suite
+2. Update documentation
+3. Add API documentation
+4. Create migration guides
+
+## Implementation Guidelines
+
+1. Database Layer:
+   - Separate models by domain
+   - Use repository pattern
+   - Implement proper connection management
+   - Add database migrations
+
+2. Business Logic:
+   - Follow domain-driven design principles
+   - Implement proper dependency injection
+   - Add proper error handling
+   - Improve logging and monitoring
+
+3. API Layer:
+   - Implement proper versioning
+   - Add request validation
+   - Improve error responses
+   - Add API documentation
+
+4. Testing:
+   - Add proper test categories
+   - Implement test fixtures
+   - Add integration tests
+   - Improve test coverage
+
+## Next Steps
+
+1. Create new directory structure
+2. Set up new package management
+3. Begin moving core components
+4. Update import statements
+5. Add new configuration management
+
+## Success Metrics
+
+1. Code organization:
+   - Clear separation of concerns
+   - Reduced file coupling
+   - Improved module cohesion
+
+2. Development efficiency:
+   - Faster onboarding
+   - Easier testing
+   - Better maintainability
+
+3. Performance:
+   - Improved response times
+   - Better resource utilization
+   - Reduced technical debt
+
+4. Quality:
+   - Increased test coverage
+   - Reduced bug density
+   - Better documentation
+

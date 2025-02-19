@@ -7,7 +7,8 @@ from sqlalchemy import text
 
 from psql_models import (
     Base, Content, UserContent, ContentType, AccessLevel,
-    User, UserToken, Entity, content_entity_association
+    User, UserToken, Entity, content_entity_association,
+    Transcript, TranscriptAccess
 )
 from psql_helpers import get_session, async_session
 from qdrant_search import QdrantSearchEngine
@@ -57,9 +58,23 @@ async def get_user_content_access(session: AsyncSession, user_id: UUID, content_
     return AccessLevel.REMOVED
 
 async def can_access_transcript(session: AsyncSession, user_id: UUID, content_id: UUID) -> bool:
-    """Check if user has transcript-level access or higher"""
-    access = await get_user_content_access(session, user_id, content_id)
-    return access in [AccessLevel.TRANSCRIPT, AccessLevel.OWNER]
+    """Check if user has transcript-level access"""
+    # First check if user has access to the content
+    content_access = await get_user_content_access(session, user_id, content_id)
+    if content_access == AccessLevel.REMOVED:
+        return False
+        
+    # Then check if user has access to any transcripts for this content
+    result = await session.execute(
+        select(TranscriptAccess)
+        .join(Transcript, Transcript.id == TranscriptAccess.transcript_id)
+        .where(and_(
+            Transcript.content_id == content_id,
+            TranscriptAccess.user_id == user_id,
+            TranscriptAccess.access_level != AccessLevel.REMOVED
+        ))
+    )
+    return result.scalar_one_or_none() is not None
 
 async def is_content_owner(session: AsyncSession, user_id: UUID, content_id: UUID) -> bool:
     """Check if user is the owner of the content"""
@@ -124,10 +139,7 @@ async def get_meeting_token(content_id: UUID) -> Optional[str]:
             .join(UserContent, UserToken.user_id == UserContent.user_id)
             .where(and_(
                 UserContent.content_id == content_id,
-                UserContent.access_level.in_([
-                    AccessLevel.OWNER.value,
-                    AccessLevel.TRANSCRIPT.value
-                ])
+                UserContent.access_level != AccessLevel.REMOVED
             ))
             .order_by(UserToken.last_used_at.desc())
             .limit(1)
@@ -615,7 +627,7 @@ async def restore_content(
     session: AsyncSession,
     user_id: UUID,
     content_id: UUID,
-    restore_access_level: AccessLevel = AccessLevel.TRANSCRIPT
+    restore_access_level: AccessLevel = AccessLevel.SHARED
 ) -> bool:
     """Restore archived content for a user with specified access level"""
     # Check if user has the content archived

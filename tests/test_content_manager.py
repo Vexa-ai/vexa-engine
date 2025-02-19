@@ -1,16 +1,52 @@
 import pytest
+import pytest_asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 from typing import List, Dict
 from content_manager import ContentManager, ContentData
 from psql_models import (
     Content, UserContent, Entity, ContentType, 
-    EntityType, AccessLevel, async_session, content_entity_association
+    EntityType, AccessLevel, async_session, content_entity_association, ContentAccess, User, UserToken
 )
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, delete, text
 from unittest.mock import patch, MagicMock, AsyncMock
 from indexing.redis_keys import RedisKeys
 from vexa import VexaAPI, VexaAPIError
+
+@pytest_asyncio.fixture
+async def test_content(setup_test_users):
+    """Create a test content for testing access control"""
+    user, _ = setup_test_users[0]
+    
+    async with async_session() as session:
+        content = Content(
+            id=uuid4(),
+            type=ContentType.NOTE.value,
+            text="Test content",
+            timestamp=datetime.now(timezone.utc)
+        )
+        session.add(content)
+        await session.flush()
+        
+        user_content = UserContent(
+            content_id=content.id,
+            user_id=user.id,
+            created_by=user.id,
+            is_owner=True,
+            access_level=AccessLevel.OWNER.value
+        )
+        session.add(user_content)
+        
+        content_access = ContentAccess(
+            content_id=content.id,
+            user_id=user.id,
+            granted_by=user.id,
+            access_level=AccessLevel.OWNER.value
+        )
+        session.add(content_access)
+        
+        await session.commit()
+        return content
 
 @pytest.mark.asyncio
 async def test_add_content_basic(setup_test_users):
@@ -328,7 +364,7 @@ async def test_create_share_link(setup_test_users):
     # Create share link
     token = await manager.create_share_link(
         owner_id=str(test_user.id),
-        access_level=AccessLevel.TRANSCRIPT,
+        access_level=AccessLevel.SHARED,
         content_ids=[UUID(content_id)]
     )
     
@@ -352,7 +388,7 @@ async def test_accept_share_link(setup_test_users):
     
     token = await manager.create_share_link(
         owner_id=str(owner.id),
-        access_level=AccessLevel.TRANSCRIPT,
+        access_level=AccessLevel.SHARED,
         content_ids=[UUID(content_id)]
     )
     
@@ -630,7 +666,7 @@ async def test_get_content_meeting_type(setup_test_users):
     
     mock_transcription = (
         None,  # df
-        "Test meeting transcription",  # formatted_input
+        "Test transcript",  # formatted_input
         datetime.now(),  # start_time
         None,  # _
         "Test transcript"  # transcript
@@ -651,7 +687,7 @@ async def test_get_content_meeting_type(setup_test_users):
         )
         
         assert content is not None
-        assert content.text == "Test meeting transcription"
+        assert content.text == "Test transcript"
         assert content.type == ContentType.MEETING.value
         mock_token.assert_called_once_with(UUID(content_id))
         mock_vexa_instance.get_transcription.assert_called_once_with(
@@ -751,3 +787,30 @@ async def test_get_content_meeting_type_api_error(setup_test_users):
         assert content is not None
         assert content.text == ""
         assert content.type == ContentType.MEETING.value 
+
+@pytest.mark.asyncio
+async def test_update_content_access(setup_test_users, test_content):
+    user, _ = setup_test_users[0]
+    target_user, _ = setup_test_users[1]
+    manager = await ContentManager.create()
+    
+    # Test granting shared access
+    success = await manager.update_content_access(
+        content_id=test_content.id,
+        user_id=user.id,
+        target_user_id=target_user.id,
+        access_level=AccessLevel.SHARED
+    )
+    assert success is True
+    
+    # Verify access was granted
+    async with async_session() as session:
+        access = await session.execute(
+            select(ContentAccess)
+            .where(and_(
+                ContentAccess.content_id == test_content.id,
+                ContentAccess.user_id == target_user.id
+            ))
+        )
+        access_record = access.scalar_one()
+        assert access_record.access_level == AccessLevel.SHARED.value 

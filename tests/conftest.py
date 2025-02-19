@@ -4,13 +4,13 @@ import asyncio
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, or_
 
 # Add project root to Python path
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from psql_models import User, UserToken, async_session, UserContent, ShareLink
+from psql_models import User, UserToken, async_session, UserContent, ShareLink, TranscriptAccess, ContentAccess
 
 @pytest.fixture(scope="session")
 def event_loop():
@@ -39,9 +39,28 @@ async def setup_test_users():
             user_id = user_result.scalar_one_or_none()
             
             if user_id:
-                # Delete share links first
+                # Delete in correct order to handle foreign key constraints
+                # First delete content access records
+                await session.execute(
+                    delete(ContentAccess).where(
+                        or_(
+                            ContentAccess.user_id == user_id,
+                            ContentAccess.granted_by == user_id
+                        )
+                    )
+                )
+                # Delete share links
                 await session.execute(
                     delete(ShareLink).where(ShareLink.owner_id == user_id)
+                )
+                # Delete transcript access records
+                await session.execute(
+                    delete(TranscriptAccess).where(
+                        or_(
+                            TranscriptAccess.user_id == user_id,
+                            TranscriptAccess.granted_by == user_id
+                        )
+                    )
                 )
                 # Delete user content where user is creator
                 await session.execute(

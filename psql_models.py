@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, Table, Boolean, Enum as SAEnum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker, joinedload
-from sqlalchemy.dialects.postgresql import UUID as PostgresUUID, ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PostgresUUID, ARRAY, JSONB, JSON
 from sqlalchemy import create_engine, text
 import uuid
 from datetime import datetime
@@ -53,17 +53,18 @@ Base = declarative_base()
 
 
 class AccessLevel(str, Enum):
-    REMOVED = 'removed'
-    SEARCH = 'search'
-    TRANSCRIPT = 'transcript'
     OWNER = 'owner'
+    SHARED = 'shared'
+    REMOVED = 'removed'
     
 
 
 # Rename association tables
 content_entity_association = Table('content_entity', Base.metadata,
     Column('content_id', PostgresUUID(as_uuid=True), ForeignKey('content.id')),
-    Column('entity_id', Integer, ForeignKey('entities.id'))
+    Column('entity_id', Integer, ForeignKey('entities.id')),
+    Column('created_at', DateTime(timezone=True), default=datetime.utcnow),
+    Column('created_by', PostgresUUID(as_uuid=True), ForeignKey('users.id'))
 )
 
     
@@ -81,8 +82,10 @@ class User(Base):
     is_indexed = Column(Boolean, default=False, nullable=False, server_default='false')
     
     # Relationships
-    default_access_granted = relationship("DefaultAccess", foreign_keys="DefaultAccess.granted_user_id", back_populates="granted_user")
-    default_access_owner = relationship("DefaultAccess", foreign_keys="DefaultAccess.owner_user_id", back_populates="owner")
+    content_access = relationship('ContentAccess', foreign_keys='ContentAccess.user_id', back_populates='user')
+    transcript_access = relationship('TranscriptAccess', foreign_keys='TranscriptAccess.user_id', back_populates='user')
+    entity_access_granted = relationship('UserEntityAccess', foreign_keys='UserEntityAccess.granted_user_id', back_populates='granted_user')
+    entity_access_owner = relationship('UserEntityAccess', foreign_keys='UserEntityAccess.owner_user_id', back_populates='owner')
     threads = relationship('Thread', back_populates='user', cascade='all, delete-orphan')
 
 class UserToken(Base):
@@ -111,6 +114,10 @@ class Entity(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     type = Column(String(50), nullable=False)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
+    is_global = Column(Boolean, default=False)
+    entity_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     
     __table_args__ = (
         CheckConstraint(
@@ -120,6 +127,7 @@ class Entity(Base):
     )
     
     content = relationship('Content', secondary=content_entity_association, back_populates='entities')
+    user_access = relationship('UserEntityAccess', back_populates='entity', cascade='all, delete-orphan')
 
 
 class ContentType(str, Enum):
@@ -134,10 +142,11 @@ class Content(Base):
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     type = Column(String)
     text = Column(String)
-    timestamp = Column(DateTime)
+    timestamp = Column(DateTime(timezone=True))
+    last_update = Column(DateTime(timezone=True))
     parent_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=True)
     is_indexed = Column(Boolean, default=False)
-    last_update = Column(DateTime)
+    content_metadata = Column(JSON, nullable=True)
 
     # Self-referential relationship
     parent = relationship('Content', remote_side=[id], backref='children')
@@ -145,6 +154,8 @@ class Content(Base):
     # Existing relationships
     user_content = relationship('UserContent', back_populates='content')
     entities = relationship('Entity', secondary=content_entity_association, back_populates='content')
+    transcripts = relationship('Transcript', back_populates='content', cascade='all, delete-orphan')
+    user_access = relationship('ContentAccess', back_populates='content', cascade='all, delete-orphan')
 
     __table_args__ = (
         Index('idx_content_parent_id', 'parent_id'),
@@ -165,8 +176,8 @@ class UserContent(Base):
     access_level = Column(
         String(20),
         nullable=False,
-        default=AccessLevel.SEARCH.value,
-        server_default=AccessLevel.SEARCH.value
+        default=AccessLevel.SHARED.value,
+        server_default=AccessLevel.SHARED.value
     )
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     created_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'))
@@ -226,8 +237,8 @@ class DefaultAccess(Base):
     access_level = Column(
         String(20),
         nullable=False,
-        default=AccessLevel.SEARCH.value,
-        server_default=AccessLevel.SEARCH.value
+        default=AccessLevel.SHARED.value,
+        server_default=AccessLevel.SHARED.value
     )
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -250,7 +261,7 @@ class ShareLink(Base):
     access_level = Column(
         String(20),
         nullable=False,
-        default=AccessLevel.SEARCH.value
+        default=AccessLevel.SHARED.value
     )
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     expires_at = Column(DateTime(timezone=True), nullable=True)
@@ -315,6 +326,62 @@ class Prompt(Base):
         CheckConstraint(type.in_([e.value for e in PromptTypeEnum]), name='valid_prompt_type')
     )
 
+
+class Transcript(Base):
+    __tablename__ = 'transcript'
+    id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=False)
+    text_content = Column(String, nullable=True)
+    start_timestamp = Column(DateTime(timezone=True), nullable=False)
+    end_timestamp = Column(DateTime(timezone=True), nullable=False)
+    confidence = Column(Float, nullable=False)
+    original_segment_id = Column(Integer, nullable=False)
+    word_timing_data = Column(JSON, nullable=True)
+    segment_metadata = Column(JSON, nullable=True)
+    # Relationships
+    content = relationship('Content', back_populates='transcripts')
+    user_access = relationship('TranscriptAccess', back_populates='transcript', cascade='all, delete-orphan')
+
+class ContentAccess(Base):
+    __tablename__ = 'content_access'
+    id = Column(Integer, primary_key=True)
+    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=False)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    access_level = Column(PostgresENUM('owner', 'shared', 'removed', name='accesslevelenum'), nullable=False)
+    granted_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    granted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    # Relationships
+    content = relationship('Content', back_populates='user_access')
+    user = relationship('User', foreign_keys=[user_id])
+    granter = relationship('User', foreign_keys=[granted_by])
+
+class TranscriptAccess(Base):
+    __tablename__ = 'transcript_access'
+    id = Column(Integer, primary_key=True)
+    transcript_id = Column(PostgresUUID(as_uuid=True), ForeignKey('transcript.id'), nullable=False)
+    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    access_level = Column(PostgresENUM('owner', 'shared', 'removed', name='accesslevelenum'), nullable=False)
+    granted_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    granted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    # Relationships
+    transcript = relationship('Transcript', back_populates='user_access')
+    user = relationship('User', foreign_keys=[user_id])
+    granter = relationship('User', foreign_keys=[granted_by])
+
+class UserEntityAccess(Base):
+    __tablename__ = 'user_entity_access'
+    id = Column(Integer, primary_key=True)
+    entity_id = Column(Integer, ForeignKey('entities.id'), nullable=False)
+    owner_user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    granted_user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    granted_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    granted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    access_level = Column(PostgresENUM('owner', 'shared', 'removed', name='accesslevelenum'), nullable=False)
+    # Relationships
+    entity = relationship('Entity', back_populates='user_access')
+    owner = relationship('User', foreign_keys=[owner_user_id])
+    granted_user = relationship('User', foreign_keys=[granted_user_id])
+    granter = relationship('User', foreign_keys=[granted_by])
 
 # The following code should be placed inside an async function to avoid the "async" not allowed outside of async function error.
 

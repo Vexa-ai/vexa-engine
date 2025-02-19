@@ -229,7 +229,7 @@ async def test_share_links(api_client, setup_test_users):
 
         # Create share link
         share_link = await api_client.create_share_link(
-            access_level=AccessLevel.TRANSCRIPT.value,
+            access_level=AccessLevel.SHARED.value,
             content_ids=[content_id],
             target_email=accepter.email,
             expiration_hours=24

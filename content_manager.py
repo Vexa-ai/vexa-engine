@@ -7,7 +7,7 @@ from sqlalchemy import select, update, delete, and_, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from psql_models import (
     Content, UserContent, Entity, content_entity_association,
-    ContentType, AccessLevel, EntityType
+    ContentType, AccessLevel, EntityType, ContentAccess
 )
 from psql_helpers import get_session
 from redis import Redis
@@ -237,7 +237,7 @@ class ContentManager:
                     transcription = await vexa_api.get_transcription(meeting_session_id=content_id, use_index=True)
                     if transcription:
                         df, formatted_input, start_time, _, transcript = transcription
-                        text = json.dumps(transcript)
+                        text = transcript
                     else:
                         logger.warning(f"No transcription found for meeting {content_id}")
                         text = ""
@@ -586,4 +586,72 @@ class ContentManager:
             return {
                 "status": "queued",
                 "message": "Content has been queued for indexing"
-            } 
+            }
+
+    async def update_content_access(
+        self,
+        content_id: UUID,
+        user_id: UUID,
+        target_user_id: UUID,
+        access_level: AccessLevel,
+        session: AsyncSession = None
+    ) -> bool:
+        async with (session or get_session()) as session:
+            async with session.begin():
+                # Check if user has owner access
+                owner_query = select(ContentAccess).where(
+                    and_(
+                        ContentAccess.content_id == content_id,
+                        ContentAccess.user_id == user_id,
+                        ContentAccess.access_level == AccessLevel.OWNER.value
+                    )
+                )
+                result = await session.execute(owner_query)
+                if not result.scalar_one_or_none():
+                    return False
+                
+                # Update or create target user's access
+                target_query = select(ContentAccess).where(
+                    and_(
+                        ContentAccess.content_id == content_id,
+                        ContentAccess.user_id == target_user_id
+                    )
+                )
+                result = await session.execute(target_query)
+                target_access = result.scalar_one_or_none()
+                
+                if target_access:
+                    target_access.access_level = access_level.value
+                else:
+                    target_access = ContentAccess(
+                        content_id=content_id,
+                        user_id=target_user_id,
+                        granted_by=user_id,
+                        access_level=access_level.value
+                    )
+                    session.add(target_access)
+                
+                # Also update or create UserContent record for backward compatibility
+                user_content_query = select(UserContent).where(
+                    and_(
+                        UserContent.content_id == content_id,
+                        UserContent.user_id == target_user_id
+                    )
+                )
+                result = await session.execute(user_content_query)
+                user_content = result.scalar_one_or_none()
+                
+                if user_content:
+                    user_content.access_level = access_level.value
+                else:
+                    user_content = UserContent(
+                        content_id=content_id,
+                        user_id=target_user_id,
+                        created_by=user_id,
+                        access_level=access_level.value,
+                        is_owner=False
+                    )
+                    session.add(user_content)
+                
+                await session.commit()
+                return True 

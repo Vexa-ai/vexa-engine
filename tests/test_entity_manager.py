@@ -2,9 +2,8 @@ import pytest
 from uuid import uuid4
 from datetime import datetime, timezone, timedelta
 from entity_manager import EntityManager
-from psql_models import User, UserToken, Entity, Content, UserContent, EntityType, ContentType, AccessLevel, content_entity_association, Thread
-from sqlalchemy import select, delete
-from psql_helpers import async_session
+from psql_models import User, UserToken, Entity, Content, UserContent, EntityType, ContentType, AccessLevel, content_entity_association, Thread, async_session, Transcript, ContentAccess, TranscriptAccess
+from sqlalchemy import select, delete, text
 import pytest_asyncio
 import uuid
 
@@ -14,11 +13,15 @@ async def setup_test_users():
         # Clean up any existing test data in correct order
         await session.execute(delete(content_entity_association))
         await session.execute(delete(Thread))  # Delete threads before entities
-        await session.execute(delete(Entity))
-        await session.execute(delete(UserContent))
-        await session.execute(delete(Content))
-        await session.execute(delete(UserToken))
-        await session.execute(delete(User))
+        await session.execute(delete(ContentAccess))  # Delete content access records
+        await session.execute(delete(TranscriptAccess))  # Delete transcript access records
+        await session.execute(delete(UserContent))  # Delete user content records
+        await session.execute(delete(Entity))  # Delete entities
+        await session.execute(delete(Transcript))  # Delete transcripts before content
+        await session.execute(delete(Content))  # Delete content
+        await session.execute(text("DELETE FROM prompts"))  # Delete prompts before users
+        await session.execute(delete(UserToken))  # Delete user tokens
+        await session.execute(delete(User))  # Finally delete users
         
         # Create test users
         test_users = []
@@ -31,8 +34,10 @@ async def setup_test_users():
             test_users.append(user)
             test_tokens.append(token)
         
+        await session.flush()  # Flush to get IDs
+        
         # Create test content with timestamps
-        base_time = datetime.now()
+        base_time = datetime.now(timezone.utc)
         for i in range(3):
             content = Content(
                 id=uuid.uuid4(),
@@ -41,17 +46,19 @@ async def setup_test_users():
                 timestamp=base_time + timedelta(minutes=i)
             )
             session.add(content)
+            await session.flush()  # Flush to get content ID
             
             # Create entity for content
             entity = Entity(name=f"Test Entity {i}", type=EntityType.SPEAKER.value)
             session.add(entity)
+            await session.flush()  # Flush to get entity ID
             
             # Associate content with entity
-            await session.flush()  # Get IDs
             await session.execute(
                 content_entity_association.insert().values(
                     content_id=content.id,
-                    entity_id=entity.id
+                    entity_id=entity.id,
+                    created_by=test_users[0].id  # Set owner
                 )
             )
             
@@ -60,9 +67,19 @@ async def setup_test_users():
                 user_id=test_users[0].id,
                 content_id=content.id,
                 access_level=AccessLevel.OWNER.value,
-                is_owner=True
+                is_owner=True,
+                created_by=test_users[0].id
             )
             session.add(user_content)
+            
+            # Create content access record
+            content_access = ContentAccess(
+                content_id=content.id,
+                user_id=test_users[0].id,
+                access_level=AccessLevel.OWNER.value,
+                granted_by=test_users[0].id
+            )
+            session.add(content_access)
         
         await session.commit()
         return test_users, test_tokens

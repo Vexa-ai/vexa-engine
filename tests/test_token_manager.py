@@ -3,8 +3,8 @@ import pytest_asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from token_manager import TokenManager
-from psql_models import User, UserToken, UserContent, async_session
-from sqlalchemy import select, delete
+from psql_models import User, UserToken, UserContent, async_session, Thread
+from sqlalchemy import select, delete, text
 from unittest.mock import patch, MagicMock
 
 @pytest_asyncio.fixture(autouse=True)
@@ -12,8 +12,10 @@ async def cleanup_database():
     """Clean up database before and after each test"""
     async with async_session() as session:
         # Clean up in reverse order of dependencies
+        await session.execute(delete(Thread))
         await session.execute(delete(UserToken))
         await session.execute(delete(UserContent))
+        await session.execute(text("DELETE FROM prompts"))  # Delete prompts before users
         await session.execute(delete(User))
         await session.commit()
         
@@ -21,8 +23,10 @@ async def cleanup_database():
     
     async with async_session() as session:
         # Clean up again after test
+        await session.execute(delete(Thread))
         await session.execute(delete(UserToken))
         await session.execute(delete(UserContent))
+        await session.execute(text("DELETE FROM prompts"))  # Delete prompts before users
         await session.execute(delete(User))
         await session.commit()
 
