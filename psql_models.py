@@ -136,6 +136,10 @@ class ContentType(str, Enum):
     SUMMARY = 'summary'
     NOTE = 'note'
 
+class ExternalIDType(str, Enum):
+    GOOGLE_MEET = 'google_meet'
+    NONE = 'none'
+
 class Content(Base):
     __tablename__ = 'content'
 
@@ -143,6 +147,8 @@ class Content(Base):
     type = Column(String)
     text = Column(String)
     timestamp = Column(DateTime(timezone=True))
+    external_id = Column(String, nullable=True)
+    external_id_type = Column(String, nullable=True, server_default=ExternalIDType.NONE.value)
     last_update = Column(DateTime(timezone=True))
     parent_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=True)
     is_indexed = Column(Boolean, default=False)
@@ -160,9 +166,16 @@ class Content(Base):
     __table_args__ = (
         Index('idx_content_parent_id', 'parent_id'),
         Index('idx_content_type', 'type'),
+        Index('idx_content_external_id', 'external_id'),
+        Index('idx_content_external_id_type', 'external_id_type'),
+        UniqueConstraint('external_id', 'external_id_type', name='uq_content_external_id'),
         CheckConstraint(
             type.in_([e.value for e in ContentType]),
             name='valid_content_type'
+        ),
+        CheckConstraint(
+            external_id_type.in_([e.value for e in ExternalIDType]),
+            name='valid_external_id_type'
         ),
     )
 

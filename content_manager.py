@@ -7,7 +7,8 @@ from sqlalchemy import select, update, delete, and_, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from psql_models import (
     Content, UserContent, Entity, content_entity_association,
-    ContentType, AccessLevel, EntityType, ContentAccess
+    ContentType, AccessLevel, EntityType, ContentAccess, ExternalIDType,
+    TranscriptAccess, Transcript
 )
 from psql_helpers import get_session
 from redis import Redis
@@ -36,6 +37,8 @@ class ContentData(BaseModel):
     entities: List[Dict[str, str]] = []
     parent_id: Optional[str] = None
     meta: Optional[Dict] = None
+    external_id: Optional[str] = None
+    external_id_type: Optional[str] = None
 
 class ContentManager:
     def __init__(self):
@@ -270,70 +273,81 @@ class ContentManager:
         type: str,
         text: str,
         parent_id: Optional[UUID] = None,
-        entities: Optional[List[Dict[str, Any]]] = None
+        entities: Optional[List[Dict[str, Any]]] = None,
+        external_id: Optional[str] = None,
+        external_id_type: Optional[str] = None
     ) -> str:
         # Validate content type
-        try:
-            content_type = ContentType(type)
-        except ValueError:
-            raise ValueError(f"Invalid content type. Must be one of: {[e.value for e in ContentType]}")
+        if type not in [e.value for e in ContentType]:
+            raise ValueError(f"Invalid content type: {type}")
             
-        # Validate entity types if provided
-        if entities:
-            for entity_data in entities:
-                try:
-                    # EntityRequest objects already validate the type
-                    if not entity_data.name:
-                        raise ValueError("Entity name is required")
-                except AttributeError:
-                    # Handle dict input for backward compatibility
-                    try:
-                        # First check for name
-                        if not entity_data.get("name"):
-                            raise ValueError("Entity name is required")
-                        # Then validate type
-                        try:
-                            EntityType(entity_data["type"])
-                        except (KeyError, ValueError):
-                            raise ValueError(f"Invalid entity type. Must be one of: {[e.value for e in EntityType]}")
-                    except KeyError:
-                        raise ValueError("Entity name is required")
+        # Validate external_id_type if provided
+        if external_id_type and external_id_type not in [e.value for e in ExternalIDType]:
+            raise ValueError(f"Invalid external_id_type: {external_id_type}")
+            
+        if external_id and not external_id_type:
+            raise ValueError("external_id_type is required when external_id is provided")
             
         async with get_session() as session:
-            async with session.begin():
+            try:
+                # Check for duplicate external_id if provided
+                if external_id and external_id_type:
+                    existing = await session.execute(
+                        select(Content)
+                        .where(
+                            and_(
+                                Content.external_id == external_id,
+                                Content.external_id_type == external_id_type,
+                                Content.external_id.isnot(None)  # Ensure we only match non-null external_ids
+                            )
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        raise ValueError(f"Content with external_id {external_id} already exists")
+                
+                # Create content
                 content = Content(
                     id=uuid4(),
-                    type=content_type.value,
+                    type=type,
                     text=text,
-                    timestamp=datetime.now(timezone.utc).replace(tzinfo=None),
+                    timestamp=datetime.now(timezone.utc),
                     parent_id=parent_id,
-                    is_indexed=False
+                    external_id=external_id,
+                    external_id_type=external_id_type
                 )
                 session.add(content)
-                await session.flush()
+                await session.flush()  # Ensure content is created before associations
                 
-                # Create user content record
+                # Create user content association
                 user_content = UserContent(
                     content_id=content.id,
                     user_id=UUID(user_id),
+                    access_level=AccessLevel.OWNER.value,
                     created_by=UUID(user_id),
-                    is_owner=True,
-                    access_level=AccessLevel.OWNER.value
+                    is_owner=True
                 )
                 session.add(user_content)
                 
-                # Add entities
+                # Create content access
+                content_access = ContentAccess(
+                    content_id=content.id,
+                    user_id=UUID(user_id),
+                    access_level=AccessLevel.OWNER.value,
+                    granted_by=UUID(user_id)
+                )
+                session.add(content_access)
+                
+                # Add entities if provided
                 if entities:
                     for entity_data in entities:
-                        try:
-                            # Handle EntityRequest objects
-                            entity_name = entity_data.name
-                            entity_type = entity_data.type
-                        except AttributeError:
-                            # Handle dict input for backward compatibility
-                            entity_name = entity_data["name"]
-                            entity_type = EntityType(entity_data["type"])
+                        if "name" not in entity_data:
+                            raise ValueError("Entity name is required")
+                        if "type" not in entity_data or entity_data["type"] not in [e.value for e in EntityType]:
+                            raise ValueError("Invalid entity type")
                             
+                        entity_name = entity_data["name"]
+                        entity_type = entity_data["type"]
+                        
                         # Check if entity exists
                         entity_query = select(Entity).where(
                             and_(
@@ -361,6 +375,12 @@ class ContentManager:
                 
                 await session.commit()
                 return str(content.id)
+                
+            except Exception as e:
+                await session.rollback()
+                if "duplicate" in str(e).lower():
+                    raise ValueError(f"Content with external_id {external_id} already exists")
+                raise
     
     async def modify_content(
         self,
@@ -442,53 +462,55 @@ class ContentManager:
     
     async def delete_content(self, user_id: str, content_id: UUID, physical_delete: bool = False) -> bool:
         async with get_session() as session:
-            async with session.begin():
-                # Check if content exists and user has access
-                user_content = await session.execute(
+            try:
+                # Check if user has owner access and get current access level
+                access_check = await session.execute(
                     select(UserContent)
-                    .where(
-                        and_(
-                            UserContent.content_id == content_id,
-                            UserContent.user_id == UUID(user_id)
-                        )
-                    )
+                    .where(and_(
+                        UserContent.content_id == content_id,
+                        UserContent.user_id == UUID(user_id),
+                        UserContent.is_owner == True
+                    ))
                 )
-                user_content = user_content.scalar_one_or_none()
+                user_content = access_check.scalar_one_or_none()
                 if not user_content:
                     return False
-                # For physical delete, check if content is archived
+
+                # For physical delete, content must be archived first
+                if physical_delete and user_content.access_level != AccessLevel.REMOVED.value:
+                    return False
+
                 if physical_delete:
-                    if user_content.access_level != AccessLevel.REMOVED.value:
-                        return False
-                    # First delete all UserContent records
+                    # Delete in correct order respecting foreign key constraints
+                    # First delete content_entity associations
+                    await session.execute(delete(content_entity_association).where(content_entity_association.c.content_id == content_id))
+                    # Delete transcript access
+                    await session.execute(delete(TranscriptAccess).where(TranscriptAccess.transcript_id.in_(
+                        select(Transcript.id).where(Transcript.content_id == content_id)
+                    )))
+                    # Delete transcripts
+                    await session.execute(delete(Transcript).where(Transcript.content_id == content_id))
+                    # Delete content access
+                    await session.execute(delete(ContentAccess).where(ContentAccess.content_id == content_id))
+                    # Delete user content
+                    await session.execute(delete(UserContent).where(UserContent.content_id == content_id))
+                    # Finally delete content
+                    await session.execute(delete(Content).where(Content.id == content_id))
+                else:
+                    # Just mark as removed for all users
                     await session.execute(
-                        delete(UserContent)
+                        update(UserContent)
                         .where(UserContent.content_id == content_id)
+                        .values(access_level=AccessLevel.REMOVED.value)
                     )
-                    # Then delete content and its associations
-                    await session.execute(
-                        delete(content_entity_association)
-                        .where(content_entity_association.c.content_id == content_id)
-                    )
-                    await session.execute(
-                        delete(Content)
-                        .where(Content.id == content_id)
-                    )
-                    await session.commit()
-                    return True
-                # Regular delete - just mark as removed
-                result = await session.execute(
-                    update(UserContent)
-                    .where(
-                        and_(
-                            UserContent.content_id == content_id,
-                            UserContent.user_id == UUID(user_id)
-                        )
-                    )
-                    .values(access_level=AccessLevel.REMOVED.value)
-                )
+                
                 await session.commit()
-                return result.rowcount > 0
+                return True
+            
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error deleting content: {str(e)}")
+                return False
     
     async def archive_content(self, user_id: str, content_id: UUID) -> bool:
         return await self.delete_content(user_id, content_id)

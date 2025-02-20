@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Dict, Any
 from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel
@@ -8,6 +8,9 @@ from psql_models import User, AccessLevel
 from psql_helpers import get_session
 from transcript_manager import TranscriptManager
 from auth import get_current_user
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/transcripts", tags=["transcripts"])
 
@@ -68,34 +71,26 @@ async def get_transcript_manager():
 @router.post("/segments/{content_id}")
 async def ingest_transcript_segments(
     content_id: UUID,
-    segments: List[Union[LegacySegment, UpstreamSegment]],
+    segments: List[Dict[str, Any]],
     current_user: User = Depends(get_current_user),
-    manager: TranscriptManager = Depends(get_transcript_manager),
-    session: AsyncSession = Depends(get_session)
-) -> List[dict]:
+    session: AsyncSession = Depends(get_session),
+    transcript_manager: TranscriptManager = Depends(get_transcript_manager)
+):
     try:
-        # Convert Pydantic models to dicts
-        segment_dicts = [segment.model_dump() for segment in segments]
-        
-        # Ingest segments
-        transcripts = await manager.ingest_transcript_segments(
+        result = await transcript_manager.ingest_transcript_segments(
             content_id=content_id,
-            segments=segment_dicts,
-            user_id=current_user.id,
+            segments=segments,
+            user_id=str(current_user.id),
             session=session
         )
-        
-        # Return formatted segments
-        return await manager.get_transcript_segments(
-            content_id=content_id,
-            user_id=current_user.id,
-            session=session
-        )
-        
+        return result
     except ValueError as e:
         if "Content not found" in str(e):
-            raise ContentNotFoundError(content_id)
-        raise TranscriptError(str(e))
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error ingesting transcript segments: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/segments/{content_id}")
 async def get_transcript_segments(

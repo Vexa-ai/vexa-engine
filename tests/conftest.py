@@ -10,7 +10,10 @@ from sqlalchemy import delete, select, or_
 import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from psql_models import User, UserToken, async_session, UserContent, ShareLink, TranscriptAccess, ContentAccess
+from psql_models import (
+    User, UserToken, async_session, UserContent, ShareLink, TranscriptAccess, 
+    ContentAccess, Entity, Content, content_entity_association, UTMParams, DefaultAccess, Thread, UserEntityAccess, Prompt
+)
 
 @pytest.fixture(scope="session")
 def event_loop():
@@ -30,7 +33,7 @@ async def setup_test_users():
     
     created_users = []
     async with async_session() as session:
-        # Clean up existing test users first
+        # Delete all existing users and their related data
         for email, _ in test_users:
             # Get user id
             user_result = await session.execute(
@@ -39,45 +42,46 @@ async def setup_test_users():
             user_id = user_result.scalar_one_or_none()
             
             if user_id:
-                # Delete in correct order to handle foreign key constraints
-                # First delete content access records
-                await session.execute(
-                    delete(ContentAccess).where(
-                        or_(
-                            ContentAccess.user_id == user_id,
-                            ContentAccess.granted_by == user_id
-                        )
-                    )
-                )
+                # Delete in correct order respecting foreign key constraints
+                # First delete content_entity associations
+                await session.execute(delete(content_entity_association).where(content_entity_association.c.created_by == user_id))
+                # Delete UTM params
+                await session.execute(delete(UTMParams).where(UTMParams.user_id == user_id))
                 # Delete share links
-                await session.execute(
-                    delete(ShareLink).where(ShareLink.owner_id == user_id)
-                )
-                # Delete transcript access records
-                await session.execute(
-                    delete(TranscriptAccess).where(
-                        or_(
-                            TranscriptAccess.user_id == user_id,
-                            TranscriptAccess.granted_by == user_id
-                        )
-                    )
-                )
-                # Delete user content where user is creator
-                await session.execute(
-                    delete(UserContent).where(UserContent.created_by == user_id)
-                )
-                # Delete user content where user has access
-                await session.execute(
-                    delete(UserContent).where(UserContent.user_id == user_id)
-                )
-                # Delete associated tokens
-                await session.execute(
-                    delete(UserToken).where(UserToken.user_id == user_id)
-                )
-                # Then delete user
-                await session.execute(
-                    delete(User).where(User.id == user_id)
-                )
+                await session.execute(delete(ShareLink).where(or_(ShareLink.owner_id == user_id, ShareLink.accepted_by == user_id)))
+                # Delete default access
+                await session.execute(delete(DefaultAccess).where(or_(DefaultAccess.owner_user_id == user_id, DefaultAccess.granted_user_id == user_id)))
+                # Delete threads
+                await session.execute(delete(Thread).where(Thread.user_id == user_id))
+                # Delete user entity access
+                await session.execute(delete(UserEntityAccess).where(or_(
+                    UserEntityAccess.owner_user_id == user_id,
+                    UserEntityAccess.granted_user_id == user_id,
+                    UserEntityAccess.granted_by == user_id
+                )))
+                # Delete transcript access
+                await session.execute(delete(TranscriptAccess).where(or_(
+                    TranscriptAccess.user_id == user_id,
+                    TranscriptAccess.granted_by == user_id
+                )))
+                # Delete content access
+                await session.execute(delete(ContentAccess).where(or_(
+                    ContentAccess.user_id == user_id,
+                    ContentAccess.granted_by == user_id
+                )))
+                # Delete user content
+                await session.execute(delete(UserContent).where(or_(
+                    UserContent.user_id == user_id,
+                    UserContent.created_by == user_id
+                )))
+                # Delete entities owned by user
+                await session.execute(delete(Entity).where(Entity.user_id == user_id))
+                # Delete prompts
+                await session.execute(delete(Prompt).where(Prompt.user_id == user_id))
+                # Delete user tokens
+                await session.execute(delete(UserToken).where(UserToken.user_id == user_id))
+                # Finally delete the user
+                await session.execute(delete(User).where(User.id == user_id))
         await session.commit()
         
         # Create new test users

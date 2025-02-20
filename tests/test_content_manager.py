@@ -6,7 +6,8 @@ from typing import List, Dict
 from content_manager import ContentManager, ContentData
 from psql_models import (
     Content, UserContent, Entity, ContentType, 
-    EntityType, AccessLevel, async_session, content_entity_association, ContentAccess, User, UserToken
+    EntityType, AccessLevel, async_session, content_entity_association, ContentAccess, User, UserToken, ExternalIDType,
+    TranscriptAccess, Transcript
 )
 from sqlalchemy import select, and_, delete, text
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -814,3 +815,127 @@ async def test_update_content_access(setup_test_users, test_content):
         )
         access_record = access.scalar_one()
         assert access_record.access_level == AccessLevel.SHARED.value 
+
+@pytest.mark.asyncio
+async def test_add_content_with_external_id(setup_test_users):
+    test_user, test_token = setup_test_users[0]  # Get first user-token pair
+    manager = await ContentManager.create()
+    
+    # Test adding content with valid external ID
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.MEETING.value,
+        text="Test content",
+        external_id="meeting-123",
+        external_id_type=ExternalIDType.GOOGLE_MEET.value
+    )
+    assert content_id is not None
+    
+    async with async_session() as session:
+        result = await session.execute(
+            select(Content).where(Content.id == UUID(content_id))
+        )
+        content = result.scalar_one()
+        assert content.external_id == "meeting-123"
+        assert content.external_id_type == ExternalIDType.GOOGLE_MEET.value
+
+@pytest.mark.asyncio
+async def test_add_content_duplicate_external_id(setup_test_users):
+    test_user, test_token = setup_test_users[0]  # Get first user-token pair
+    manager = await ContentManager.create()
+    
+    # Clean up any existing content with this external_id
+    async with async_session() as session:
+        # First find any content with this external_id
+        result = await session.execute(
+            select(Content.id).where(
+                and_(
+                    Content.external_id == "meeting-123",
+                    Content.external_id_type == ExternalIDType.GOOGLE_MEET.value
+                )
+            )
+        )
+        content_ids = [row[0] for row in result]
+        
+        # Delete in correct order respecting foreign key constraints
+        for content_id in content_ids:
+            # Delete content_entity associations
+            await session.execute(delete(content_entity_association).where(content_entity_association.c.content_id == content_id))
+            # Delete transcript access
+            await session.execute(delete(TranscriptAccess).where(TranscriptAccess.transcript_id.in_(
+                select(Transcript.id).where(Transcript.content_id == content_id)
+            )))
+            # Delete transcripts
+            await session.execute(delete(Transcript).where(Transcript.content_id == content_id))
+            # Delete content access
+            await session.execute(delete(ContentAccess).where(ContentAccess.content_id == content_id))
+            # Delete user content
+            await session.execute(delete(UserContent).where(UserContent.content_id == content_id))
+            # Finally delete content
+            await session.execute(delete(Content).where(Content.id == content_id))
+        await session.commit()
+    
+    # Add first content
+    content_id = await manager.add_content(
+        user_id=str(test_user.id),
+        type=ContentType.MEETING.value,
+        text="Test content 1",
+        external_id="meeting-123",
+        external_id_type=ExternalIDType.GOOGLE_MEET.value
+    )
+    
+    # Try to add second content with same external ID
+    with pytest.raises(ValueError, match="Content with external_id meeting-123 already exists"):
+        await manager.add_content(
+            user_id=str(test_user.id),
+            type=ContentType.MEETING.value,
+            text="Test content 2",
+            external_id="meeting-123",
+            external_id_type=ExternalIDType.GOOGLE_MEET.value
+        )
+        
+    # Clean up after test
+    async with async_session() as session:
+        # Delete in correct order respecting foreign key constraints
+        # Delete content_entity associations
+        await session.execute(delete(content_entity_association).where(content_entity_association.c.content_id == UUID(content_id)))
+        # Delete transcript access
+        await session.execute(delete(TranscriptAccess).where(TranscriptAccess.transcript_id.in_(
+            select(Transcript.id).where(Transcript.content_id == UUID(content_id))
+        )))
+        # Delete transcripts
+        await session.execute(delete(Transcript).where(Transcript.content_id == UUID(content_id)))
+        # Delete content access
+        await session.execute(delete(ContentAccess).where(ContentAccess.content_id == UUID(content_id)))
+        # Delete user content
+        await session.execute(delete(UserContent).where(UserContent.content_id == UUID(content_id)))
+        # Finally delete content
+        await session.execute(delete(Content).where(Content.id == UUID(content_id)))
+        await session.commit()
+
+@pytest.mark.asyncio
+async def test_add_content_invalid_external_id_type(setup_test_users):
+    test_user, test_token = setup_test_users[0]  # Get first user-token pair
+    manager = await ContentManager.create()
+    
+    with pytest.raises(ValueError, match="Invalid external_id_type: invalid_type"):
+        await manager.add_content(
+            user_id=str(test_user.id),
+            type=ContentType.MEETING.value,
+            text="Test content",
+            external_id="meeting-123",
+            external_id_type="invalid_type"
+        )
+
+@pytest.mark.asyncio
+async def test_add_content_missing_external_id_type(setup_test_users):
+    test_user, test_token = setup_test_users[0]  # Get first user-token pair
+    manager = await ContentManager.create()
+    
+    with pytest.raises(ValueError, match="external_id_type is required when external_id is provided"):
+        await manager.add_content(
+            user_id=str(test_user.id),
+            type=ContentType.MEETING.value,
+            text="Test content",
+            external_id="meeting-123"
+        ) 
