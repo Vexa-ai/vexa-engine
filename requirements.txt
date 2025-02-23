@@ -13,7 +13,7 @@ uvicorn[standard]
 python-multipart
 
 # Async Support
-httpx
+httpx==0.24.1
 aiohttp
 
 # Utilities

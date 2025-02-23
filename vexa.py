@@ -10,7 +10,6 @@ from pydantic import BaseModel
 from urllib.parse import urlparse, parse_qs
 from psql_models import User, UserToken, async_session, UTMParams
 from pytz import timezone
-from models import VexaAPIError
 import uuid
 from sqlalchemy import select
 from typing import List, Tuple

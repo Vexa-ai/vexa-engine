@@ -10,13 +10,37 @@ from sqlalchemy import select
 from fastapi import HTTPException
 from google.oauth2 import id_token
 from google.auth.transport import requests
+import os
+import httpx
+from pydantic import BaseModel
+from httpx import AsyncClient
+from pathlib import Path
 
+# Create logs directory if it doesn't exist
+log_dir = Path('logs')
+log_dir.mkdir(exist_ok=True)
+
+# Configure logging
 logger = logging.getLogger(__name__)
+file_handler = logging.FileHandler(log_dir / 'auth_manager.log')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+logger.setLevel(logging.INFO)
+
+STREAMQUEUE_URL = os.getenv('STREAMQUEUE_URL')
+STREAMQUEUE_API_KEY = os.getenv('STREAMQUEUE_API_KEY')
+
+class TokenResponse(BaseModel):
+    user_id: str
+    user_name: str
+    email: str
+    image: Optional[str] = None
 
 class AuthManager:
     def __init__(self):
-        pass
-    
+        self.stream_queue_url = os.getenv('STREAMQUEUE_URL')
+        self.stream_queue_api_key = os.getenv('STREAMQUEUE_API_KEY')
+
     @classmethod
     async def create(cls):
         return cls()
@@ -25,10 +49,32 @@ class AuthManager:
         pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
         return bool(re.match(pattern, email))
     
+    async def _propagate_token_to_stream(self, token: str, user_id: uuid.UUID) -> None:
+        """Propagate token to stream queue service"""
+        async with AsyncClient() as client:
+            try:
+                response = await client.post(
+                    f"{self.stream_queue_url}/api/v1/users/add-token",
+                    headers={
+                        "Authorization": f"Bearer {self.stream_queue_api_key}"  # Add API key to headers
+                    },
+                    json={
+                        "token": token,
+                        "user_id": str(user_id),
+                        "enable_status": True
+                    }
+                )
+                response.raise_for_status()
+                logger.info(f"Token propagated to stream queue: {response.json()}")
+            except Exception as e:
+                logger.error(f"Failed to propagate token to stream queue: {e}")
+                raise
+
     async def _create_user_token(self, session: AsyncSession, user_id: uuid.UUID) -> str:
         token = str(uuid.uuid4())
         user_token = UserToken(token=token, user_id=user_id)
         session.add(user_token)
+        await self._propagate_token_to_stream(token, user_id)
         return token
 
     async def _store_utm_params(self, session: AsyncSession, user_id: uuid.UUID, utm_params: Dict[str, str]):
@@ -144,4 +190,33 @@ class AuthManager:
                 logger.error(f"Google auth failed: {str(e)}", exc_info=True)
                 if "Token used too early" in str(e):
                     raise ValueError("Authentication timing error. Please try again.")
-                raise ValueError(str(e)) 
+                raise ValueError(str(e))
+
+    async def submit_token(self, token: str, session: AsyncSession = None) -> TokenResponse:
+        async with (session or get_session()) as session:
+            try:
+                query = select(UserToken, User).join(User).where(UserToken.token == token)
+                result = await session.execute(query)
+                token_user = result.first()
+                
+                if not token_user:
+                    raise HTTPException(status_code=401, detail="Invalid token")
+                    
+                _, user = token_user
+                
+                try:
+                    await self._propagate_token_to_stream(token, user.id)
+                except Exception as e:
+                    logger.error(f"Token validation propagation error: {e}")
+                
+                return TokenResponse(
+                    user_id=str(user.id),
+                    user_name=user.username or user.email,
+                    email=user.email,
+                    image=user.image
+                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Token validation failed: {str(e)}", exc_info=True)
+                raise HTTPException(status_code=500, detail="Internal server error") 

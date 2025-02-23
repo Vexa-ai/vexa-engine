@@ -110,24 +110,5 @@ async def google_auth(
 
 @router.post("/submit_token", response_model=TokenResponse)
 async def submit_token(request: SubmitTokenRequest):
-    async with get_session() as session:
-        try:
-            # Query user token and join with user
-            query = select(UserToken, User).join(User).where(UserToken.token == request.token)
-            result = await session.execute(query)
-            token_user = result.first()
-            
-            if not token_user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-                
-            _, user = token_user  # Unpack the result tuple
-            
-            return TokenResponse(
-                user_id=str(user.id),
-                user_name=user.username or user.email,  # Fallback to email if username is None
-                email=user.email,
-                image=user.image
-            )
-        except Exception as e:
-            logger.error(f"Token validation failed: {str(e)}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Internal server error")
+    auth_manager = await AuthManager.create()
+    return await auth_manager.submit_token(request.token)
