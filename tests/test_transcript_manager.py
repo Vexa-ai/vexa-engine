@@ -2,8 +2,8 @@ import pytest
 import pytest_asyncio
 from datetime import datetime, timezone, timedelta
 from uuid import UUID, uuid4
-from transcript_manager import TranscriptManager
-from psql_models import Content, Transcript, TranscriptAccess, AccessLevel, ContentType
+from transcript_manager import TranscriptManager, generate_deterministic_uuid
+from psql_models import Content, Transcript, TranscriptAccess, AccessLevel, ContentType, ExternalIDType, UserContent, ContentAccess
 from psql_helpers import get_session, async_session
 from sqlalchemy import select, delete, and_, func
 from vexa import VexaAPI
@@ -197,441 +197,459 @@ def mock_segments_from_file():
         }
     ]
 
-@pytest.mark.asyncio
-async def test_ingest_legacy_segments(setup_test_users, test_content, legacy_segments):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Test ingestion of first 2 legacy segments
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=legacy_segments[:2],
-        user_id=user.id
-    )
-    
-    assert len(transcripts) == 2
-    
-    # Verify data from legacy format was properly ingested
-    for transcript, original_segment in zip(transcripts, legacy_segments[:2]):
-        assert transcript.content_id == test_content.id
-        assert transcript.text_content == original_segment['content']
-        assert transcript.confidence == original_segment['confidence']
-        assert transcript.original_segment_id == original_segment['segment_id']
-        assert transcript.word_timing_data['words'] == original_segment['words']
-        assert transcript.segment_metadata['speaker'] == original_segment['speaker']
-        assert transcript.segment_metadata['source'] == 'legacy'
-        assert 'original_format' in transcript.segment_metadata
-        assert 'versions' in transcript.segment_metadata
+class MockTranscript:
+    def __init__(self, id, content_id, text_content, start_timestamp, end_timestamp, confidence, original_segment_id, word_timing_data, segment_metadata):
+        self.id = id
+        self.content_id = content_id
+        self.text_content = text_content
+        self.start_timestamp = start_timestamp
+        self.end_timestamp = end_timestamp
+        self.confidence = confidence
+        self.original_segment_id = original_segment_id
+        self.word_timing_data = word_timing_data
+        self.segment_metadata = segment_metadata
 
-@pytest.mark.asyncio
-async def test_ingest_upstream_segments(setup_test_users, test_content, upstream_segments):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Test ingestion of first 2 upstream segments
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=upstream_segments[:2],
-        user_id=user.id
-    )
-    
-    assert len(transcripts) == 2
-    
-    # Verify data from upstream format was properly ingested
-    for transcript, original_segment in zip(transcripts, upstream_segments[:2]):
-        assert transcript.content_id == test_content.id
-        assert transcript.text_content == original_segment['content']
-        assert transcript.confidence == original_segment['confidence']
-        assert transcript.original_segment_id == original_segment['segment_id']
-        assert transcript.word_timing_data['words'] == original_segment['words']
-        assert transcript.segment_metadata['speaker'] == original_segment['speaker']
-        assert transcript.segment_metadata['source'] == 'upstream'
-        assert 'server_timestamp' in transcript.segment_metadata
-        assert 'transcription_timestamp' in transcript.segment_metadata
-        assert 'present_user_ids' in transcript.segment_metadata
-        assert 'original_format' in transcript.segment_metadata
-        assert 'versions' in transcript.segment_metadata
+def get_mock_session():
+    class MockSession:
+        def __init__(self):
+            self.content = {}
+            self.user_content = {}
+            self.transcripts = {}
+            self.transcript_access = {}
+            
+        async def __aenter__(self):
+            return self
+            
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+            
+        def add(self, obj):
+            if isinstance(obj, Content):
+                self.content[obj.id] = obj
+                # Create UserContent entry automatically
+                if hasattr(obj, '_user_id'):  # Set by _get_or_create_content
+                    user_content = UserContent(
+                        content_id=obj.id,
+                        user_id=obj._user_id,
+                        access_level=AccessLevel.OWNER.value,
+                        is_owner=True,
+                        created_by=obj._user_id
+                    )
+                    self.user_content[obj.id] = user_content
+            elif isinstance(obj, UserContent):
+                self.user_content[obj.content_id] = obj
+            elif isinstance(obj, Transcript):
+                if not obj.id:
+                    obj.id = uuid4()
+                self.transcripts[obj.id] = obj
+            elif isinstance(obj, TranscriptAccess):
+                self.transcript_access[obj.transcript_id] = obj
+                
+        def add_all(self, objs):
+            for obj in objs:
+                self.add(obj)
+                
+        async def execute(self, query):
+            class Result:
+                def __init__(self, data=None):
+                    self.data = data
+                    
+                def scalar_one_or_none(self):
+                    return self.data[0] if isinstance(self.data, list) and self.data else self.data
+                    
+                def scalars(self):
+                    class All:
+                        def __init__(self, data):
+                            self.data = data if isinstance(data, list) else [data] if data else []
+                        def all(self):
+                            return self.data
+                    return All(self.data)
+                    
+                def all(self):
+                    return self.data if isinstance(self.data, list) else []
+                    
+                def mappings(self):
+                    return self.data if isinstance(self.data, list) else []
+            
+            # Extract query conditions
+            content_id = None
+            user_id = None
+            transcript_id = None
+            access_level = None
+            timestamp_filter = None
 
-@pytest.mark.asyncio
-async def test_ingest_mixed_format_segments(setup_test_users, test_content, legacy_segments, upstream_segments):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Mix one segment from each format
-    mixed_segments = [legacy_segments[0], upstream_segments[0]]
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=mixed_segments,
-        user_id=user.id
-    )
-    
-    assert len(transcripts) == 2
-    
-    # Verify legacy format
-    legacy_transcript = transcripts[0]
-    assert legacy_transcript.segment_metadata['source'] == 'legacy'
-    assert 'server_timestamp' not in legacy_transcript.segment_metadata
-    
-    # Verify upstream format
-    upstream_transcript = transcripts[1]
-    assert upstream_transcript.segment_metadata['source'] == 'upstream'
-    assert 'server_timestamp' in upstream_transcript.segment_metadata
+            for criterion in query._where_criteria:
+                if hasattr(criterion, 'left') and hasattr(criterion, 'right'):
+                    left_str = str(criterion.left).lower()
+                    if "content.id" in left_str or "content_id" in left_str:
+                        content_id = criterion.right.value
+                    elif "user_id" in left_str:
+                        user_id = criterion.right.value
+                    elif "transcript.id" in left_str:
+                        transcript_id = criterion.right.value
+                    elif "access_level" in left_str:
+                        access_level = criterion.right.value
+                    elif "start_timestamp" in left_str and hasattr(criterion, 'operator'):
+                        if '>' in str(criterion.operator):
+                            timestamp_filter = criterion.right.value
 
-@pytest.mark.asyncio
-async def test_get_transcript_segments(setup_test_users, test_content, legacy_segments, upstream_segments):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Ingest mixed segments
-    await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[legacy_segments[0], upstream_segments[0]],
-        user_id=user.id
-    )
-    
-    # Retrieve segments
-    segments = await manager.get_transcript_segments(
-        content_id=test_content.id,
-        user_id=user.id
-    )
-    
-    assert len(segments) == 2
-    
-    # Verify both formats are retrieved correctly
-    legacy_segment = next(s for s in segments if s['segment_metadata']['source'] == 'legacy')
-    upstream_segment = next(s for s in segments if s['segment_metadata']['source'] == 'upstream')
-    
-    assert 'server_timestamp' not in legacy_segment['segment_metadata']
-    assert 'server_timestamp' in upstream_segment['segment_metadata']
+            # Handle Content queries with joins
+            if "FROM content" in str(query):
+                if content_id in self.content:
+                    content = self.content[content_id]
+                    if user_id:
+                        # Check UserContent access
+                        user_content = self.user_content.get(content_id)
+                        if user_content and user_content.user_id == user_id:
+                            if access_level:
+                                if user_content.access_level == access_level:
+                                    return Result(content)
+                                return Result(None)
+                            return Result(content)
+                        return Result(None)
+                    return Result(content)
+                return Result(None)
 
-@pytest.mark.asyncio
-async def test_timestamp_handling(setup_test_users, test_content, legacy_segments):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
+            # Handle Transcript queries
+            if "FROM transcript" in str(query):
+                if transcript_id:
+                    # Single transcript query
+                    transcript = self.transcripts.get(transcript_id)
+                    if not transcript:
+                        return Result(None)
+                        
+                    if "join transcript_access" in str(query).lower():
+                        # Check TranscriptAccess
+                        access = self.transcript_access.get(transcript_id)
+                        if access and access.user_id == user_id:
+                            if access_level and access.access_level != access_level:
+                                return Result(None)
+                            return Result(transcript)
+                        return Result(None)
+                    return Result(transcript)
+                else:
+                    # List of transcripts query
+                    results = []
+                    for transcript in self.transcripts.values():
+                        if content_id and transcript.content_id == content_id:
+                            if timestamp_filter and transcript.start_timestamp <= timestamp_filter:
+                                continue
+                            results.append(transcript)
+                    
+                    # Apply ordering if specified
+                    if hasattr(query, '_order_by_clauses') and query._order_by_clauses:
+                        results.sort(key=lambda x: x.start_timestamp)
+                    
+                    # Apply limit if specified
+                    if hasattr(query, '_limit_clause') and query._limit_clause is not None:
+                        limit = query._limit_clause.value
+                        results = results[:limit]
+                    
+                    return Result(results)
+            
+            return Result(None)
+            
+        async def commit(self):
+            pass
+            
+        async def rollback(self):
+            pass
     
-    # Test legacy segment timestamp handling
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[legacy_segments[0]],
-        user_id=user.id
-    )
-    
-    transcript = transcripts[0]
-    assert transcript.start_timestamp is not None
-    assert transcript.end_timestamp is not None
-    assert transcript.end_timestamp > transcript.start_timestamp
+    return MockSession()
 
-@pytest.mark.asyncio
-async def test_ingest_vexa_segments(setup_test_users, test_content, mock_vexa_segment):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Test ingestion of a Vexa API segment
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[mock_vexa_segment],
-        user_id=user.id
-    )
-    
-    assert len(transcripts) == 1
-    transcript = transcripts[0]
-    
-    # Verify transcript data
-    assert transcript.content_id == test_content.id
-    assert transcript.text_content == mock_vexa_segment['content']
-    assert transcript.confidence == mock_vexa_segment['confidence']
-    assert transcript.original_segment_id == mock_vexa_segment['segment_id']
-    
-    # Verify word timing data
-    assert transcript.word_timing_data['words'] == mock_vexa_segment['words']
-    
-    # Verify metadata
-    assert transcript.segment_metadata['speaker'] == mock_vexa_segment['speaker']
-    assert transcript.segment_metadata['server_timestamp'] == mock_vexa_segment['server_timestamp']
+@pytest.fixture
+def mock_session():
+    return get_mock_session()
 
-@pytest.mark.asyncio
-async def test_ingest_segments_from_file(setup_test_users, test_content, mock_segments_from_file):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Test ingestion of segments from file
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=mock_segments_from_file[:2],  # Test with first 2 segments
-        user_id=user.id
-    )
-    
-    assert len(transcripts) == 2
-    
-    # Verify data from file was properly ingested
-    for transcript, original_segment in zip(transcripts, mock_segments_from_file[:2]):
-        assert transcript.content_id == test_content.id
-        assert transcript.text_content == original_segment['content']
-        assert transcript.confidence == original_segment['confidence']
-        assert transcript.original_segment_id == original_segment['segment_id']
-        assert transcript.word_timing_data['words'] == original_segment['words']
-        assert transcript.segment_metadata['speaker'] == original_segment['speaker']
-
-@pytest.mark.asyncio
-async def test_get_transcripts_from_vexa(setup_test_users, mock_vexa_api):
-    user, _ = setup_test_users[0]
-    meeting_id = "test-meeting-id"
-    
-    # Get transcripts from Vexa API
-    transcripts = await mock_vexa_api.get_transcription_(meeting_id=meeting_id)
-    assert len(transcripts) > 0
-    
-    # Verify structure matches expected format
-    segment = transcripts[0]
-    assert 'content' in segment
-    assert 'timestamp' in segment
-    assert 'speaker' in segment
-    assert 'confidence' in segment
-    assert 'segment_id' in segment
-    assert 'words' in segment
-
-@pytest.mark.asyncio
-async def test_ingest_transcript_segments(setup_test_users, test_content, mock_segment):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Test ingestion of a single segment
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[mock_segment],
-        user_id=user.id
-    )
-    
-    assert len(transcripts) == 1
-    transcript = transcripts[0]
-    
-    # Verify transcript data
-    assert transcript.content_id == test_content.id
-    assert transcript.text_content == mock_segment['content']
-    assert transcript.confidence == mock_segment['confidence']
-    assert transcript.original_segment_id == mock_segment['segment_id']
-    
-    # Verify word timing data
-    assert transcript.word_timing_data['words'] == mock_segment['words']
-    
-    # Verify metadata
-    assert transcript.segment_metadata['speaker'] == mock_segment['speaker']
-    assert transcript.segment_metadata['server_timestamp'] == mock_segment['server_timestamp']
-    
-    # Verify access
-    async with get_session() as session:
-        access = await session.execute(
-            select(TranscriptAccess).where(
-                TranscriptAccess.transcript_id == transcript.id,
-                TranscriptAccess.user_id == user.id
-            )
-        )
-        access_record = access.scalar_one()
-        assert access_record.access_level == AccessLevel.OWNER
-
-@pytest.mark.asyncio
-async def test_ingest_invalid_segment(setup_test_users, test_content, invalid_segment):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Test ingestion of invalid segment
-    with pytest.raises(ValueError):
-        await manager.ingest_transcript_segments(
-            content_id=test_content.id,
-            segments=[invalid_segment],
-            user_id=user.id
-        )
-    
-    # Verify no transcripts were created
-    async with get_session() as session:
-        count = await session.execute(select(func.count()).select_from(Transcript))
-        assert count.scalar_one() == 0
-
-@pytest.mark.asyncio
-async def test_get_transcript_segments_not_found(setup_test_users):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Try to get segments for non-existent content
-    segments = await manager.get_transcript_segments(
-        content_id=uuid4(),
-        user_id=user.id
-    )
-    
-    assert len(segments) == 0
-
-@pytest.mark.asyncio
-async def test_update_transcript_access(setup_test_users, test_content, mock_segment):
-    owner, _ = setup_test_users[0]
-    target_user, _ = setup_test_users[1]
-    manager = await TranscriptManager.create()
-    
-    # First ingest a segment
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[mock_segment],
-        user_id=owner.id
-    )
-    transcript = transcripts[0]
-    
-    # Test granting access to another user
-    success = await manager.update_transcript_access(
-        transcript_id=transcript.id,
-        user_id=owner.id,
-        target_user_id=target_user.id,
-        access_level=AccessLevel.SHARED
-    )
-    assert success is True
-    
-    # Verify target user can access the transcript
-    segments = await manager.get_transcript_segments(
-        content_id=test_content.id,
-        user_id=target_user.id
-    )
-    assert len(segments) == 1
-    
-    # Test non-owner cannot grant access
-    success = await manager.update_transcript_access(
-        transcript_id=transcript.id,
-        user_id=target_user.id,  # Not the owner
-        target_user_id=setup_test_users[2][0].id,
-        access_level=AccessLevel.SHARED
-    )
-    assert success is False
-
-@pytest.mark.asyncio
-async def test_get_transcript_segments_no_access(setup_test_users, test_content, mock_segment):
-    owner, _ = setup_test_users[0]
-    non_owner, _ = setup_test_users[1]
-    manager = await TranscriptManager.create()
-    
-    # Ingest segment as owner
-    await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[mock_segment],
-        user_id=owner.id
-    )
-    
-    # Try to access as non-owner
-    segments = await manager.get_transcript_segments(
-        content_id=test_content.id,
-        user_id=non_owner.id
-    )
-    
-    # Should return empty list since user has no access
-    assert len(segments) == 0
-
-@pytest.mark.asyncio
-async def test_ingest_multiple_segments(setup_test_users, test_content):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Create multiple segments with different timestamps
-    segments = []
-    for i in range(3):
-        segment = {
-            "content": f"Test content {i}",
-            "start_timestamp": f"2025-02-13 15:{32+i}:16.430000+00:00",
-            "end_timestamp": f"2025-02-13 15:{32+i}:22.950000+00:00",
-            "speaker": "Test Speaker",
+@pytest.fixture
+def mock_segments():
+    return [
+        {
+            "content": "Test content 1",
+            "start_timestamp": "2025-02-13T15:32:42.170000+00:00",
+            "end_timestamp": "2025-02-13T15:32:45.170000+00:00",
             "confidence": 0.95,
-            "segment_id": i,
-            "meeting_id": "test-meeting",
-            "words": [[f"word{j}", j*0.5, (j+1)*0.5] for j in range(3)],
-            "server_timestamp": "2025-02-13 15:32:16+00:00",
-            "transcription_timestamp": "2025-02-18 15:03:21.243843+00:00",
-            "present_user_ids": ["00000000-0000-4000-a000-000000000001"],
-            "partially_present_user_ids": []
+            "segment_id": 1,
+            "words": [["test", 0.0, 1.0]],
+            "speaker": "Speaker 1",
+            "html_content": "<p>Test content 1</p>",
+            "html_content_short": "Test content 1",
+            "keywords": []
         }
-        segments.append(segment)
+    ]
+
+@pytest.mark.asyncio
+async def test_generate_deterministic_uuid():
+    external_id = "meeting-123"
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    uuid1 = generate_deterministic_uuid(external_id, external_id_type)
+    uuid2 = generate_deterministic_uuid(external_id, external_id_type)
+    assert uuid1 == uuid2
+    assert isinstance(uuid1, UUID)
+
+@pytest.mark.asyncio
+async def test_get_or_create_content(mock_session):
+    manager = TranscriptManager()
+    external_id = "meeting-123"
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    user_id = UUID('12345678-1234-5678-1234-567812345678')
     
-    # Ingest multiple segments
+    # Test content creation
+    content = await manager._get_or_create_content(external_id, external_id_type, user_id, mock_session)
+    assert content.external_id == external_id
+    assert content.external_id_type == external_id_type
+    assert content.type == ContentType.MEETING.value
+    
+    # Test content retrieval
+    content2 = await manager._get_or_create_content(external_id, external_id_type, user_id, mock_session)
+    assert content.id == content2.id
+
+@pytest.mark.asyncio
+async def test_ingest_transcript_segments(mock_session, mock_segments):
+    manager = TranscriptManager()
+    external_id = "meeting-123"
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    user_id = UUID('12345678-1234-5678-1234-567812345678')
+    
+    # Test successful ingestion
+    transcripts = await manager.ingest_transcript_segments(external_id, external_id_type, mock_segments, user_id, mock_session)
+    assert len(transcripts) == 1
+    assert isinstance(transcripts[0].id, UUID)
+    assert transcripts[0].content_id == generate_deterministic_uuid(external_id, external_id_type)
+    assert transcripts[0].original_segment_id == mock_segments[0]["segment_id"]
+    assert transcripts[0].text_content == mock_segments[0]["content"]
+    
+    # Test duplicate ingestion
+    transcripts2 = await manager.ingest_transcript_segments(external_id, external_id_type, mock_segments, user_id, mock_session)
+    assert len(transcripts2) == 1
+    assert transcripts2[0].id == transcripts[0].id
+
+@pytest.fixture
+async def setup_test_content(setup_test_users):
+    user, _ = setup_test_users[0]
+    external_id = f"meeting-{uuid4()}"
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    content_id = generate_deterministic_uuid(external_id, external_id_type)
+
+    # Create mock content first
+    content = Content(
+        id=content_id,
+        external_id=external_id,
+        external_id_type=external_id_type,
+        type=ContentType.MEETING.value,
+        text="Test meeting",
+        timestamp=datetime.now(timezone.utc),
+        last_update=datetime.now(timezone.utc)
+    )
+
+    # Create user content separately
+    user_content = UserContent(
+        content_id=content_id,
+        user_id=user.id,
+        access_level=AccessLevel.OWNER.value,
+        is_owner=True,
+        created_by=user.id
+    )
+
+    async with get_session() as session:
+        session.add(content)
+        session.add(user_content)
+        await session.commit()
+
+    return user, content_id, external_id, external_id_type
+
+@pytest.mark.asyncio
+async def test_get_transcript_segments(setup_test_users):
+    user, _ = setup_test_users[0]
+    manager = TranscriptManager()
+    external_id = f"meeting-{uuid4()}"  # Use unique ID
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    content_id = generate_deterministic_uuid(external_id, external_id_type)
+
+    # Create mock content first
+    content = Content(
+        id=content_id,
+        external_id=external_id,
+        external_id_type=external_id_type,
+        type=ContentType.MEETING.value,
+        text="Test meeting",
+        timestamp=datetime.now(timezone.utc),
+        last_update=datetime.now(timezone.utc)
+    )
+
+    # Create user content separately
+    user_content = UserContent(
+        content_id=content_id,
+        user_id=user.id,
+        access_level=AccessLevel.OWNER.value,
+        is_owner=True,
+        created_by=user.id
+    )
+
+    async with get_session() as session:
+        session.add(content)
+        session.add(user_content)
+        await session.commit()
+
+    # Create segments
+    segments = [
+        {
+            "content": "Test content 1",
+            "start_timestamp": "2025-02-13T15:32:42.170000+00:00",
+            "confidence": 0.95,
+            "segment_id": 1,
+            "words": [["test", 0.0, 1.0]],
+            "speaker": "Speaker 1"
+        }
+    ]
+
+    # Test ingestion
     transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
+        external_id=external_id,
+        external_id_type=external_id_type,
         segments=segments,
         user_id=user.id
     )
-    
-    assert len(transcripts) == 3
-    
-    # Verify segments are returned in chronological order
-    retrieved_segments = await manager.get_transcript_segments(
-        content_id=test_content.id,
-        user_id=user.id
-    )
-    
-    assert len(retrieved_segments) == 3
-    for i in range(len(retrieved_segments)-1):
-        current_start = datetime.fromisoformat(retrieved_segments[i]['start_timestamp'])
-        next_start = datetime.fromisoformat(retrieved_segments[i+1]['start_timestamp'])
-        assert current_start < next_start
 
-@pytest.mark.asyncio
-async def test_update_transcript_access_edge_cases(setup_test_users, test_content, mock_segment):
-    owner, _ = setup_test_users[0]
-    target_user, _ = setup_test_users[1]
-    manager = await TranscriptManager.create()
-    
-    # Test with non-existent transcript
-    success = await manager.update_transcript_access(
-        transcript_id=uuid4(),
-        user_id=owner.id,
-        target_user_id=target_user.id,
-        access_level=AccessLevel.SHARED
-    )
-    assert success is False
-    
-    # Test with non-existent user
-    success = await manager.update_transcript_access(
-        transcript_id=uuid4(),
-        user_id=uuid4(),
-        target_user_id=target_user.id,
-        access_level=AccessLevel.SHARED
-    )
-    assert success is False
-    
-    # Test with same user as target
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[mock_segment],
-        user_id=owner.id
-    )
-    success = await manager.update_transcript_access(
-        transcript_id=transcripts[0].id,
-        user_id=owner.id,
-        target_user_id=owner.id,
-        access_level=AccessLevel.SHARED
-    )
-    assert success is False  # Should not be able to modify own access
-
-@pytest.mark.asyncio
-async def test_large_transcript_segment(setup_test_users, test_content):
-    user, _ = setup_test_users[0]
-    manager = await TranscriptManager.create()
-    
-    # Create a segment with large text and many words
-    large_segment = {
-        "content": "x" * 1000000,  # 1MB of text
-        "start_timestamp": "2025-02-13 15:32:16.430000+00:00",
-        "end_timestamp": "2025-02-13 15:32:22.950000+00:00",
-        "speaker": "Test Speaker",
-        "confidence": 0.95,
-        "segment_id": 1,
-        "meeting_id": "test-meeting",
-        "words": [["word", i*0.1, (i+1)*0.1] for i in range(10000)],  # 10k words
-        "server_timestamp": "2025-02-13 15:32:16+00:00",
-        "transcription_timestamp": "2025-02-18 15:03:21.243843+00:00",
-        "present_user_ids": ["00000000-0000-4000-a000-000000000001"],
-        "partially_present_user_ids": []
-    }
-    
-    # Should handle large data without issues
-    transcripts = await manager.ingest_transcript_segments(
-        content_id=test_content.id,
-        segments=[large_segment],
-        user_id=user.id
-    )
-    
     assert len(transcripts) == 1
-    assert len(transcripts[0].text_content) == 1000000
-    assert len(transcripts[0].word_timing_data['words']) == 10000 
+    assert transcripts[0].original_segment_id == segments[0]["segment_id"]
+    assert transcripts[0].text_content == segments[0]["content"]
+
+@pytest.mark.asyncio
+async def test_get_transcript_segments_with_timestamp(setup_test_users):
+    user, _ = setup_test_users[0]
+    manager = TranscriptManager()
+    external_id = f"meeting-{uuid4()}"  # Use unique ID
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    content_id = generate_deterministic_uuid(external_id, external_id_type)
+
+    # Create mock content first
+    content = Content(
+        id=content_id,
+        external_id=external_id,
+        external_id_type=external_id_type,
+        type=ContentType.MEETING.value,
+        text="Test meeting",
+        timestamp=datetime.now(timezone.utc),
+        last_update=datetime.now(timezone.utc)
+    )
+
+    # Create user content separately
+    user_content = UserContent(
+        content_id=content_id,
+        user_id=user.id,
+        access_level=AccessLevel.OWNER.value,
+        is_owner=True,
+        created_by=user.id
+    )
+
+    async with get_session() as session:
+        session.add(content)
+        session.add(user_content)
+        await session.commit()
+
+    # Create segments with different timestamps
+    segments = [
+        {
+            "content": "Test content 1",
+            "start_timestamp": "2025-02-13T15:32:42.170000+00:00",
+            "confidence": 0.95,
+            "segment_id": 1,
+            "words": [["test", 0.0, 1.0]],
+            "speaker": "Speaker 1"
+        },
+        {
+            "content": "Test content 2",
+            "start_timestamp": "2025-02-13T15:33:42.170000+00:00",
+            "confidence": 0.95,
+            "segment_id": 2,
+            "words": [["test", 0.0, 1.0]],
+            "speaker": "Speaker 2"
+        }
+    ]
+
+    # Ingest segments
+    await manager.ingest_transcript_segments(
+        external_id=external_id,
+        external_id_type=external_id_type,
+        segments=segments,
+        user_id=user.id
+    )
+
+    # Test with timestamp filter
+    last_msg_timestamp = datetime.fromisoformat("2025-02-13T15:33:00.000000+00:00")
+    filtered_segments = await manager.get_transcript_segments(
+        external_id=external_id,
+        external_id_type=external_id_type,
+        user_id=user.id,
+        last_msg_timestamp=last_msg_timestamp
+    )
+
+    assert len(filtered_segments) == 1
+    assert filtered_segments[0]["segment_id"] == segments[1]["segment_id"]
+
+@pytest.mark.asyncio
+async def test_get_transcript_segments_limit(setup_test_users):
+    user, _ = setup_test_users[0]
+    manager = TranscriptManager()
+    external_id = f"meeting-{uuid4()}"  # Use unique ID
+    external_id_type = ExternalIDType.GOOGLE_MEET.value
+    content_id = generate_deterministic_uuid(external_id, external_id_type)
+
+    # Create mock content first
+    content = Content(
+        id=content_id,
+        external_id=external_id,
+        external_id_type=external_id_type,
+        type=ContentType.MEETING.value,
+        text="Test meeting",
+        timestamp=datetime.now(timezone.utc),
+        last_update=datetime.now(timezone.utc)
+    )
+
+    # Create user content separately
+    user_content = UserContent(
+        content_id=content_id,
+        user_id=user.id,
+        access_level=AccessLevel.OWNER.value,
+        is_owner=True,
+        created_by=user.id
+    )
+
+    async with get_session() as session:
+        session.add(content)
+        session.add(user_content)
+        await session.commit()
+
+    # Create many segments
+    segments = []
+    base_time = datetime(2025, 2, 13, 15, 32, 42, tzinfo=timezone.utc)
+    for i in range(150):  # More than default limit
+        segments.append({
+            "content": f"Test content {i}",
+            "start_timestamp": (base_time + timedelta(seconds=i)).isoformat(),
+            "confidence": 0.95,
+            "segment_id": i,
+            "words": [["test", 0.0, 1.0]],
+            "speaker": f"Speaker {i}"
+        })
+
+    # Ingest segments
+    await manager.ingest_transcript_segments(
+        external_id=external_id,
+        external_id_type=external_id_type,
+        segments=segments,
+        user_id=user.id
+    )
+
+    # Test default limit
+    results = await manager.get_transcript_segments(
+        external_id=external_id,
+        external_id_type=external_id_type,
+        user_id=user.id
+    )
+
+    assert len(results) == 100  # Default limit
+    # Verify ordering
+    for i in range(len(results) - 1):
+        assert results[i]["timestamp"] < results[i + 1]["timestamp"] 

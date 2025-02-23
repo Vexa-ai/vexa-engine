@@ -33,7 +33,7 @@ app = FastAPI(lifespan=lifespan)
 # Move this BEFORE any other middleware or app setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173", "http://localhost:5174","https://vexa.ai"],  # Must be explicit
+    allow_origins=["https://assistant.dev.vexa.ai", "http://localhost:5173", "http://localhost:5174","https://vexa.ai","http://host.docker.internal"],  # Add this],  # Must be explicit
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

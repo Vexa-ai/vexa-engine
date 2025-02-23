@@ -1,13 +1,18 @@
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Any
-from uuid import UUID
-from sqlalchemy import select, and_, func
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Optional, Any, Tuple
+from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
+from sqlalchemy import select, delete, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_models import Content, Transcript, TranscriptAccess, AccessLevel
+from psql_models import Content, Transcript, TranscriptAccess, AccessLevel, ContentType, ExternalIDType, UserContent, ContentAccess
 from psql_helpers import get_session
 import logging
 
 logger = logging.getLogger(__name__)
+
+def generate_deterministic_uuid(external_id: str, external_id_type: str) -> UUID:
+    """Generate a deterministic UUID from external_id and type"""
+    name = f"{external_id_type}:{external_id}"
+    return uuid5(NAMESPACE_URL, name)
 
 class TranscriptManager:
     def __init__(self):
@@ -81,14 +86,24 @@ class TranscriptManager:
     
     def _validate_segment(self, segment: Dict[str, Any]) -> None:
         """Validate segment data before ingestion"""
+        # Convert list format to dict if needed
+        if isinstance(segment, list):
+            if len(segment) < 6:
+                raise ValueError("Invalid list segment format - missing required fields")
+            segment = {
+                'content': segment[0],
+                'start_timestamp': segment[1],
+                'confidence': segment[2],
+                'segment_id': segment[3],
+                'words': segment[4],
+                'speaker': segment[5]
+            }
+        # Check required fields
         required_fields = ['content', 'start_timestamp', 'confidence', 
                          'segment_id', 'words', 'speaker']
-        
-        # Check required fields
         for field in required_fields:
             if field not in segment or segment[field] is None:
                 raise ValueError(f"Missing required field: {field}")
-        
         # Validate types
         if not isinstance(segment['content'], str):
             raise ValueError("Content must be a string")
@@ -98,7 +113,6 @@ class TranscriptManager:
             raise ValueError("confidence must be a number between 0 and 1")
         if not isinstance(segment['words'], list):
             raise ValueError("words must be a list")
-        
         # Validate timestamps
         try:
             datetime.fromisoformat(segment['start_timestamp'].replace('Z', '+00:00'))
@@ -106,7 +120,6 @@ class TranscriptManager:
                 datetime.fromisoformat(segment['end_timestamp'].replace('Z', '+00:00'))
         except ValueError as e:
             raise ValueError(f"Invalid timestamp format: {str(e)}")
-        
         # Validate word timing data
         for word in segment['words']:
             if not isinstance(word, list) or len(word) != 3:
@@ -118,56 +131,108 @@ class TranscriptManager:
             if word[1] > word[2]:
                 raise ValueError("Word start time must be before end time")
     
+    async def _get_or_create_content(
+        self,
+        external_id: str,
+        external_id_type: str,
+        user_id: UUID,
+        session: AsyncSession
+    ) -> Content:
+        """Get or create content with the given external ID and type"""
+        # Generate deterministic UUID for content
+        content_id = generate_deterministic_uuid(external_id, external_id_type)
+        
+        # Check if content exists
+        content = await session.execute(
+            select(Content).where(Content.id == content_id)
+        )
+        content = content.scalar_one_or_none()
+        
+        if content:
+            return content
+            
+        # Create new content
+        content = Content(
+            id=content_id,
+            type=ContentType.MEETING.value,
+            text="",
+            timestamp=datetime.now(timezone.utc),
+            external_id=external_id,
+            external_id_type=external_id_type
+        )
+        # Set user_id for mock session
+        setattr(content, '_user_id', user_id)
+        session.add(content)
+        
+        # Create user content association
+        user_content = UserContent(
+            content_id=content.id,
+            user_id=user_id,
+            access_level=AccessLevel.OWNER.value,
+            created_by=user_id,
+            is_owner=True
+        )
+        session.add(user_content)
+        
+        # Create content access
+        content_access = ContentAccess(
+            content_id=content.id,
+            user_id=user_id,
+            access_level=AccessLevel.OWNER.value,
+            granted_by=user_id
+        )
+        session.add(content_access)
+        
+        await session.commit()
+        return content
+    
     async def ingest_transcript_segments(
         self,
-        content_id: UUID,
+        external_id: str,
+        external_id_type: str,
         segments: List[Dict[str, Any]],
         user_id: UUID,
         session: AsyncSession = None
     ) -> List[Transcript]:
         async with (session or get_session()) as session:
             try:
-                # Verify content exists
-                content = await session.execute(
-                    select(Content).where(Content.id == content_id)
+                # Get or create content
+                content = await self._get_or_create_content(
+                    external_id=external_id,
+                    external_id_type=external_id_type,
+                    user_id=user_id,
+                    session=session
                 )
-                if not content.scalar_one_or_none():
-                    raise ValueError(f"Content not found: {content_id}")
                 
-                # Validate and normalize all segments first
+                # Validate and normalize all segments
                 normalized_segments = []
                 for segment in segments:
                     self._validate_segment(segment)
                     normalized = self._normalize_segment(segment)
                     normalized_segments.append(normalized)
                 
-                # Create transcript records
+                # Check for existing transcripts for this content
+                existing_q = await session.execute(select(Transcript).where(Transcript.content_id==content.id))
+                existing = {t.original_segment_id: t for t in existing_q.scalars().all()}
                 transcripts = []
-                for segment in normalized_segments:
-                    transcript = Transcript(
-                        content_id=content_id,
-                        text_content=segment['text_content'],
-                        start_timestamp=segment['start_timestamp'],
-                        end_timestamp=segment['end_timestamp'],
-                        confidence=segment['confidence'],
-                        original_segment_id=segment['original_segment_id'],
-                        word_timing_data=segment['word_timing_data'],
-                        segment_metadata=segment['segment_metadata']
-                    )
-                    transcripts.append(transcript)
-                    
-                    # Create owner access
-                    transcript_access = TranscriptAccess(
-                        transcript=transcript,
-                        user_id=user_id,
-                        access_level=AccessLevel.OWNER,
-                        granted_by=user_id
-                    )
-                    session.add(transcript_access)
-                
-                session.add_all(transcripts)
+                for seg in normalized_segments:
+                    seg_id = seg['original_segment_id']
+                    if seg_id in existing:
+                        transcripts.append(existing[seg_id])
+                    else:
+                        t = Transcript(content_id=content.id,
+                                       text_content=seg['text_content'],
+                                       start_timestamp=seg['start_timestamp'],
+                                       end_timestamp=seg['end_timestamp'],
+                                       confidence=seg['confidence'],
+                                       original_segment_id=seg['original_segment_id'],
+                                       word_timing_data=seg['word_timing_data'],
+                                       segment_metadata=seg['segment_metadata'])
+                        transcripts.append(t)
+                        ta = TranscriptAccess(transcript=t, user_id=user_id, access_level=AccessLevel.OWNER.value, granted_by=user_id)
+                        session.add(ta)
+                        session.add(t)
                 await session.commit()
-                
                 return transcripts
                 
             except Exception as e:
@@ -177,39 +242,60 @@ class TranscriptManager:
     
     async def get_transcript_segments(
         self,
-        content_id: UUID,
+        external_id: str,
+        external_id_type: str,
         user_id: UUID,
-        session: AsyncSession = None
+        last_msg_timestamp: Optional[datetime] = None,
+        session: AsyncSession = None,
+        limit: int = 100
     ) -> List[Dict[str, Any]]:
         async with (session or get_session()) as session:
             try:
-                # Get transcripts with access check
-                query = (
-                    select(Transcript)
-                    .join(TranscriptAccess)
-                    .where(and_(
-                        Transcript.content_id == content_id,
-                        TranscriptAccess.user_id == user_id,
-                        TranscriptAccess.access_level != AccessLevel.REMOVED
-                    ))
-                    .order_by(Transcript.start_timestamp)
+                # Get content ID
+                content_id = generate_deterministic_uuid(external_id, external_id_type)
+                
+                # Check if content exists and user has access
+                content = await session.execute(
+                    select(Content)
+                    .join(UserContent)
+                    .where(
+                        and_(
+                            Content.id == content_id,
+                            UserContent.user_id == user_id,
+                            UserContent.access_level != AccessLevel.REMOVED.value
+                        )
+                    )
                 )
+                content = content.scalar_one_or_none()
                 
-                result = await session.execute(query)
-                transcripts = result.scalars().all()
+                if not content:
+                    raise ValueError("Content not found")
                 
-                # Format transcripts as segments
+                # Build query for transcripts
+                query = select(Transcript).where(Transcript.content_id == content_id)
+                
+                # Add timestamp filter if provided
+                if last_msg_timestamp:
+                    query = query.where(Transcript.start_timestamp > last_msg_timestamp)
+                
+                # Order by timestamp and limit results
+                query = query.order_by(Transcript.start_timestamp).limit(limit)
+                
+                # Get transcripts
+                transcripts = await session.execute(query)
+                transcripts = transcripts.scalars().all()
+                
+                # Convert to segments with simplified format
                 segments = []
                 for transcript in transcripts:
+                    metadata = transcript.segment_metadata or {}
                     segment = {
-                        'content': transcript.text_content,
-                        'start_timestamp': transcript.start_timestamp.isoformat(),
-                        'end_timestamp': transcript.end_timestamp.isoformat(),
-                        'confidence': transcript.confidence,
-                        'segment_id': transcript.original_segment_id,
-                        'words': transcript.word_timing_data['words'],
-                        'speaker': transcript.segment_metadata['speaker'],
-                        'segment_metadata': transcript.segment_metadata
+                        "id": str(transcript.id),
+                        "speaker": metadata.get("speaker", "Unknown"),
+                        "content": transcript.text_content,
+                        "segment_id": transcript.original_segment_id,
+                        "html_content": None,  # Placeholder for future implementation
+                        "timestamp": transcript.start_timestamp.isoformat()
                     }
                     segments.append(segment)
                 
@@ -224,48 +310,40 @@ class TranscriptManager:
         transcript_id: UUID,
         user_id: UUID,
         target_user_id: UUID,
-        access_level: AccessLevel,
+        access_level: str,
         session: AsyncSession = None
     ) -> bool:
-        if user_id == target_user_id:
-            logger.warning("Cannot modify own access level")
-            return False
-            
         async with (session or get_session()) as session:
             try:
-                # Check if transcript exists
-                transcript = await session.execute(
-                    select(Transcript).where(Transcript.id == transcript_id)
-                )
-                if not transcript.scalar_one_or_none():
-                    logger.warning(f"Transcript not found: {transcript_id}")
-                    return False
-                
-                # Check if user has owner access
-                access_check = await session.execute(
-                    select(TranscriptAccess)
-                    .where(and_(
+                # Check if transcript exists and user has owner access
+                q = await session.execute(
+                    select(TranscriptAccess).where(and_(
                         TranscriptAccess.transcript_id == transcript_id,
                         TranscriptAccess.user_id == user_id,
-                        TranscriptAccess.access_level == AccessLevel.OWNER
+                        TranscriptAccess.access_level == AccessLevel.OWNER.value
                     ))
                 )
-                if not access_check.scalar_one_or_none():
-                    logger.warning(f"User {user_id} does not have owner access to transcript {transcript_id}")
-                    return False
+                owner_access = q.scalar_one_or_none()
+                if not owner_access:
+                    # Check if transcript exists at all
+                    q_exist = await session.execute(select(Transcript).where(Transcript.id == transcript_id))
+                    transcript_exist = q_exist.scalar_one_or_none()
+                    if transcript_exist:
+                        raise ValueError("Access denied")
+                    else:
+                        raise ValueError("Transcript not found")
                 
-                # Update or create access for target user
-                existing_access = await session.execute(
-                    select(TranscriptAccess)
-                    .where(and_(
+                # Check for existing access and update or create
+                q_existing = await session.execute(
+                    select(TranscriptAccess).where(and_(
                         TranscriptAccess.transcript_id == transcript_id,
                         TranscriptAccess.user_id == target_user_id
                     ))
                 )
-                existing = existing_access.scalar_one_or_none()
+                existing_access = q_existing.scalar_one_or_none()
                 
-                if existing:
-                    existing.access_level = access_level
+                if existing_access:
+                    existing_access.access_level = access_level
                 else:
                     new_access = TranscriptAccess(
                         transcript_id=transcript_id,
@@ -277,8 +355,7 @@ class TranscriptManager:
                 
                 await session.commit()
                 return True
-                
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Error updating transcript access: {str(e)}")
+                logger.warning(f"{str(e)}")
                 raise 

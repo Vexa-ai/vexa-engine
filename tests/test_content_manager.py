@@ -821,6 +821,37 @@ async def test_add_content_with_external_id(setup_test_users):
     test_user, test_token = setup_test_users[0]  # Get first user-token pair
     manager = await ContentManager.create()
     
+    # Clean up any existing content with this external_id
+    async with async_session() as session:
+        # First find any content with this external_id
+        result = await session.execute(
+            select(Content.id).where(
+                and_(
+                    Content.external_id == "meeting-123",
+                    Content.external_id_type == ExternalIDType.GOOGLE_MEET.value
+                )
+            )
+        )
+        content_ids = [row[0] for row in result]
+        
+        # Delete in correct order respecting foreign key constraints
+        for content_id in content_ids:
+            # Delete content_entity associations
+            await session.execute(delete(content_entity_association).where(content_entity_association.c.content_id == content_id))
+            # Delete transcript access
+            await session.execute(delete(TranscriptAccess).where(TranscriptAccess.transcript_id.in_(
+                select(Transcript.id).where(Transcript.content_id == content_id)
+            )))
+            # Delete transcripts
+            await session.execute(delete(Transcript).where(Transcript.content_id == content_id))
+            # Delete content access
+            await session.execute(delete(ContentAccess).where(ContentAccess.content_id == content_id))
+            # Delete user content
+            await session.execute(delete(UserContent).where(UserContent.content_id == content_id))
+            # Finally delete content
+            await session.execute(delete(Content).where(Content.id == content_id))
+        await session.commit()
+    
     # Test adding content with valid external ID
     content_id = await manager.add_content(
         user_id=str(test_user.id),

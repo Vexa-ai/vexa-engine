@@ -1,18 +1,24 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Union, Optional, Dict, Any
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid5, NAMESPACE_URL
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_models import User, AccessLevel
+from psql_models import User, AccessLevel, ExternalIDType
 from psql_helpers import get_session
 from transcript_manager import TranscriptManager
 from auth import get_current_user
 import logging
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/transcripts", tags=["transcripts"])
+
+def generate_deterministic_uuid(external_id: str, external_id_type: str) -> UUID:
+    """Generate a deterministic UUID from external_id and type"""
+    name = f"{external_id_type}:{external_id}"
+    return uuid5(NAMESPACE_URL, name)
 
 class SegmentBase(BaseModel):
     content: str
@@ -52,9 +58,9 @@ class TranscriptNotFoundError(TranscriptError):
         )
 
 class ContentNotFoundError(TranscriptError):
-    def __init__(self, content_id: UUID):
+    def __init__(self, external_id: str, external_id_type: str):
         super().__init__(
-            detail=f"Content not found: {content_id}",
+            detail=f"Content not found with external_id {external_id} and type {external_id_type}",
             status_code=404
         )
 
@@ -65,50 +71,89 @@ class AccessDeniedError(TranscriptError):
             status_code=403
         )
 
+class InvalidExternalIDTypeError(TranscriptError):
+    def __init__(self, external_id_type: str):
+        super().__init__(
+            detail=f"Invalid external_id_type: {external_id_type}",
+            status_code=400
+        )
+
 async def get_transcript_manager():
     return await TranscriptManager.create()
 
-@router.post("/segments/{content_id}")
+@router.post("/segments/{external_id_type}/{external_id}")
 async def ingest_transcript_segments(
-    content_id: UUID,
+    external_id: str,
+    external_id_type: str,
     segments: List[Dict[str, Any]],
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     transcript_manager: TranscriptManager = Depends(get_transcript_manager)
 ):
     try:
+        # Validate external_id_type
+        if external_id_type not in [e.value for e in ExternalIDType]:
+            raise InvalidExternalIDTypeError(external_id_type)
+
         result = await transcript_manager.ingest_transcript_segments(
-            content_id=content_id,
+            external_id=external_id,
+            external_id_type=external_id_type,
             segments=segments,
-            user_id=str(current_user.id),
+            user_id=current_user.id,
             session=session
         )
         return result
+    except InvalidExternalIDTypeError as e:
+        raise e
     except ValueError as e:
         if "Content not found" in str(e):
-            raise HTTPException(status_code=404, detail=str(e))
+            raise ContentNotFoundError(external_id, external_id_type)
         raise HTTPException(status_code=400, detail=str(e))
+    except IntegrityError as e:
+        # Check if it's specifically a user not found error
+        if 'content_access_user_id_fkey' in str(e) and 'not present in table "users"' in str(e):
+            raise HTTPException(
+                status_code=404,
+                detail="User not found. Cannot create content access record."
+            )
+        # Re-raise other integrity errors
+        raise
     except Exception as e:
         logger.error(f"Error ingesting transcript segments: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/segments/{content_id}")
+@router.get("/segments/{external_id_type}/{external_id}")
 async def get_transcript_segments(
-    content_id: UUID,
+    external_id: str,
+    external_id_type: str,
+    last_msg_timestamp: Optional[datetime] = None,
     current_user: User = Depends(get_current_user),
     manager: TranscriptManager = Depends(get_transcript_manager),
     session: AsyncSession = Depends(get_session)
 ) -> List[dict]:
     try:
+        # Validate external_id_type
+        if external_id_type not in [e.value for e in ExternalIDType]:
+            raise InvalidExternalIDTypeError(external_id_type)
+
         return await manager.get_transcript_segments(
-            content_id=content_id,
+            external_id=external_id,
+            external_id_type=external_id_type,
             user_id=current_user.id,
+            last_msg_timestamp=last_msg_timestamp,
             session=session
         )
+    except InvalidExternalIDTypeError as e:
+        raise e
+    except ValueError as e:
+        if "Content not found" in str(e):
+            raise ContentNotFoundError(external_id, external_id_type)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise TranscriptError(str(e))
+        logger.error(f"Error getting transcript segments: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.put("/{transcript_id}/access")
+@router.put("/transcripts/{transcript_id}/access")
 async def update_transcript_access(
     transcript_id: UUID,
     access_update: TranscriptAccessUpdate,
@@ -117,7 +162,7 @@ async def update_transcript_access(
     session: AsyncSession = Depends(get_session)
 ) -> dict:
     try:
-        success = await manager.update_transcript_access(
+        result = await manager.update_transcript_access(
             transcript_id=transcript_id,
             user_id=current_user.id,
             target_user_id=access_update.target_user_id,
@@ -125,12 +170,14 @@ async def update_transcript_access(
             session=session
         )
         
-        if not success:
-            raise AccessDeniedError()
-            
-        return {"status": "success"}
-        
+        if result:
+            return {"status": "success"}
+        else:
+            raise HTTPException(status_code=404, detail="Transcript not found")
     except ValueError as e:
         if "Transcript not found" in str(e):
-            raise TranscriptNotFoundError(transcript_id)
-        raise TranscriptError(str(e)) 
+            raise HTTPException(status_code=404, detail="Transcript not found")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating transcript access: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") 

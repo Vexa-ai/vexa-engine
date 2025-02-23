@@ -2,9 +2,15 @@ import pytest
 import pytest_asyncio
 import asyncio
 import os
+import httpx
 from datetime import datetime, timezone
 from uuid import uuid4
 from sqlalchemy import delete, select, or_
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import FastAPI
+from main import app
+from psql_helpers import get_session
 
 # Add project root to Python path
 import sys
@@ -112,3 +118,15 @@ async def setup_test_users():
 async def setup_test_env(setup_test_users):
     """Automatically setup test environment"""
     return setup_test_users  # Return directly instead of yield 
+
+@pytest_asyncio.fixture
+async def client() -> AsyncClient:
+    """Create async client for testing endpoints"""
+    async with AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+@pytest_asyncio.fixture
+async def test_session() -> AsyncSession:
+    """Create test database session"""
+    async with get_session() as session:
+        yield session 

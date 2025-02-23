@@ -76,7 +76,7 @@ services:
       - API_PORT=${API_PORT}
       - OPEN_ROUTER_API_KEY=${OPEN_ROUTER_API_KEY}
     ports:
-      - "127.0.0.1:${API_PORT}:${API_PORT}"
+      - "${API_PORT}:${API_PORT}"
     depends_on:
       - postgres
       - qdrant
