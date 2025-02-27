@@ -1,46 +1,37 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Union, Optional, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Header
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from uuid import UUID, uuid5, NAMESPACE_URL
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_models import User, AccessLevel, ExternalIDType
+from psql_models import AccessLevel, ExternalIDType
 from psql_helpers import get_session
 from transcript_manager import TranscriptManager
-from auth import get_current_user
+from routers.common import get_current_user
 import logging
 from sqlalchemy.exc import IntegrityError
+import os
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/transcripts", tags=["transcripts"])
 
+# Get AUTH_TOKEN from environment variables
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN")
+
 def generate_deterministic_uuid(external_id: str, external_id_type: str) -> UUID:
-    """Generate a deterministic UUID from external_id and type"""
     name = f"{external_id_type}:{external_id}"
     return uuid5(NAMESPACE_URL, name)
 
-class SegmentBase(BaseModel):
+class TranscriptSegment(BaseModel):
     content: str
     start_timestamp: datetime
-    confidence: float
-    segment_id: int
-    words: List[List[Union[str, float]]]  # [text, start_time, end_time]
-    speaker: str
-
-class LegacySegment(SegmentBase):
-    html_content: Optional[str] = None
-    html_content_short: Optional[str] = None
-    keywords: List[str] = []
     end_timestamp: Optional[datetime] = None
-
-class UpstreamSegment(SegmentBase):
-    meeting_id: str
-    end_timestamp: datetime
-    server_timestamp: datetime
-    transcription_timestamp: datetime
+    speaker: Optional[str] = None
+    confidence: float = 0.0
+    words: List[Dict[str, Any]]
+    server_timestamp: Optional[datetime] = None
     present_user_ids: List[str] = []
-    partially_present_user_ids: List[str] = []
 
 class TranscriptAccessUpdate(BaseModel):
     target_user_id: UUID
@@ -81,12 +72,22 @@ class InvalidExternalIDTypeError(TranscriptError):
 async def get_transcript_manager():
     return await TranscriptManager.create()
 
+async def verify_auth_token(token: str = Header(..., alias="Authorization")):
+    # Remove "Bearer " prefix if present
+    if token.startswith("Bearer "):
+        token = token[7:]
+    
+    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    
+    return None
+
 @router.post("/segments/{external_id_type}/{external_id}")
 async def ingest_transcript_segments(
     external_id: str,
     external_id_type: str,
     segments: List[Dict[str, Any]],
-    current_user: User = Depends(get_current_user),
+    _: None = Depends(verify_auth_token),
     session: AsyncSession = Depends(get_session),
     transcript_manager: TranscriptManager = Depends(get_transcript_manager)
 ):
@@ -94,15 +95,25 @@ async def ingest_transcript_segments(
         # Validate external_id_type
         if external_id_type not in [e.value for e in ExternalIDType]:
             raise InvalidExternalIDTypeError(external_id_type)
-
+        
+        # Basic validation for simple format
+        for segment in segments:
+            if not isinstance(segment, dict):
+                raise HTTPException(status_code=400, detail="Each segment must be a dictionary")
+            if 'content' not in segment:
+                raise HTTPException(status_code=400, detail="Each segment must contain 'content'")
+            if 'start_timestamp' not in segment:
+                raise HTTPException(status_code=400, detail="Each segment must contain 'start_timestamp'")
+            if 'words' not in segment:
+                raise HTTPException(status_code=400, detail="Each segment must contain 'words'")
+        
         result = await transcript_manager.ingest_transcript_segments(
             external_id=external_id,
             external_id_type=external_id_type,
             segments=segments,
-            user_id=current_user.id,
             session=session
         )
-        return result
+        return {"status": "success", "segments_ingested": len(result)}
     except InvalidExternalIDTypeError as e:
         raise e
     except ValueError as e:
@@ -110,13 +121,12 @@ async def ingest_transcript_segments(
             raise ContentNotFoundError(external_id, external_id_type)
         raise HTTPException(status_code=400, detail=str(e))
     except IntegrityError as e:
-        # Check if it's specifically a user not found error
         if 'content_access_user_id_fkey' in str(e) and 'not present in table "users"' in str(e):
+            logger.error(f"User not found in database: {str(e)}")
             raise HTTPException(
                 status_code=404,
-                detail="User not found. Cannot create content access record."
+                detail="User not found in database. Cannot create content access record."
             )
-        # Re-raise other integrity errors
         raise
     except Exception as e:
         logger.error(f"Error ingesting transcript segments: {str(e)}", exc_info=True)
@@ -127,22 +137,26 @@ async def get_transcript_segments(
     external_id: str,
     external_id_type: str,
     last_msg_timestamp: Optional[datetime] = None,
-    current_user: User = Depends(get_current_user),
-    manager: TranscriptManager = Depends(get_transcript_manager),
-    session: AsyncSession = Depends(get_session)
-) -> List[dict]:
+    current_user = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    transcript_manager: TranscriptManager = Depends(get_transcript_manager)
+):
     try:
         # Validate external_id_type
         if external_id_type not in [e.value for e in ExternalIDType]:
             raise InvalidExternalIDTypeError(external_id_type)
-
-        return await manager.get_transcript_segments(
+        
+        # Extract user_id from current_user tuple
+        user_id, _, _ = current_user
+        
+        segments = await transcript_manager.get_transcript_segments(
             external_id=external_id,
             external_id_type=external_id_type,
-            user_id=current_user.id,
+            user_id=UUID(user_id),
             last_msg_timestamp=last_msg_timestamp,
             session=session
         )
+        return segments
     except InvalidExternalIDTypeError as e:
         raise e
     except ValueError as e:
@@ -157,14 +171,17 @@ async def get_transcript_segments(
 async def update_transcript_access(
     transcript_id: UUID,
     access_update: TranscriptAccessUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     manager: TranscriptManager = Depends(get_transcript_manager),
     session: AsyncSession = Depends(get_session)
 ) -> dict:
     try:
+        # Extract user_id from current_user tuple
+        user_id, _, _ = current_user
+        
         result = await manager.update_transcript_access(
             transcript_id=transcript_id,
-            user_id=current_user.id,
+            user_id=UUID(user_id),
             target_user_id=access_update.target_user_id,
             access_level=access_update.access_level,
             session=session

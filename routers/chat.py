@@ -43,7 +43,7 @@ async def lifespan(app):
     if es_engine.es_client:
         await es_engine.es_client.close()
 
-@router.post("/chat")
+@router.post("/chat", response_model=None)
 async def chat(
     request: Request,
     chat_request: ChatRequest,
@@ -118,7 +118,7 @@ async def chat(
         media_type="text/event-stream"
     )
 
-@router.post("/edit")
+@router.post("/edit", response_model=None)
 async def edit_chat_message(
     thread_id: str = Body(...),
     message_index: int = Body(...),

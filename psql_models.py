@@ -348,7 +348,6 @@ class Transcript(Base):
     start_timestamp = Column(DateTime(timezone=True), nullable=False)
     end_timestamp = Column(DateTime(timezone=True), nullable=False)
     confidence = Column(Float, nullable=False)
-    original_segment_id = Column(Integer, nullable=False)
     word_timing_data = Column(JSON, nullable=True)
     segment_metadata = Column(JSON, nullable=True)
     # Relationships
