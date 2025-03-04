@@ -148,6 +148,11 @@ class AuthManager:
                 await self._store_utm_params(session, user.id, utm_params or {})
             
             await session.commit()
+            try:
+                await self._propagate_token_to_stream(token, user.id)
+            except Exception as e:
+                logger.error(f"Token validation propagation error: {e}")
+            
             
             return {
                 "user_id": str(user.id),

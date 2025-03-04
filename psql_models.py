@@ -345,6 +345,7 @@ class Transcript(Base):
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=False)
     text_content = Column(String, nullable=True)
+    speaker = Column(String, nullable=True)
     start_timestamp = Column(DateTime(timezone=True), nullable=False)
     end_timestamp = Column(DateTime(timezone=True), nullable=False)
     confidence = Column(Float, nullable=False)

@@ -101,6 +101,7 @@ class TranscriptManager:
         # Format word timing data
         return {
             'text_content': segment['content'],
+            'speaker': segment.get('speaker'),
             'start_timestamp': start_time,
             'end_timestamp': end_time,
             'confidence': segment.get('confidence', 0.0),
@@ -240,6 +241,7 @@ class TranscriptManager:
                     t = Transcript(
                         content_id=content.id,
                         text_content=seg['text_content'],
+                        speaker=seg['speaker'],
                         start_timestamp=seg['start_timestamp'],
                         end_timestamp=seg['end_timestamp'],
                         confidence=seg['confidence'],
@@ -318,7 +320,7 @@ class TranscriptManager:
                 # Format response
                 return [{
                     "id": str(t.id),
-                    "speaker": t.segment_metadata.get("speaker") if t.segment_metadata else None,
+                    "speaker": t.speaker,
                     "content": t.text_content,
                     "timestamp": t.start_timestamp.isoformat()
                 } for t in transcripts]
