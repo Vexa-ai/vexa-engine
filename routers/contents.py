@@ -3,17 +3,12 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from uuid import UUID
 from enum import Enum
-from psql_models import ContentType, AccessLevel
+from models.db import ContentType, AccessLevel
 import json
-from content_manager import ContentManager
+from services.content import ContentManager
 from routers.common import get_current_user
 
 
-from psql_models import EntityType
-
-from indexing.redis_keys import RedisKeys
-from redis import Redis
-from datetime import datetime
 
 
 router = APIRouter(prefix="/contents", tags=["contents"])
@@ -28,19 +23,17 @@ class ContentFilter(BaseModel):
     type: str
     values: List[str]
 
-class EntityRequest(BaseModel):
-    name: str
-    type: EntityType
+
 
 class AddContentRequest(BaseModel):
     type: ContentType
     text: str
     parent_id: Optional[UUID] = None
-    entities: Optional[List[EntityRequest]] = None
+
 
 class ModifyContentRequest(BaseModel):
     text: str
-    entities: Optional[List[EntityRequest]] = None
+
 
 class CreateShareLinkRequest(BaseModel):
     access_level: str
@@ -81,15 +74,8 @@ async def get_contents(
     if filters:
         try:
             filter_list = [ContentFilter(**f).dict() for f in json.loads(filters)]
-            # Validate filter types against EntityType enum
+            # Validate filter types
             for filter_spec in filter_list:
-                try:
-                    EntityType(filter_spec["type"])
-                except ValueError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Invalid filter type: {filter_spec['type']}. Must be one of: {[e.value for e in EntityType]}"
-                    )
                 if not filter_spec.get("values"):
                     raise HTTPException(
                         status_code=400,
@@ -140,8 +126,7 @@ async def add_content(
         user_id=user_id,
         type=request.type.value,
         text=request.text,
-        parent_id=request.parent_id,
-        entities=request.entities
+        parent_id=request.parent_id
     )
     return {"content_id": content_id}
 
@@ -156,8 +141,7 @@ async def modify_content(
     success = await manager.modify_content(
         user_id=user_id,
         content_id=content_id,
-        text=request.text,
-        entities=request.entities
+        text=request.text
     )
     if not success:
         raise HTTPException(status_code=404, detail="Content not found or no access")

@@ -59,15 +59,6 @@ class AccessLevel(str, Enum):
     
 
 
-# Rename association tables
-content_entity_association = Table('content_entity', Base.metadata,
-    Column('content_id', PostgresUUID(as_uuid=True), ForeignKey('content.id')),
-    Column('entity_id', Integer, ForeignKey('entities.id')),
-    Column('created_at', DateTime(timezone=True), default=datetime.utcnow),
-    Column('created_by', PostgresUUID(as_uuid=True), ForeignKey('users.id'))
-)
-
-    
 class User(Base):
     __tablename__ = 'users'
 
@@ -84,9 +75,6 @@ class User(Base):
     # Relationships
     content_access = relationship('ContentAccess', foreign_keys='ContentAccess.user_id', back_populates='user')
     transcript_access = relationship('TranscriptAccess', foreign_keys='TranscriptAccess.user_id', back_populates='user')
-    entity_access_granted = relationship('UserEntityAccess', foreign_keys='UserEntityAccess.granted_user_id', back_populates='granted_user')
-    entity_access_owner = relationship('UserEntityAccess', foreign_keys='UserEntityAccess.owner_user_id', back_populates='owner')
-    threads = relationship('Thread', back_populates='user', cascade='all, delete-orphan')
 
 class UserToken(Base):
     __tablename__ = 'user_tokens'
@@ -102,33 +90,6 @@ class UserToken(Base):
         Index('idx_user_tokens_user_id', 'user_id'),
     )
     
-
-class EntityType(str, Enum):
-    SPEAKER = 'speaker'
-    TAG = 'tag'
-
-
-class Entity(Base):
-    __tablename__ = 'entities'
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False)
-    type = Column(String(50), nullable=False)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
-    is_global = Column(Boolean, default=False)
-    entity_metadata = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    
-    __table_args__ = (
-        CheckConstraint(
-            type.in_([e.value for e in EntityType]),
-            name='valid_entity_type'
-        ),
-    )
-    
-    content = relationship('Content', secondary=content_entity_association, back_populates='entities')
-    user_access = relationship('UserEntityAccess', back_populates='entity', cascade='all, delete-orphan')
-
 
 class ContentType(str, Enum):
     MEETING = 'meeting'
@@ -159,7 +120,6 @@ class Content(Base):
     
     # Existing relationships
     user_content = relationship('UserContent', back_populates='content')
-    entities = relationship('Entity', secondary=content_entity_association, back_populates='content')
     transcripts = relationship('Transcript', back_populates='content', cascade='all, delete-orphan')
     user_access = relationship('ContentAccess', back_populates='content', cascade='all, delete-orphan')
 
@@ -208,138 +168,6 @@ class UserContent(Base):
         )
     )
 
-
-    
-class Thread(Base):
-    __tablename__ = 'threads'
-
-    thread_id = Column(String, primary_key=True)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    content_id = Column(PostgresUUID(as_uuid=True), ForeignKey('content.id'), nullable=True)
-    entity_id = Column(Integer, ForeignKey('entities.id'), nullable=True)
-    prompt_id = Column(Integer, ForeignKey('prompts.id'), nullable=True)
-    thread_name = Column(String(255))
-    messages = Column(Text)
-    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow)
-    meta = Column(JSONB, nullable=True)
-    is_archived = Column(Boolean, default=False, nullable=False, server_default='false')
-
-    user = relationship('User', back_populates='threads')
-    content = relationship('Content')
-    prompt = relationship('Prompt', back_populates='threads')
-    entity = relationship('Entity')
-
-    __table_args__ = (
-        Index('idx_thread_user_content', 'user_id', 'content_id'),
-        Index('idx_thread_user_entity', 'user_id', 'entity_id'),
-        Index('idx_thread_prompt', 'prompt_id'),
-        Index('idx_thread_metadata', 'meta', postgresql_using='gin'),
-        CheckConstraint(
-            '(content_id IS NULL AND entity_id IS NOT NULL) OR (content_id IS NOT NULL AND entity_id IS NULL) OR (content_id IS NULL AND entity_id IS NULL)',
-            name='content_entity_mutex'
-        )
-    )
-    
-
-
-class DefaultAccess(Base):
-    __tablename__ = 'default_access'
-
-    owner_user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), primary_key=True)
-    granted_user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), primary_key=True)
-    access_level = Column(
-        String(20),
-        nullable=False,
-        default=AccessLevel.SHARED.value,
-        server_default=AccessLevel.SHARED.value
-    )
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-
-    owner = relationship('User', foreign_keys=[owner_user_id])
-    granted_user = relationship('User', foreign_keys=[granted_user_id])
-
-    __table_args__ = (
-        CheckConstraint(
-            access_level.in_([e.value for e in AccessLevel]),
-            name='valid_default_access_level'
-        ),
-    )
-
-class ShareLink(Base):
-    __tablename__ = 'share_links'
-
-    token = Column(String(64), primary_key=True)
-    owner_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    target_email = Column(String(255), nullable=True)
-    access_level = Column(
-        String(20),
-        nullable=False,
-        default=AccessLevel.SHARED.value
-    )
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    is_used = Column(Boolean, default=False)
-    accepted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
-    accepted_at = Column(DateTime(timezone=True), nullable=True)
-    shared_content = Column(ARRAY(PostgresUUID), nullable=True)  # Array of content IDs
-
-    owner = relationship('User', foreign_keys=[owner_id])
-    accepted_user = relationship('User', foreign_keys=[accepted_by])
-
-    __table_args__ = (
-        CheckConstraint(
-            access_level.in_([e.value for e in AccessLevel]),
-            name='valid_share_link_access_level'
-        ),
-    )
-
-class UTMParams(Base):
-    __tablename__ = 'utm_params'
-
-    id = Column(Integer, primary_key=True)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    utm_source = Column(String(255), nullable=True)
-    utm_medium = Column(String(255), nullable=True)
-    utm_campaign = Column(String(255), nullable=True)
-    utm_term = Column(String(255), nullable=True)
-    utm_content = Column(String(255), nullable=True)
-    ref = Column(String(255), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-
-    user = relationship('User', backref='utm_params')
-
-    __table_args__ = (
-        Index('idx_utm_params_user_id', 'user_id'),
-    )
-
-
-# Insert the PromptTypeEnum definition if not present
-class PromptTypeEnum(str, Enum):
-    MEETING = 'meeting'
-    NOTE = 'note'
-    SPEAKER = 'speaker'
-    TAG = 'tag'
-    CHAT = 'chat'
-
-class Prompt(Base):
-    __tablename__ = 'prompts'
-
-    id = Column(Integer, primary_key=True)
-    prompt = Column(Text, nullable=False)
-    alias = Column(String(255), nullable=True)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
-    type = Column(PostgresENUM('meeting', 'note', 'speaker', 'tag', 'chat', name='prompttypeenum'), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    
-    user = relationship('User')
-    threads = relationship('Thread', back_populates='prompt')
-
-    __table_args__ = (
-        Index('idx_prompts_user_id', 'user_id'),
-        CheckConstraint(type.in_([e.value for e in PromptTypeEnum]), name='valid_prompt_type')
-    )
-
-
 class Transcript(Base):
     __tablename__ = 'transcript'
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -380,21 +208,3 @@ class TranscriptAccess(Base):
     transcript = relationship('Transcript', back_populates='user_access')
     user = relationship('User', foreign_keys=[user_id])
     granter = relationship('User', foreign_keys=[granted_by])
-
-class UserEntityAccess(Base):
-    __tablename__ = 'user_entity_access'
-    id = Column(Integer, primary_key=True)
-    entity_id = Column(Integer, ForeignKey('entities.id'), nullable=False)
-    owner_user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    granted_user_id = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    granted_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    granted_by = Column(PostgresUUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
-    access_level = Column(PostgresENUM('owner', 'shared', 'removed', name='accesslevelenum'), nullable=False)
-    # Relationships
-    entity = relationship('Entity', back_populates='user_access')
-    owner = relationship('User', foreign_keys=[owner_user_id])
-    granted_user = relationship('User', foreign_keys=[granted_user_id])
-    granter = relationship('User', foreign_keys=[granted_by])
-
-# The following code should be placed inside an async function to avoid the "async" not allowed outside of async function error.
-

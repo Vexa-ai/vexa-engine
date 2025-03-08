@@ -1,13 +1,12 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
 from typing import Optional, Dict
-from auth_manager import AuthManager
-from token_manager import TokenManager
+from services.auth import AuthManager
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_helpers import get_session
+from services.psql_helpers import get_session
 from sqlalchemy import select
-from psql_models import UserToken, User
+from models.db import UserToken, User
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])

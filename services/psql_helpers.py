@@ -21,7 +21,7 @@ from sqlalchemy import Index, UniqueConstraint, CheckConstraint
 from sqlalchemy import Table, Column, Integer, String, Text, Float, Boolean, ForeignKey
 from sqlalchemy import distinct
 
-from psql_models import (
+from models.db import (
     Base, engine, async_session, DATABASE_URL,
 )
 

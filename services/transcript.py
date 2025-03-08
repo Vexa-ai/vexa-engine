@@ -3,8 +3,8 @@ from typing import List, Dict, Optional, Any
 from uuid import UUID, uuid5, NAMESPACE_URL
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_models import Content, Transcript, TranscriptAccess, AccessLevel, ContentType, UserContent, ContentAccess
-from psql_helpers import get_session
+from models.db import Content, Transcript, TranscriptAccess, AccessLevel, ContentType, UserContent, ContentAccess
+from services.psql_helpers import get_session
 import logging
 import json
 

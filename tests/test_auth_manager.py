@@ -1,6 +1,6 @@
 import pytest
 import pytest_asyncio
-from auth_manager import AuthManager
+from services.auth import AuthManager
 from unittest.mock import patch, MagicMock
 import asyncio
 

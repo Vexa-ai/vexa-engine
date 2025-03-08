@@ -4,9 +4,6 @@ alembic
 asyncpg
 psycopg2-binary
 
-# Vector Database
-qdrant-client
-
 # API Framework
 fastapi
 uvicorn[standard]
@@ -21,37 +18,17 @@ python-dateutil
 pandas
 numpy
 pydantic
-python-jose[cryptography]
-passlib[bcrypt]
+pydantic[email]
 python-dotenv
 
 # Development
 jupyter
 ipykernel
-
-instructor
-redis
-tiktoken
-litellm
-pydantic[email]
-tabulate
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
-fastembed
 fastapi
 uvicorn[standard]
-python-multipart
-fastapi-cache2 
 
-voyageai
-elasticsearch
 
 
 pytest
 pytest-asyncio
-pydantic
-qdrant-client
-langchain-text-splitters
-pydantic-ai>=0.0.15
 

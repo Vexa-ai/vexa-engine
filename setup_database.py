@@ -3,7 +3,7 @@ import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 from psql_models import Base, DATABASE_URL
 
-from psql_helpers import _compile_drop_table
+from dashboard.services.psql_helpers import _compile_drop_table
 
 
 async def init_db():

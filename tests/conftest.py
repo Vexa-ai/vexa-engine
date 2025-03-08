@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Now import app and models after adding to path
 from main import app
-from psql_helpers import get_session
+from dashboard.services.psql_helpers import get_session
 from psql_models import (
     Base, User, UserToken, UserContent, ShareLink, TranscriptAccess,
     ContentAccess, Entity, Content, content_entity_association, UTMParams, 

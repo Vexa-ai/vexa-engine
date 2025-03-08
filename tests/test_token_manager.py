@@ -2,7 +2,7 @@ import pytest
 import pytest_asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from token_manager import TokenManager
+from dashboard.services.token import TokenManager
 from psql_models import User, UserToken, UserContent, async_session, Thread
 from sqlalchemy import select, delete, text
 from unittest.mock import patch, MagicMock

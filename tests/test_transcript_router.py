@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from psql_models import User, AccessLevel, ExternalIDType, Transcript, TranscriptAccess, Content, UserContent
 from routers.transcripts import router, get_transcript_manager, InvalidExternalIDTypeError
-from transcript_manager import TranscriptManager
-from psql_helpers import get_session
+from dashboard.services.transcript import TranscriptManager
+from dashboard.services.psql_helpers import get_session
 from auth import get_current_user
 from typing import List, Dict, Optional, Any
 

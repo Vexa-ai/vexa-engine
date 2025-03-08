@@ -1,31 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
 
 import sys
-import redis
 import os
 import logging
 import logging.handlers
 
-from analytics.api import router as analytics_router
 from routers.auth import router as auth_router
-from routers.chat import router as chat_router
-from routers.contents import router as contents_router
-from routers.entities import router as entities_router
-from routers.threads import router as threads_router
-from routers.prompts import router as prompts_router
 from routers.transcripts import router as transcripts
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize FastAPI cache with Redis backend
-    FastAPICache.init(
-        backend=RedisBackend(redis_client),
-        prefix="fastapi-cache"
-    )
+    # Placeholder for any future initialization if needed
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -41,16 +28,8 @@ app.add_middleware(
 
 # Other middleware and routes should come after CORS middleware
 
-
-    
-
-REDIS_HOST=os.getenv('REDIS_HOST', '127.0.0.1')
-if REDIS_HOST == '127.0.0.1':
-    DEV = True
-REDIS_PORT=int(os.getenv('REDIS_PORT', 6379))
-
-# Initialize Redis connection
-redis_client = redis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}")
+# Development flag
+DEV = os.getenv('REDIS_HOST', '127.0.0.1') == '127.0.0.1'
 
 # Add logging configuration after the imports and before app initialization
 def setup_logger():
@@ -83,15 +62,8 @@ def setup_logger():
 
 logger = setup_logger()
 
-
 # Add this with other router includes
 app.include_router(auth_router)
-app.include_router(analytics_router)
-app.include_router(chat_router)
-app.include_router(contents_router)
-app.include_router(entities_router)
-app.include_router(threads_router)
-app.include_router(prompts_router)
 app.include_router(transcripts)
 
 if __name__ == "__main__":

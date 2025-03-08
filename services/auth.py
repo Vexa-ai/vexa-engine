@@ -2,14 +2,13 @@ from typing import Dict, Optional
 import logging
 import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_helpers import get_session
+from services.psql_helpers import get_session
 import uuid
 import re
-from psql_models import User, UserToken, UTMParams
+from models.db import User, UserToken
 from sqlalchemy import select
 from fastapi import HTTPException
-from google.oauth2 import id_token
-from google.auth.transport import requests
+
 import os
 import httpx
 from pydantic import BaseModel
@@ -77,38 +76,6 @@ class AuthManager:
         await self._propagate_token_to_stream(token, user_id)
         return token
 
-    async def _store_utm_params(self, session: AsyncSession, user_id: uuid.UUID, utm_params: Dict[str, str]):
-        if not utm_params:
-            return
-        utm = UTMParams(
-            user_id=user_id,
-            utm_source=utm_params.get('utm_source'),
-            utm_medium=utm_params.get('utm_medium'),
-            utm_campaign=utm_params.get('utm_campaign'),
-            utm_term=utm_params.get('utm_term'),
-            utm_content=utm_params.get('utm_content'),
-            ref=utm_params.get('ref')
-        )
-        session.add(utm)
-
-    async def _verify_google_token(self, token: str) -> Dict:
-        try:
-            # Specify the CLIENT_ID of your app that was created in Google Developer Console
-            idinfo = id_token.verify_oauth2_token(token, requests.Request())
-            
-            if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
-                raise ValueError('Wrong issuer.')
-                
-            return {
-                'email': idinfo['email'],
-                'name': idinfo.get('name'),
-                'given_name': idinfo.get('given_name'),
-                'family_name': idinfo.get('family_name'),
-                'picture': idinfo.get('picture')
-            }
-        except ValueError as e:
-            logger.error(f"Token verification failed: {str(e)}")
-            raise ValueError("Invalid token")
 
     async def default_auth(
         self,
@@ -161,41 +128,6 @@ class AuthManager:
                 "username": user.username
             }
 
-    async def google_auth(
-        self,
-        token: str,
-        utm_params: Optional[Dict[str, str]] = None,
-        max_retries: int = 3,
-        base_delay: int = 1,
-        session: AsyncSession = None
-    ) -> Dict:
-        async with (session or get_session()) as session:
-            try:
-                for attempt in range(max_retries):
-                    try:
-                        await asyncio.sleep(base_delay * (attempt + 1))
-                        google_info = await self._verify_google_token(token)
-                        
-                        # Create or get user
-                        result = await self.default_auth(
-                            email=google_info['email'],
-                            username=google_info.get('name'),
-                            first_name=google_info.get('given_name'),
-                            last_name=google_info.get('family_name'),
-                            utm_params=utm_params,
-                            session=session
-                        )
-                        return result
-                        
-                    except Exception as e:
-                        if "Token used too early" in str(e) and attempt < max_retries - 1:
-                            continue
-                        raise
-            except Exception as e:
-                logger.error(f"Google auth failed: {str(e)}", exc_info=True)
-                if "Token used too early" in str(e):
-                    raise ValueError("Authentication timing error. Please try again.")
-                raise ValueError(str(e))
 
     async def submit_token(self, token: str, session: AsyncSession = None) -> TokenResponse:
         async with (session or get_session()) as session:

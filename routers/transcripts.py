@@ -4,9 +4,9 @@ from datetime import datetime
 from uuid import UUID, uuid5, NAMESPACE_URL
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_models import AccessLevel, ExternalIDType
-from psql_helpers import get_session
-from transcript_manager import TranscriptManager
+from models.db import AccessLevel, ExternalIDType
+from services.psql_helpers import get_session
+from services.transcript import TranscriptManager
 from routers.common import get_current_user
 import logging
 from sqlalchemy.exc import IntegrityError

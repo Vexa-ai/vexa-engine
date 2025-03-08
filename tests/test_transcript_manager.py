@@ -2,9 +2,9 @@ import pytest
 import pytest_asyncio
 from datetime import datetime, timezone, timedelta
 from uuid import UUID, uuid4
-from transcript_manager import TranscriptManager, generate_deterministic_uuid
+from dashboard.services.transcript import TranscriptManager, generate_deterministic_uuid
 from psql_models import Content, Transcript, TranscriptAccess, AccessLevel, ContentType, ExternalIDType, UserContent, ContentAccess
-from psql_helpers import get_session, async_session
+from dashboard.services.psql_helpers import get_session, async_session
 from sqlalchemy import select, delete, and_, func
 from vexa import VexaAPI
 import json

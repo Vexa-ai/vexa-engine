@@ -16,35 +16,6 @@ services:
       - dev_backend_network
     restart: unless-stopped
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    volumes:
-      - ./qdrant_storage:/qdrant/storage
-    networks:
-      - dev_backend_network
-    restart: unless-stopped
-
-  redis:
-    image: redis:7.2-alpine
-    volumes:
-      - redis_data:/data
-    networks:
-      - dev_backend_network
-    restart: unless-stopped
-
-  elasticsearch:
-    image: elasticsearch:8.12.1
-    container_name: elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
-    networks:
-      - dev_backend_network
-    restart: unless-stopped
-
   vexa-backend:
     build:
       context: .
@@ -58,8 +29,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT}
-      - QDRANT_HOST=${QDRANT_HOST}
-      - QDRANT_PORT=${QDRANT_PORT}
       - VEXA_API_URL=${VEXA_API_URL}
       - API_URL=${API_URL}
       - AUTH_TOKEN=${AUTH_TOKEN}
@@ -80,8 +49,6 @@ services:
       - "${API_PORT}:${API_PORT}"
     depends_on:
       - postgres
-      - qdrant
-      - redis
     volumes:
       - .:/app
       - backend_venv:/app/.venv

@@ -10,7 +10,7 @@ from psql_models import (
     ContentType, AccessLevel, EntityType, ContentAccess, ExternalIDType,
     TranscriptAccess, Transcript
 )
-from psql_helpers import get_session
+from services.psql_helpers import get_session
 from redis import Redis
 from indexing.redis_keys import RedisKeys
 from psql_access import has_content_access, get_meeting_token
@@ -567,48 +567,6 @@ class ContentManager:
                 accepting_email=accepting_email
             )
 
-    async def queue_content_indexing(
-        self,
-        user_id: str,
-        content_id: UUID,
-        session: AsyncSession = None
-    ) -> Dict[str, str]:
-        async with (session or get_session()) as session:
-            # Verify access
-            if not await has_content_access(session, UUID(user_id), content_id):
-                raise ValueError("No access to content")
-            
-            content_id_str = str(content_id)
-            
-            # Check if content is already being processed
-            if redis_client.sismember(RedisKeys.PROCESSING_SET, content_id_str):
-                return {
-                    "status": "already_processing",
-                    "message": "Content is already being processed"
-                }
-            
-            # Check if content is already in queue
-            if redis_client.zscore(RedisKeys.INDEXING_QUEUE, content_id_str) is not None:
-                return {
-                    "status": "already_queued",
-                    "message": "Content is already in indexing queue"
-                }
-            
-            # Remove from failed set if present
-            failed_info = redis_client.hget(RedisKeys.FAILED_SET, content_id_str)
-            if failed_info:
-                redis_client.hdel(RedisKeys.FAILED_SET, content_id_str)
-            
-            # Add to indexing queue
-            redis_client.zadd(
-                RedisKeys.INDEXING_QUEUE,
-                {content_id_str: datetime.now().timestamp()}
-            )
-            
-            return {
-                "status": "queued",
-                "message": "Content has been queued for indexing"
-            }
 
     async def update_content_access(
         self,

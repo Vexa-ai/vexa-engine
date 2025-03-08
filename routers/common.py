@@ -1,14 +1,20 @@
 import logging
 from fastapi import HTTPException, Header, Depends
-from token_manager import TokenManager
-from psql_models import User
+from services.auth import AuthManager, TokenResponse
+from models.db import User
 from sqlalchemy.ext.asyncio import AsyncSession
-from psql_helpers import get_session
+from services.psql_helpers import get_session
 from sqlalchemy import select
 from uuid import UUID
-
+    
 logger = logging.getLogger(__name__)
-token_manager = TokenManager()
+auth_manager = None
+
+async def get_auth_manager():
+    global auth_manager
+    if auth_manager is None:
+        auth_manager = await AuthManager.create()
+    return auth_manager
 
 async def get_current_user(
     authorization: str = Header(...),
@@ -17,10 +23,10 @@ async def get_current_user(
     logger.debug("Checking authorization token")
     token = authorization.split("Bearer ")[-1]
     try:
-        user_id, user_name = await token_manager.check_token(token)
-        if not user_id:
-            logger.warning("Invalid token provided")
-            raise HTTPException(status_code=401, detail="Invalid token")
+        auth_mgr = await get_auth_manager()
+        token_response = await auth_mgr.submit_token(token, session)
+        user_id = token_response.user_id
+        user_name = token_response.user_name
         
         # Verify user exists in database
         user_query = select(User).where(User.id == UUID(user_id))
@@ -32,8 +38,10 @@ async def get_current_user(
             raise HTTPException(status_code=404, detail="User not found in database")
         
         logger.debug(f"Authenticated user: {user_name} ({user_id})")
-        return user_id, user_name, token
+        return user
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Authentication failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=401, detail="Invalid token")
+        logger.error(f"Authentication error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
