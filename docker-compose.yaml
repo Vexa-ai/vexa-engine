@@ -20,33 +20,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-      - POSTGRES_HOST=${POSTGRES_HOST}
-      - POSTGRES_PORT=${POSTGRES_PORT}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT}
-      - VEXA_API_URL=${VEXA_API_URL}
-      - API_URL=${API_URL}
-      - AUTH_TOKEN=${AUTH_TOKEN}
-      - SERPER_API_KEY=${SERPER_API_KEY}
-      - ANTROPIC_API_KEY=${ANTROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - VEXA_TOKEN=${VEXA_TOKEN}
-      - VEXA_SERVICE_TOKEN=${VEXA_SERVICE_TOKEN}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - TOGETHERAI_API_KEY=${TOGETHERAI_API_KEY}
-      - TOGETHERAI_API_KEY=${TOGETHERAI_API_KEY}
-      - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
-      - ELASTICSEARCH_PORT=${ELASTICSEARCH_PORT}
-      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
-      - API_PORT=${API_PORT}
-      - OPEN_ROUTER_API_KEY=${OPEN_ROUTER_API_KEY}
+    env_file:
+      - .env
     ports:
-      - "${API_PORT}:${API_PORT}"
+      - "${ENGINE_API_PORT}:${ENGINE_API_PORT}"
     depends_on:
       - postgres
     volumes:
