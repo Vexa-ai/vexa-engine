@@ -16,7 +16,7 @@ services:
       - dev_backend_network
     restart: unless-stopped
 
-  vexa-backend:
+  vexa-engine:
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,8 +32,8 @@ services:
       - backend_cache:/app/__pycache__
     networks:
       - dev_backend_network
-    command: ["tail", "-f", "/dev/null"]
-    #command: ["/bin/bash", "-c", "/app/control.sh start && tail -f /dev/null"]
+    command: python main.py
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

@@ -9,7 +9,7 @@ from auth_manager import AuthManager
 # Test data
 VALID_EMAIL = "test@example.com"
 INVALID_EMAIL = "not_an_email"
-STREAMQUEUE_URL = os.getenv('STREAMQUEUE_URL')
+TRANSCRIPTION_SERVICE_API_URL = os.getenv('TRANSCRIPTION_SERVICE_API_URL')
 
 @pytest.fixture
 def auth_manager():

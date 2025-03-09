@@ -26,7 +26,7 @@ file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelnam
 logger.addHandler(file_handler)
 logger.setLevel(logging.INFO)
 
-STREAMQUEUE_URL = os.getenv('STREAMQUEUE_URL')
+TRANSCRIPTION_SERVICE_API_URL = os.getenv('TRANSCRIPTION_SERVICE_API_URL')
 STREAMQUEUE_API_KEY = os.getenv('STREAMQUEUE_API_KEY')
 
 class TokenResponse(BaseModel):
@@ -110,10 +110,7 @@ class AuthManager:
                 
                 # Create token
                 token = await self._create_user_token(session, user.id)
-                
-                # Store UTM params
-                await self._store_utm_params(session, user.id, utm_params or {})
-            
+
             await session.commit()
             try:
                 await self._propagate_token_to_stream(token, user.id)
