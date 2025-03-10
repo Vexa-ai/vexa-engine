@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/transcripts", tags=["transcripts"])
 
-# Get AUTH_TOKEN from environment variables
-AUTH_TOKEN = os.environ.get("AUTH_TOKEN")
+# Get ENGINE_API_TOKEN from environment variables
+ENGINE_API_TOKEN = os.environ.get("ENGINE_API_TOKEN")
 
 def generate_deterministic_uuid(external_id: str, external_id_type: str) -> UUID:
     name = f"{external_id_type}:{external_id}"
@@ -77,7 +77,7 @@ async def verify_auth_token(token: str = Header(..., alias="Authorization")):
     if token.startswith("Bearer "):
         token = token[7:]
     
-    if token != AUTH_TOKEN:
+    if token != ENGINE_API_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     
     return None

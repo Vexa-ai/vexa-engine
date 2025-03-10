@@ -27,7 +27,7 @@ logger.addHandler(file_handler)
 logger.setLevel(logging.INFO)
 
 TRANSCRIPTION_SERVICE_API_URL = os.getenv('TRANSCRIPTION_SERVICE_API_URL')
-STREAMQUEUE_API_KEY = os.getenv('STREAMQUEUE_API_KEY')
+TRANSCRIPTION_SERVICE_API_TOKEN = os.getenv('TRANSCRIPTION_SERVICE_API_TOKEN')
 
 class TokenResponse(BaseModel):
     user_id: str
@@ -37,8 +37,8 @@ class TokenResponse(BaseModel):
 
 class AuthManager:
     def __init__(self):
-        self.stream_queue_url = os.getenv('STREAMQUEUE_URL')
-        self.stream_queue_api_key = os.getenv('STREAMQUEUE_API_KEY')
+        self.stream_queue_url = os.getenv('TRANSCRIPTION_SERVICE_API_URL')
+        self.stream_queue_api_key = os.getenv('TRANSCRIPTION_SERVICE_API_TOKEN')
 
     @classmethod
     async def create(cls):
