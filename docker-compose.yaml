@@ -32,8 +32,7 @@ services:
       - backend_cache:/app/__pycache__
     networks:
       - dev_backend_network
-    command: python main.py
-
+    command: sh -c "python setup_database.py && python main.py"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -49,9 +48,3 @@ volumes:
   backend_cache:
   redis_data:
   elasticsearch_data:
-
-
-
-  #docker exec -it -u root multiassistant-vexa-backend-1 /bin/bash
-
-  # docker exec -it -u root multiassistant-vexa-frontend-1 /bin/bash 
