@@ -21,3 +21,5 @@ logs/
 *.log
 logs/api.log
 mocks/
+
+data/
