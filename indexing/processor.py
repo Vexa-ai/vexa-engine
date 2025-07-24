@@ -5,16 +5,17 @@ import uuid
 from qdrant_client.models import PointStruct
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-from vexa import VexaAPI
+
 from elasticsearch import AsyncElasticsearch
 from qdrant_client import AsyncQdrantClient
-from core import generic_call, system_msg, user_msg
-from psql_models import Content, ContentType
-from .content_relations import update_child_content
-from pydantic_models import TopicsExtraction
-from .decorators import handle_processing_errors, with_logging
+
+from .instructor_models import TopicsExtraction
+
+from llm import generic_call, system_msg, user_msg
+
+
 from .prompts import DOCUMENT_CONTEXT_PROMPT, CHUNK_CONTEXT_PROMPT
-from .search_document import SearchDocument
+from .models import SearchDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import asyncio
 import logging
@@ -23,11 +24,10 @@ logger = logging.getLogger(__name__)
 
 class ProcessingError(Exception): pass
 
-class ContentProcessor:
+class IndexingProcessor:
     def __init__(self, qdrant_engine, es_engine, chunk_size: int = 1000, chunk_overlap: int = 200):
         self.qdrant_engine = qdrant_engine
         self.es = es_engine
-        self.vexa = VexaAPI()
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -35,109 +35,19 @@ class ContentProcessor:
             separators=["\n\n", "\n", ".", "!", "?", ",", " ", ""]
         )
 
-    @handle_processing_errors(ProcessingError)
-    @with_logging('info')
-    async def process_content(self, content_id: str, user_id: str, token: str, session: AsyncSession) -> None:
-        content = await session.get(Content, content_id)
-        if not content:
-            raise ProcessingError("Content not found")
+
+    async def _chunk_by_topic_and_speaker(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Create chunks by grouping consecutive messages from the same speaker and topic.
+        
+        Args:
+            df: DataFrame with columns ['absolute_start_time', 'speaker', 'text']
             
-        if content.type == ContentType.NOTE.value:
-            await self._process_note_content(content, user_id, session)
-        elif content.type == ContentType.MEETING.value:
-            await self._process_meeting_content(content, user_id, token, session)
-        
-        content.is_indexed = True
-        await session.commit()
-
-    def _split_note_into_chunks(self, note_text: str) -> List[str]:
-        """Split note text into smaller chunks using LangChain's RecursiveCharacterTextSplitter."""
-        logger.info(f"Creating chunks from text of length {len(note_text)}")
-        if not note_text:
-            logger.warning("Empty note text provided")
-            return []
-            
-        chunks = self.text_splitter.split_text(note_text)
-        logger.info(f"Created {len(chunks)} chunks")
-        for i, chunk in enumerate(chunks):
-            logger.debug(f"Chunk {i}: {len(chunk)} chars")
-            if i > 0:  # Log overlap with previous chunk
-                overlap = set(chunks[i-1][-200:]).intersection(set(chunk[:200]))
-                logger.debug(f"Overlap with previous chunk: {len(overlap)} chars")
-        return chunks
-
-    @handle_processing_errors()
-    async def _process_note_content(self, content: Content, user_id: str, session: AsyncSession) -> None:
-        stmt = select(Content.text).where(and_(Content.id == content.id, Content.type == ContentType.NOTE.value))
-        note_text = await session.scalar(stmt)
-        if not note_text:
-            raise ProcessingError("Note text not found")
-            
-        # Split note into chunks
-        chunks = self._split_note_into_chunks(note_text)
-        if not chunks:
-            logger.warning("No chunks created from note text")
-            return
-            
-        # Contextualize chunks
-        doc_content = '\n'.join(chunks)
-        contextualized_chunks = await self._contextualize_chunks(chunks, doc_content)
-        
-        # Prepare and index documents
-        es_documents, qdrant_points = await self._prepare_search_documents(
-            chunks=chunks,
-            contextualized_chunks=contextualized_chunks,
-            content_id=str(content.id),
-            timestamp=content.timestamp,
-            topic_provider=lambda _: 'Note',  # Fixed topic for notes
-            speaker_provider=lambda _: str(user_id),  # Fixed speaker for notes
-            speakers=[str(user_id)],
-            content_type=ContentType.NOTE
-        )
-        await self._index_to_search_engines(es_documents, qdrant_points)
-
-    @handle_processing_errors()
-    async def _process_meeting_content(self, content: Content, user_id: str, token: str, session: AsyncSession) -> None:
-        self.vexa.token = token
-        
-        # Get user info before requesting transcription
-        await self.vexa.get_user_info()
-        
-        # Get transcription with better error handling
-        logger.info(f"Requesting transcription for content_id={content.id}, user_id={user_id}")
-        transcription_result = await self.vexa.get_transcription(meeting_session_id=str(content.id))
-        
-        if not transcription_result:
-            logger.warning(
-                f"No transcription data available for meeting {content.id}. "
-                f"User ID: {user_id}, Token: {token[:8]}..."
-            )
-            # Mark as processed but empty to avoid reprocessing
-            content.is_indexed = True
-            await session.commit()
-            return
-        
-        try:
-            df, formatted_output, start_datetime, speakers, transcript = transcription_result
-        except (TypeError, ValueError) as e:
-            logger.error(
-                f"Invalid transcription data format for meeting {content.id}. "
-                f"User ID: {user_id}, Error: {e}"
-            )
-            raise ProcessingError(f"Invalid transcription data format: {e}")
-
-        if df.empty:
-            raise ProcessingError(
-                f"No transcription data available for meeting {content.id}. "
-                f"User ID: {user_id}"
-            )
-
-        es_documents, qdrant_points = await self._merge_meeting_into_chunks(df, str(content.id), start_datetime, speakers)
-        await self._index_to_search_engines(es_documents, qdrant_points)
-
-    async def _merge_meeting_into_chunks(self, df: pd.DataFrame, content_id: str, start_datetime: datetime, speakers: List[str]) -> Tuple[List[Dict], List[PointStruct]]:
-        # Convert to markdown
-        input_text = df[['formatted_time','speaker', 'content']].to_markdown()
+        Returns:
+            DataFrame with grouped chunks containing ['absolute_start_time', 'speaker', 'topic', 'text']
+        """
+        # Convert to markdown for topic extraction
+        input_text = df[['absolute_start_time','speaker', 'text']].to_markdown()
         
         # Use RecursiveCharacterTextSplitter with OpenAI's message length limit
         MAX_MESSAGE_LENGTH = 1000000  # Leaving some buffer
@@ -155,23 +65,32 @@ class ContentProcessor:
         # Make single API call with all chunks as separate messages
         topics_result = await TopicsExtraction.call(messages)
         
-        # Continue with existing processing
-        topics_df = pd.DataFrame([{"formatted_time": m.formatted_time, "topic": m.topic} 
+        # Create topics DataFrame and merge with original data
+        topics_df = pd.DataFrame([{"absolute_start_time": m.absolute_start_time, "topic": m.topic} 
                                 for m in topics_result.mapping])
         
-        df = df.merge(topics_df, on='formatted_time', how='left')[['formatted_time','topic','speaker','content']].ffill()
+        df = df.merge(topics_df, on='absolute_start_time', how='left')[['absolute_start_time','topic','speaker','text']].ffill()
+        
+        # Create speaker_shift column to identify when speaker or topic changes
         df['speaker_shift'] = (df['speaker']+df['topic'] != df['speaker']+df['topic'].shift(1)).cumsum()
         
+        # Group by speaker_shift to create chunks
         df_grouped = df.groupby('speaker_shift').agg({
-            'formatted_time': 'first',
+            'absolute_start_time': 'first',
             'speaker': 'first',
             'topic': 'first',
-            'content': ' '.join
+            'text': ' '.join
         }).reset_index()
         
-        chunks = (df_grouped['speaker'] + ': ' + df_grouped['content']).tolist()
-        doc_content = '\n'.join(chunks)
-        contextualized_chunks = await self._contextualize_chunks(chunks, doc_content)
+        return df_grouped
+
+    async def _merge_chunks(self, df: pd.DataFrame, content_id: str, start_datetime: datetime, speakers: List[str]) -> Tuple[List[Dict], List[PointStruct]]:
+        # Use the new chunking method
+        df_grouped = await self._chunk_by_topic_and_speaker(df)
+        
+        chunks = (df_grouped['speaker'] + ': ' + df_grouped['text']).tolist()
+        doc_text = '\n'.join(chunks)
+        contextualized_chunks = await self._contextualize_chunks(chunks, doc_text)
         
         return await self._prepare_search_documents(
             chunks=chunks,
@@ -181,7 +100,6 @@ class ContentProcessor:
             topic_provider=lambda i: df_grouped.iloc[i].topic,
             speaker_provider=lambda i: df_grouped.iloc[i].speaker,
             speakers=speakers,
-            content_type=ContentType.MEETING
         )
 
     async def _prepare_search_documents(
@@ -193,7 +111,6 @@ class ContentProcessor:
         topic_provider: Callable[[int], str],
         speaker_provider: Callable[[int], str],
         speakers: List[str],
-        content_type: ContentType
     ) -> Tuple[List[Dict], List[PointStruct]]:
         """Prepare search documents with embeddings for both Elasticsearch and Qdrant."""
         # Generate embeddings
@@ -210,7 +127,6 @@ class ContentProcessor:
                 topic=topic_provider(i),
                 speaker=speaker_provider(i),
                 speakers=speakers,
-                content_type=content_type
             )
             for i, (chunk, context) in enumerate(zip(chunks, contextualized_chunks))
         ]
@@ -221,18 +137,18 @@ class ContentProcessor:
         
         return es_documents, qdrant_points
 
-    async def _contextualize_chunks(self, chunks: List[str], doc_content: str) -> List[str]:
+    async def _contextualize_chunks(self, chunks: List[str], doc_text: str) -> List[str]:
         messages = [
-            system_msg(DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_content)),
-            user_msg(CHUNK_CONTEXT_PROMPT.format(chunk_content=chunks[0]))
+            system_msg(DOCUMENT_CONTEXT_PROMPT.format(doc_text=doc_text)),
+            user_msg(CHUNK_CONTEXT_PROMPT.format(chunk_text=chunks[0]))
         ]
         first_context = await generic_call(messages)
         contextualized_chunks = [first_context]
         
         async def get_context(chunk):
             messages = [
-                system_msg(DOCUMENT_CONTEXT_PROMPT.format(doc_content=doc_content)),
-                user_msg(CHUNK_CONTEXT_PROMPT.format(chunk_content=chunk))
+                system_msg(DOCUMENT_CONTEXT_PROMPT.format(doc_text=doc_text)),
+                user_msg(CHUNK_CONTEXT_PROMPT.format(chunk_text=chunk))
             ]
             return await generic_call(messages)
         
